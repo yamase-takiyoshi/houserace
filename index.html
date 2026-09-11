@@ -76,6 +76,12 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 #verticalTsTable th:first-child,#verticalTsTable td:first-child{position:sticky;left:0;z-index:2;background:var(--panel,#101914)}
 #verticalTsTable thead th:first-child{z-index:4}
 
+
+#legacySaveStatus{line-height:1.6}
+@media(max-width:760px){
+  #legacyChooseFolder,#legacyNamedSave,#legacyOverwrite,#legacyShareSave,#legacyLoadJson{flex:1 1 46%}
+}
+
 </style>
 </head>
 <body>
@@ -354,6 +360,36 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
         </thead>
         <tbody id="jsonRankBody"></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+
+<div class="card" style="margin-top:12px">
+  <h3>📁 JSON 保存・上書き・読込</h3>
+  <div class="body">
+    <div id="legacySaveBadge" class="badge cached">保存先未選択</div>
+    <div class="formgrid" style="margin-top:10px">
+      <label>JSONファイル名<input id="legacyJsonName" value="keiba_sim" placeholder="例 keiba_sim_20260912"></label>
+      <label>保存範囲
+        <select id="legacySaveScope">
+          <option value="all">全データ</option>
+          <option value="backtest">バックテスト結果</option>
+          <option value="history">過去レースデータ</option>
+          <option value="bets">購入履歴</option>
+        </select>
+      </label>
+    </div>
+    <div class="controls" style="margin-top:10px">
+      <button id="legacyChooseFolder">保存フォルダを選択</button>
+      <button id="legacyNamedSave" class="primary">フォルダ指定・名前付き保存</button>
+      <button id="legacyOverwrite">同じJSONへ上書き</button>
+      <button id="legacyShareSave">📤 iPad共有で保存</button>
+      <button id="legacyLoadJson">JSON読込</button>
+      <input id="legacyJsonInput" type="file" accept=".json,application/json" style="display:none">
+    </div>
+    <div id="legacySaveStatus" class="muted" style="margin-top:10px">
+      保存先: 未選択。iPadでは「📤 iPad共有で保存」→ 共有メニューの「ファイルに保存」でフォルダを指定します。
     </div>
   </div>
 </div>
@@ -1863,6 +1899,115 @@ document.addEventListener("DOMContentLoaded",()=>{
   };
   updateJsonFolderStatus();
 });
+
+
+let legacyDirectoryHandle=null;
+let legacyFileHandle=null;
+let legacyLastFilename="";
+
+function legacySanitizeName(name){
+  let s=(name||"keiba_sim").trim().replace(/[\\/:*?"<>|]+/g,"_");
+  if(!s.toLowerCase().endsWith(".json"))s+=".json";
+  return s;
+}
+function legacyPayload(){
+  const scope=$("#legacySaveScope")?.value||"all";
+  const base={format:"KEIBA_LIVE_SIM_EXPORT_V2",exportedAt:new Date().toISOString(),scope,settings:engine?.settings||{}};
+  if(scope==="backtest"){if(!btResult)throw new Error("バックテスト結果がありません");return {...base,backtest:btResult};}
+  if(scope==="history"){if(!webHistory?.length)throw new Error("過去レースデータがありません");return {...base,history:webHistory};}
+  if(scope==="bets")return {...base,bets:betRows()};
+  return {...base,bets:betRows(),history:webHistory||[],backtest:btResult||null,characters:engine?.characters||[],races:engine?.races||[]};
+}
+function legacyStatus(text,good=false){
+  if($("#legacySaveStatus"))$("#legacySaveStatus").textContent=text;
+  if($("#legacySaveBadge")){
+    $("#legacySaveBadge").textContent=good?"保存先設定済み":"保存先未選択";
+    $("#legacySaveBadge").className="badge "+(good?"live":"cached");
+  }
+}
+async function legacyChooseFolder(){
+  if(!("showDirectoryPicker" in window)){
+    legacyStatus("このブラウザはフォルダ直接選択に非対応です。iPadでは「📤 iPad共有で保存」を使ってください。");
+    return;
+  }
+  try{
+    legacyDirectoryHandle=await window.showDirectoryPicker({mode:"readwrite"});
+    legacyFileHandle=null;
+    legacyStatus(`保存先フォルダ: ${legacyDirectoryHandle.name}`,true);
+  }catch(e){if(e?.name!=="AbortError")legacyStatus("フォルダ選択エラー: "+e.message);}
+}
+async function legacyNamedSave(){
+  let payload;try{payload=legacyPayload()}catch(e){return alert(e.message)}
+  const filename=legacySanitizeName($("#legacyJsonName").value);
+  const text=JSON.stringify(payload,null,2);
+  if(legacyDirectoryHandle){
+    try{
+      const fh=await legacyDirectoryHandle.getFileHandle(filename,{create:true});
+      const w=await fh.createWritable();await w.write(new Blob([text],{type:"application/json"}));await w.close();
+      legacyFileHandle=fh;legacyLastFilename=filename;
+      legacyStatus(`保存完了: ${legacyDirectoryHandle.name}/${filename}`,true);return;
+    }catch(e){}
+  }
+  if("showSaveFilePicker" in window){
+    try{
+      const fh=await window.showSaveFilePicker({suggestedName:filename,types:[{description:"JSON file",accept:{"application/json":[".json"]}}]});
+      const w=await fh.createWritable();await w.write(new Blob([text],{type:"application/json"}));await w.close();
+      legacyFileHandle=fh;legacyLastFilename=filename;legacyStatus(`名前付き保存完了: ${filename}`,true);return;
+    }catch(e){if(e?.name==="AbortError")return;}
+  }
+  await legacyShareSave();
+}
+async function legacyOverwrite(){
+  let payload;try{payload=legacyPayload()}catch(e){return alert(e.message)}
+  const text=JSON.stringify(payload,null,2);
+  if(legacyFileHandle){
+    try{
+      const w=await legacyFileHandle.createWritable();await w.write(new Blob([text],{type:"application/json"}));await w.close();
+      legacyStatus(`同じJSONへ上書き完了: ${legacyLastFilename||legacyFileHandle.name}`,true);return;
+    }catch(e){legacyFileHandle=null;}
+  }
+  if(legacyDirectoryHandle){
+    const filename=legacySanitizeName($("#legacyJsonName").value);
+    try{
+      const fh=await legacyDirectoryHandle.getFileHandle(filename,{create:true});
+      const w=await fh.createWritable();await w.write(new Blob([text],{type:"application/json"}));await w.close();
+      legacyFileHandle=fh;legacyLastFilename=filename;legacyStatus(`同じJSONへ上書き完了: ${filename}`,true);return;
+    }catch(e){}
+  }
+  legacyStatus("iPadでは共有→「ファイルに保存」で同じ名前を指定してください。");
+  await legacyShareSave();
+}
+async function legacyShareSave(){
+  let payload;try{payload=legacyPayload()}catch(e){return alert(e.message)}
+  const filename=legacySanitizeName($("#legacyJsonName").value);
+  const file=new File([JSON.stringify(payload,null,2)],filename,{type:"application/json"});
+  if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
+    try{
+      await navigator.share({files:[file],title:filename,text:"競馬シミュレーション JSON"});
+      legacyLastFilename=filename;legacyStatus(`共有しました: ${filename}。「ファイルに保存」で保存先フォルダを指定できます。`,true);return;
+    }catch(e){if(e?.name==="AbortError")return;}
+  }
+  const u=URL.createObjectURL(file);const a=document.createElement("a");a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500);
+  legacyStatus(`ダウンロードしました: ${filename}`);
+}
+async function legacyLoadJsonFile(file){
+  if(!file)return;
+  try{
+    const obj=JSON.parse(await file.text());
+    if(obj?.backtest){btResult=obj.backtest;if(typeof renderBt==="function")renderBt(btResult);}
+    if(Array.isArray(obj?.history)){webHistory=obj.history;Store.set("webHistory",webHistory);if(typeof updateHistStatus==="function")updateHistStatus("JSON読込");}
+    if(Array.isArray(obj?.bets)){engine.bets=obj.bets;engine.save();}
+    if(Array.isArray(obj?.characters)&&obj?.timeline){btResult=obj;if(typeof renderBt==="function")renderBt(btResult);}
+    if(obj?.format==="KEIBA_HISTORY_V1"&&Array.isArray(obj.data)){webHistory=obj.data;Store.set("webHistory",webHistory);}
+    legacyStatus(`JSON読込完了: ${file.name}`,true);
+  }catch(e){alert("JSON読込エラー: "+e.message);}
+}
+$("#legacyChooseFolder").onclick=legacyChooseFolder;
+$("#legacyNamedSave").onclick=legacyNamedSave;
+$("#legacyOverwrite").onclick=legacyOverwrite;
+$("#legacyShareSave").onclick=legacyShareSave;
+$("#legacyLoadJson").onclick=()=>$("#legacyJsonInput").click();
+$("#legacyJsonInput").onchange=e=>legacyLoadJsonFile(e.target.files?.[0]);
 
 engine.init();
 </script>
