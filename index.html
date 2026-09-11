@@ -227,6 +227,26 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 
 
+
+<div class="card" style="margin-top:12px">
+  <h3>時系列グラフ</h3>
+  <div class="body">
+    <div class="muted" style="margin-bottom:8px">
+      バックテストした各レースを、日付・発走時刻の順に並べて表示します。
+    </div>
+    <div class="bottom">
+      <section class="card">
+        <h3>資金推移（時系列）</h3>
+        <div class="body chartbox"><canvas id="timeBankChart"></canvas></div>
+      </section>
+      <section class="card">
+        <h3>累積利益（時系列）</h3>
+        <div class="body chartbox"><canvas id="timeProfitChart"></canvas></div>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div class="card" style="margin-top:12px">
   <h3>バックテスト結果 / JSON グラフ分析</h3>
   <div class="body">
@@ -1123,15 +1143,31 @@ function runBacktestOnHistory(historyBlocks){
   historyBlocks.forEach(block=>(block.races||[]).forEach(r=>races.push({...r,org:r.org||block.org})));
   races.sort((a,b)=>(a.date||"").localeCompare(b.date||"") || (a.startTime||"").localeCompare(b.startTime||"") || a.no-b.no);
 
+  const timeline=[];
+  timeline.push({
+    label:"開始",
+    date:null,
+    raceId:null,
+    bankroll:Object.fromEntries(chars.map(c=>[c.name,c.bankroll])),
+    profit:Object.fromEntries(chars.map(c=>[c.name,0]))
+  });
+
   for(const raw of races){
     const hs=btProbabilities(raw.horses||[]);
     if(!hs.length||!raw.result)continue;
     const race={...raw,horses:hs};
+
     for(const c of chars){
-      if(c.bankroll<=0)continue;
+      if(c.bankroll<=0){
+        c.history.push(c.bankroll);
+        continue;
+      }
+
       const picks=btPicks(c,race,engine.settings);
-      if(!picks.length){c.skips++;continue}
-      if(c.ticket==="wide"||c.ticket==="trio"){
+
+      if(!picks.length){
+        c.skips++;
+      }else if(c.ticket==="wide"||c.ticket==="trio"){
         btSettleCombo(c,race,picks,c.ticket,engine.settings);
       }else{
         let made=false;
@@ -1143,12 +1179,107 @@ function runBacktestOnHistory(historyBlocks){
         }
         if(!made)c.skips++;
       }
+
       c.history.push(c.bankroll);
     }
+
+    const dt=raw.startTime ? new Date(raw.startTime) : null;
+    const label=dt && Number.isFinite(dt.getTime())
+      ? `${dt.toLocaleDateString("ja-JP",{month:"numeric",day:"numeric"})} ${dt.toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})} ${raw.track||""}${raw.no||""}R`
+      : `${raw.date||""} ${raw.track||""}${raw.no||""}R`;
+
+    timeline.push({
+      label,
+      date:raw.startTime||raw.date||null,
+      raceId:raw.id||null,
+      bankroll:Object.fromEntries(chars.map(c=>[c.name,c.bankroll])),
+      profit:Object.fromEntries(chars.map(c=>[c.name,c.bankroll-c.initial]))
+    });
   }
-  return {characters:chars,races:races.length,blocks:historyBlocks.length,oddsTiming:"FINAL"};
+
+  return {
+    characters:chars,
+    races:races.length,
+    blocks:historyBlocks.length,
+    oddsTiming:"FINAL",
+    timeline
+  };
 }
+
+const TimeSeriesGraph={
+  bank:null,
+  profit:null,
+  render(result){
+    if(!window.Chart || !result?.timeline?.length)return;
+
+    const labels=result.timeline.map(x=>x.label);
+    const chars=result.characters||[];
+
+    const bankSets=chars.slice(0,10).map(c=>({
+      label:c.name,
+      data:result.timeline.map(x=>Number(x.bankroll?.[c.name] ?? c.initial ?? 0)),
+      borderWidth:2,
+      pointRadius:0,
+      tension:.12
+    }));
+
+    const profitSets=chars.slice(0,10).map(c=>({
+      label:c.name,
+      data:result.timeline.map(x=>Number(x.profit?.[c.name] ?? 0)),
+      borderWidth:2,
+      pointRadius:0,
+      tension:.12
+    }));
+
+    if(this.bank)this.bank.destroy();
+    if(this.profit)this.profit.destroy();
+
+    this.bank=new Chart(document.getElementById("timeBankChart"),{
+      type:"line",
+      data:{labels,datasets:bankSets},
+      options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        interaction:{mode:"index",intersect:false},
+        plugins:{legend:{labels:{color:"#eef7f0"}}},
+        scales:{
+          x:{
+            ticks:{color:"#9ab0a1",maxRotation:70,minRotation:30,autoSkip:true,maxTicksLimit:18},
+            title:{display:true,text:"レース日時",color:"#9ab0a1"}
+          },
+          y:{
+            ticks:{color:"#9ab0a1"},
+            title:{display:true,text:"資金（円）",color:"#9ab0a1"}
+          }
+        }
+      }
+    });
+
+    this.profit=new Chart(document.getElementById("timeProfitChart"),{
+      type:"line",
+      data:{labels,datasets:profitSets},
+      options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        interaction:{mode:"index",intersect:false},
+        plugins:{legend:{labels:{color:"#eef7f0"}}},
+        scales:{
+          x:{
+            ticks:{color:"#9ab0a1",maxRotation:70,minRotation:30,autoSkip:true,maxTicksLimit:18},
+            title:{display:true,text:"レース日時",color:"#9ab0a1"}
+          },
+          y:{
+            ticks:{color:"#9ab0a1"},
+            title:{display:true,text:"累積利益（円）",color:"#9ab0a1"}
+          }
+        }
+      }
+    });
+  }
+};
+
 function renderBt(result){
+  TimeSeriesGraph.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -1302,7 +1433,7 @@ const JsonGraph={
       }
     });
   },
-  renderCharacters(chars){
+  renderCharacters(chars,meta={}){
     const rows=chars.map(c=>this.metrics(c)).sort((a,b)=>b.roi-a.roi);
     $("#jsonRankBody").innerHTML=rows.map((r,i)=>`<tr>
       <td>${i+1}</td><td>${r.name}</td><td>${fmtY(r.bankroll)}</td><td>${fmtY(r.profit)}</td>
@@ -1317,7 +1448,9 @@ const JsonGraph={
     this.chart("jsonHitChart","bar",{labels:names,datasets:[{label:"的中率 %",data:rows.map(r=>r.hit)}]},{indexAxis:"y"});
 
     const maxLen=Math.max(0,...rows.map(r=>r.history.length));
-    const labels=Array.from({length:maxLen},(_,i)=>i);
+    const labels=(Array.isArray(meta.timeline)&&meta.timeline.length===maxLen)
+      ? meta.timeline.map(x=>x.label)
+      : Array.from({length:maxLen},(_,i)=>i);
     const ds=rows.filter(r=>r.history.length).slice(0,10).map(r=>({label:r.name,data:r.history,borderWidth:2,pointRadius:0}));
     this.chart("jsonBankChart","line",{labels,datasets:ds});
   },
@@ -1341,7 +1474,8 @@ const JsonGraph={
     this.destroy();
     const n=this.normalize(data);
     if(n.type==="characters"||n.type==="bets"){
-      this.renderCharacters(n.characters);
+      this.renderCharacters(n.characters,n.meta||{});
+      if(n.meta?.timeline) TimeSeriesGraph.render(n.meta);
       $("#jsonGraphStatus").textContent=`読込完了: ${n.characters.length}キャラクター`;
     }else if(n.type==="historyBlocks"){
       this.renderHistory(n.history);
