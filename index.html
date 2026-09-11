@@ -217,6 +217,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
     </div>
     <div class="controls" style="margin-top:10px">
       <button id="exportBtJson">バックテストJSON</button>
+      <button id="graphBtDirect" class="primary">結果を直接グラフ化</button>
       <button id="resetBt">結果リセット</button>
     </div>
   </div>
@@ -224,7 +225,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 
 <div class="card" style="margin-top:12px">
-  <h3>JSONグラフ分析</h3>
+  <h3>バックテスト結果 / JSON グラフ分析</h3>
   <div class="body">
     <div class="controls" style="margin-bottom:10px">
       <label>JSON読込
@@ -1139,8 +1140,23 @@ $("#runWebBacktest").onclick=async()=>{
     renderBt(btResult);
     $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS`;
     Store.set("btResult",btResult);
+
+    // バックテスト結果JSON相当のオブジェクトを直接グラフへ
+    if(typeof JsonGraph!=="undefined"){
+      JsonGraph.render(btResult);
+      $("#jsonGraphStatus").textContent=`バックテスト結果を直接グラフ化: ${btResult.races}レース`;
+    }
   }finally{$("#runWebBacktest").disabled=false}
 };
+
+$("#graphBtDirect").onclick=()=>{
+  if(!btResult)return alert("先にバックテストを実行してください");
+  if(typeof JsonGraph==="undefined")return alert("グラフ機能が読み込まれていません");
+  JsonGraph.render(btResult);
+  $("#jsonGraphStatus").textContent=`バックテスト結果を直接グラフ化: ${btResult.races||0}レース`;
+  document.getElementById("jsonGraphStatus")?.scrollIntoView({behavior:"smooth",block:"center"});
+};
+
 $("#exportBtJson").onclick=()=>{
   if(!btResult)return alert("バックテスト結果がありません");
   download(`keiba_backtest_${today()}.json`,JSON.stringify(btResult,null,2),"application/json");
@@ -1151,7 +1167,17 @@ $("#resetBt").onclick=()=>{
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
   const saved=Store.get("btResult",null);
-  if(saved){btResult=saved;renderBt(saved);$("#btProgress").textContent=`保存結果: ${saved.races||0}レース / FINAL ODDS`;}
+  if(saved){
+    btResult=saved;
+    renderBt(saved);
+    $("#btProgress").textContent=`保存結果: ${saved.races||0}レース / FINAL ODDS`;
+    setTimeout(()=>{
+      if(typeof JsonGraph!=="undefined"){
+        JsonGraph.render(saved);
+        $("#jsonGraphStatus").textContent=`保存済みバックテスト結果を表示: ${saved.races||0}レース`;
+      }
+    },200);
+  }
 },120);
 
 
