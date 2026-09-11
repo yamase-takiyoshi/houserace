@@ -82,6 +82,10 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   #legacyChooseFolder,#legacyNamedSave,#legacyOverwrite,#legacyShareSave,#legacyLoadJson{flex:1 1 46%}
 }
 
+
+#anomalyBody tr td:nth-child(14){font-variant-numeric:tabular-nums}
+#anomalyBody tr:hover{background:rgba(255,255,255,.04)}
+
 </style>
 </head>
 <body>
@@ -269,6 +273,69 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 
 
+
+
+<div class="card" style="margin-top:12px">
+  <h3>⚠ 異常利益監査</h3>
+  <div class="body">
+    <div class="notice">
+      1買い目の利益が指定額以上になった購入だけを自動抽出します。
+      Kelly系・高配当・払戻単位の誤りを見つけるための監査用です。
+    </div>
+
+    <div class="controls" style="margin:10px 0">
+      <label>利益しきい値
+        <input id="anomalyProfitThreshold" type="number" min="0" step="1000" value="20000">
+      </label>
+
+      <label>キャラクター
+        <select id="anomalyCharacter">
+          <option value="">全員</option>
+        </select>
+      </label>
+
+      <label>券種
+        <select id="anomalyTicket">
+          <option value="">全券種</option>
+        </select>
+      </label>
+
+      <button id="refreshAnomaly" class="primary">再抽出</button>
+      <button id="copyAnomaly">表をコピー</button>
+      <button id="copyAnomalyCsv">CSV形式でコピー</button>
+    </div>
+
+    <div id="anomalyStatus" class="muted">
+      バックテスト実行後に自動表示します。
+    </div>
+
+    <div class="scroll" style="max-height:72vh;margin-top:8px">
+      <table>
+        <thead>
+          <tr>
+            <th>日時</th>
+            <th>競馬場</th>
+            <th>R</th>
+            <th>キャラクター</th>
+            <th>券種</th>
+            <th>馬/組番</th>
+            <th>購入額</th>
+            <th>オッズ</th>
+            <th>想定確率</th>
+            <th>EV</th>
+            <th>元払戻値</th>
+            <th>払戻倍率</th>
+            <th>払戻額</th>
+            <th>利益</th>
+            <th>倍率×購入額</th>
+            <th>判定</th>
+          </tr>
+        </thead>
+        <tbody id="anomalyBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
 <div class="card" style="margin-top:12px">
   <h3>精算デバッグ監査表</h3>
@@ -1397,6 +1464,7 @@ function runBacktestOnHistory(historyBlocks){
             multiplier:rr.mult,
             refund:rr.ret,
             profit:rr.profit,
+            odds:rr.mult,
             prob:rr.prob,
             ev:rr.ev,
             status:rr.hit?"的中":"不的中",
@@ -1423,6 +1491,7 @@ function runBacktestOnHistory(historyBlocks){
               multiplier:rr.mult,
               refund:rr.ret,
               profit:rr.ret-stake,
+              odds:h.odds,
               prob:h.modelProb,
               ev:h.ev,
               status:rr.ret>0?"的中":"不的中",
@@ -1460,6 +1529,128 @@ function runBacktestOnHistory(historyBlocks){
     timeline
   };
 }
+
+
+const AnomalyAudit={
+  result:null,
+
+  rows(){
+    const all=this.result?.audit||[];
+    const threshold=Number($("#anomalyProfitThreshold")?.value||20000);
+    const character=$("#anomalyCharacter")?.value||"";
+    const ticket=$("#anomalyTicket")?.value||"";
+
+    return all
+      .filter(r=>Number(r.profit||0)>=threshold)
+      .filter(r=>!character || r.character===character)
+      .filter(r=>!ticket || r.ticket===ticket)
+      .sort((a,b)=>Number(b.profit||0)-Number(a.profit||0));
+  },
+
+  render(result){
+    this.result=result;
+
+    const all=result?.audit||[];
+    const chars=[...new Set(all.map(r=>r.character).filter(Boolean))];
+    const tickets=[...new Set(all.map(r=>r.ticket).filter(Boolean))];
+
+    $("#anomalyCharacter").innerHTML=
+      '<option value="">全員</option>'+
+      chars.map(x=>`<option>${escapeHtml(x)}</option>`).join("");
+
+    $("#anomalyTicket").innerHTML=
+      '<option value="">全券種</option>'+
+      tickets.map(x=>`<option>${escapeHtml(x)}</option>`).join("");
+
+    this.draw();
+  },
+
+  draw(){
+    const rows=this.rows();
+    const threshold=Number($("#anomalyProfitThreshold")?.value||20000);
+
+    $("#anomalyBody").innerHTML=rows.map(r=>{
+      const calc=Number(r.stake||0)*Number(r.multiplier||0);
+      const refund=Number(r.refund||0);
+      const mismatch=Math.abs(calc-refund)>1 && r.status==="的中";
+
+      return `<tr>
+        <td>${escapeHtml(r.date||"")}</td>
+        <td>${escapeHtml(r.track||"")}</td>
+        <td>${escapeHtml(String(r.no??""))}</td>
+        <td>${escapeHtml(r.character||"")}</td>
+        <td>${escapeHtml(r.ticket||"")}</td>
+        <td>${escapeHtml(r.selection||"")}</td>
+        <td style="text-align:right">${Number(r.stake||0).toLocaleString()}</td>
+        <td style="text-align:right">${r.odds==null?"":Number(r.odds).toFixed(3)}</td>
+        <td style="text-align:right">${(Number(r.prob||0)*100).toFixed(3)}%</td>
+        <td style="text-align:right">${Number(r.ev||0).toFixed(3)}</td>
+        <td style="text-align:right">${escapeHtml(String(r.rawPayout??""))}</td>
+        <td style="text-align:right">${r.multiplier==null?"":Number(r.multiplier).toFixed(3)}</td>
+        <td style="text-align:right">${refund.toLocaleString()}</td>
+        <td style="text-align:right;font-weight:700">${Number(r.profit||0).toLocaleString()}</td>
+        <td style="text-align:right">${calc.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+        <td>${mismatch?"⚠ 計算不一致":escapeHtml(r.status||"")}</td>
+      </tr>`;
+    }).join("");
+
+    const maxProfit=rows.length ? Math.max(...rows.map(r=>Number(r.profit||0))) : 0;
+    $("#anomalyStatus").textContent=
+      `利益 +${threshold.toLocaleString()}円以上: ${rows.length}件 / 最大利益 ${maxProfit.toLocaleString()}円`;
+  },
+
+  async copy(csv=false){
+    const rows=this.rows();
+    if(!rows.length)return alert("条件に該当する異常利益データがありません");
+
+    const head=[
+      "日時","競馬場","R","キャラクター","券種","馬/組番",
+      "購入額","オッズ","想定確率","EV","元払戻値","払戻倍率",
+      "払戻額","利益","倍率×購入額","判定"
+    ];
+
+    const body=rows.map(r=>{
+      const calc=Number(r.stake||0)*Number(r.multiplier||0);
+      const mismatch=Math.abs(calc-Number(r.refund||0))>1 && r.status==="的中";
+      return [
+        r.date,r.track,r.no,r.character,r.ticket,r.selection,
+        r.stake,r.odds,r.prob,r.ev,r.rawPayout,r.multiplier,
+        r.refund,r.profit,calc,mismatch?"計算不一致":r.status
+      ];
+    });
+
+    const delim=csv?",":"\t";
+    const q=v=>{
+      const s=String(v??"");
+      return csv && /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+    };
+
+    const text=[head,...body]
+      .map(row=>row.map(q).join(delim))
+      .join("\n");
+
+    try{
+      await navigator.clipboard.writeText(text);
+    }catch{
+      const ta=document.createElement("textarea");
+      ta.value=text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+
+    $("#anomalyStatus").textContent=
+      `${rows.length}件を${csv?"CSV":"表"}形式でコピーしました。`;
+  }
+};
+
+$("#refreshAnomaly").onclick=()=>AnomalyAudit.draw();
+$("#anomalyProfitThreshold").onchange=()=>AnomalyAudit.draw();
+$("#anomalyCharacter").onchange=()=>AnomalyAudit.draw();
+$("#anomalyTicket").onchange=()=>AnomalyAudit.draw();
+$("#copyAnomaly").onclick=()=>AnomalyAudit.copy(false);
+$("#copyAnomalyCsv").onclick=()=>AnomalyAudit.copy(true);
 
 const DetailedAudit={
   result:null,
@@ -1664,6 +1855,7 @@ function renderBt(result){
   TimeSeriesGraph.render(result);
   VerticalTimeSeries.render(result);
   DetailedAudit.render(result);
+  AnomalyAudit.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -1705,7 +1897,7 @@ $("#runWebBacktest").onclick=async()=>{
     btResult=runBacktestOnHistory(blocks);
     renderBt(btResult);
     $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
-    Store.set("btResultDetailedAuditV1",btResult);
+    Store.set("btResultAnomalyAuditV1",btResult);
 
     // バックテスト結果JSON相当のオブジェクトを直接グラフへ
     if(typeof JsonGraph!=="undefined"){
@@ -1730,11 +1922,11 @@ $("#exportBtJson").onclick=async()=>{
   $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
-  btResult=null;Store.del("btResultDetailedAuditV1");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
+  btResult=null;Store.del("btResultAnomalyAuditV1");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
-  const saved=Store.get("btResultDetailedAuditV1",null);
+  const saved=Store.get("btResultAnomalyAuditV1",null);
   if(saved){
     btResult=saved;
     renderBt(saved);
