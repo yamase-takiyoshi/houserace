@@ -222,6 +222,41 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   </div>
 </div>
 
+
+<div class="card" style="margin-top:12px">
+  <h3>JSONグラフ分析</h3>
+  <div class="body">
+    <div class="controls" style="margin-bottom:10px">
+      <label>JSON読込
+        <input id="jsonGraphFile" type="file" accept=".json,application/json">
+      </label>
+      <button id="loadJsonGraph" class="primary">JSONをグラフ化</button>
+      <button id="clearJsonGraph">クリア</button>
+    </div>
+    <div id="jsonGraphStatus" class="muted">JSON未読込</div>
+    <div class="bottom" style="margin-top:12px">
+      <section class="card"><h3>ROIランキング</h3><div class="body chartbox"><canvas id="jsonRoiChart"></canvas></div></section>
+      <section class="card"><h3>資金 / 利益比較</h3><div class="body chartbox"><canvas id="jsonProfitChart"></canvas></div></section>
+    </div>
+    <div class="bottom">
+      <section class="card"><h3>JRA / NAR ROI比較</h3><div class="body chartbox"><canvas id="jsonOrgChart"></canvas></div></section>
+      <section class="card"><h3>最大ドローダウン</h3><div class="body chartbox"><canvas id="jsonDdChart"></canvas></div></section>
+    </div>
+    <div class="bottom">
+      <section class="card"><h3>的中率</h3><div class="body chartbox"><canvas id="jsonHitChart"></canvas></div></section>
+      <section class="card"><h3>資金推移</h3><div class="body chartbox"><canvas id="jsonBankChart"></canvas></div></section>
+    </div>
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead>
+          <tr><th>#</th><th>名前</th><th>資金</th><th>利益</th><th>ROI</th><th>的中率</th><th>最大DD</th><th>勝負数</th></tr>
+        </thead>
+        <tbody id="jsonRankBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 </main>
 
 <dialog id="settingsDlg">
@@ -1118,6 +1153,143 @@ setTimeout(()=>{
   const saved=Store.get("btResult",null);
   if(saved){btResult=saved;renderBt(saved);$("#btProgress").textContent=`保存結果: ${saved.races||0}レース / FINAL ODDS`;}
 },120);
+
+
+// ===============================
+// JSON GRAPH ANALYZER
+// ===============================
+const JsonGraph={
+  charts:{},
+  destroy(){
+    Object.values(this.charts).forEach(c=>{try{c.destroy()}catch{}});
+    this.charts={};
+  },
+  normalize(data){
+    // Backtest direct object
+    if(data && Array.isArray(data.characters)) return {type:"characters",characters:data.characters,meta:data};
+
+    // Exported history wrapper
+    if(data && Array.isArray(data.data)){
+      const chars=[];
+      return {type:"historyBlocks",history:data.data,characters:chars,meta:data};
+    }
+
+    // Raw array of bets
+    if(Array.isArray(data) && data.length && ("キャラクター" in data[0] || "character" in data[0])){
+      const map=new Map();
+      for(const r of data){
+        const name=r["キャラクター"] ?? r.character ?? "Unknown";
+        if(!map.has(name)) map.set(name,{name,bankroll:0,initial:0,invested:0,returned:0,wins:0,bets:0,maxDD:0,history:[],byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}}});
+        const c=map.get(name);
+        const stake=Number(r["購入額"] ?? r.stake ?? 0);
+        const ret=Number(r["払戻"] ?? r.return ?? 0);
+        c.invested+=stake;c.returned+=ret;c.bets++;
+        if(ret>0)c.wins++;
+        const org=r["区分"] ?? r.org ?? "";
+        if(c.byOrg[org]){c.byOrg[org].inv+=stake;c.byOrg[org].ret+=ret}
+      }
+      return {type:"bets",characters:[...map.values()],meta:data};
+    }
+
+    // Maybe object with data.characters nested
+    if(data?.data?.characters && Array.isArray(data.data.characters)){
+      return {type:"characters",characters:data.data.characters,meta:data};
+    }
+    return {type:"unknown",characters:[],meta:data};
+  },
+  metrics(c){
+    const inv=Number(c.invested||0), ret=Number(c.returned||0);
+    const initial=Number(c.initial||c.initialBankroll||0);
+    const bankroll=Number(c.bankroll||0);
+    const profit=(bankroll&&initial)?bankroll-initial:ret-inv;
+    const roi=inv?ret/inv*100:0;
+    const hit=Number(c.bets||0)?Number(c.wins||0)/Number(c.bets||1)*100:0;
+    const dd=Number(c.maxDD||0)*100;
+    const jraInv=Number(c.byOrg?.JRA?.inv||0),jraRet=Number(c.byOrg?.JRA?.ret||0);
+    const narInv=Number(c.byOrg?.NAR?.inv||0),narRet=Number(c.byOrg?.NAR?.ret||0);
+    return {name:c.name||"Unknown",bankroll,initial,profit,roi,hit,dd,bets:Number(c.bets||0),
+      jraRoi:jraInv?jraRet/jraInv*100:0,narRoi:narInv?narRet/narInv*100:0,history:Array.isArray(c.history)?c.history:[]};
+  },
+  chart(id,type,data,options={}){
+    if(!window.Chart)return;
+    if(this.charts[id])this.charts[id].destroy();
+    this.charts[id]=new Chart(document.getElementById(id),{
+      type,data,
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:"#eef7f0"}}},
+        scales:type==="pie"?{}:{x:{ticks:{color:"#9ab0a1"}},y:{ticks:{color:"#9ab0a1"}}},
+        ...options
+      }
+    });
+  },
+  renderCharacters(chars){
+    const rows=chars.map(c=>this.metrics(c)).sort((a,b)=>b.roi-a.roi);
+    $("#jsonRankBody").innerHTML=rows.map((r,i)=>`<tr>
+      <td>${i+1}</td><td>${r.name}</td><td>${fmtY(r.bankroll)}</td><td>${fmtY(r.profit)}</td>
+      <td>${r.roi.toFixed(1)}%</td><td>${r.hit.toFixed(1)}%</td><td>${r.dd.toFixed(1)}%</td><td>${r.bets}</td>
+    </tr>`).join("");
+
+    const names=rows.map(r=>r.name);
+    this.chart("jsonRoiChart","bar",{labels:names,datasets:[{label:"ROI %",data:rows.map(r=>r.roi)}]},{indexAxis:"y"});
+    this.chart("jsonProfitChart","bar",{labels:names,datasets:[{label:"利益",data:rows.map(r=>r.profit)}]},{indexAxis:"y"});
+    this.chart("jsonOrgChart","bar",{labels:names,datasets:[{label:"JRA ROI %",data:rows.map(r=>r.jraRoi)},{label:"NAR ROI %",data:rows.map(r=>r.narRoi)}]});
+    this.chart("jsonDdChart","bar",{labels:names,datasets:[{label:"最大DD %",data:rows.map(r=>r.dd)}]},{indexAxis:"y"});
+    this.chart("jsonHitChart","bar",{labels:names,datasets:[{label:"的中率 %",data:rows.map(r=>r.hit)}]},{indexAxis:"y"});
+
+    const maxLen=Math.max(0,...rows.map(r=>r.history.length));
+    const labels=Array.from({length:maxLen},(_,i)=>i);
+    const ds=rows.filter(r=>r.history.length).slice(0,10).map(r=>({label:r.name,data:r.history,borderWidth:2,pointRadius:0}));
+    this.chart("jsonBankChart","line",{labels,datasets:ds});
+  },
+  renderHistory(blocks){
+    // Visualize races per day/org if no character results exist
+    const grouped=new Map();
+    for(const b of blocks||[]){
+      const key=`${b.date} ${b.org}`;
+      grouped.set(key,(b.races||[]).length);
+    }
+    const labels=[...grouped.keys()], vals=[...grouped.values()];
+    $("#jsonRankBody").innerHTML="";
+    this.chart("jsonRoiChart","bar",{labels,datasets:[{label:"レース数",data:vals}]});
+    this.chart("jsonProfitChart","bar",{labels,datasets:[{label:"レース数",data:vals}]});
+    this.chart("jsonOrgChart","bar",{labels,datasets:[{label:"レース数",data:vals}]});
+    this.chart("jsonDdChart","bar",{labels,datasets:[{label:"レース数",data:vals}]});
+    this.chart("jsonHitChart","bar",{labels,datasets:[{label:"レース数",data:vals}]});
+    this.chart("jsonBankChart","line",{labels,datasets:[{label:"レース数",data:vals,borderWidth:2,pointRadius:2}]});
+  },
+  render(data){
+    this.destroy();
+    const n=this.normalize(data);
+    if(n.type==="characters"||n.type==="bets"){
+      this.renderCharacters(n.characters);
+      $("#jsonGraphStatus").textContent=`読込完了: ${n.characters.length}キャラクター`;
+    }else if(n.type==="historyBlocks"){
+      this.renderHistory(n.history);
+      $("#jsonGraphStatus").textContent=`過去レースJSON読込: ${n.history.length}日区分`;
+    }else{
+      $("#jsonGraphStatus").textContent="対応形式を判定できませんでした";
+      alert("このJSON形式はまだ自動判定できません。バックテストJSON・過去JSON・購入履歴JSONに対応しています。");
+    }
+  }
+};
+
+$("#loadJsonGraph").onclick=async()=>{
+  const f=$("#jsonGraphFile").files[0];
+  if(!f)return alert("JSONファイルを選択してください");
+  try{
+    const data=JSON.parse(await f.text());
+    JsonGraph.render(data);
+  }catch(e){
+    alert("JSON読込エラー: "+e.message);
+  }
+};
+$("#clearJsonGraph").onclick=()=>{
+  JsonGraph.destroy();
+  $("#jsonRankBody").innerHTML="";
+  $("#jsonGraphStatus").textContent="JSON未読込";
+  $("#jsonGraphFile").value="";
+};
 
 engine.init();
 </script>
