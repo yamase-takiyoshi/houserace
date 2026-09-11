@@ -69,6 +69,13 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 .notice{padding:10px;border:1px solid #664f1a;background:#2d250d;color:#ffe59a;border-radius:10px;font-size:12px;margin-bottom:10px}
 @media(max-width:1100px){.grid{grid-template-columns:220px 1fr}.right{grid-column:1/-1}.people{max-height:none;display:grid;grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:760px){.grid{grid-template-columns:1fr}.left,.right{grid-column:auto}.racelist{max-height:260px}.people{grid-template-columns:1fr}.bottom{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.formgrid{grid-template-columns:1fr}.head{gap:8px}.spacer{display:none}}
+
+#verticalTsTable{font-variant-numeric:tabular-nums}
+#verticalTsTable th,#verticalTsTable td{user-select:text;-webkit-user-select:text}
+#verticalTsTable thead th{position:sticky;top:0;z-index:3}
+#verticalTsTable th:first-child,#verticalTsTable td:first-child{position:sticky;left:0;z-index:2;background:var(--panel,#101914)}
+#verticalTsTable thead th:first-child{z-index:4}
+
 </style>
 </head>
 <body>
@@ -243,6 +250,30 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
         <h3>累積利益（時系列）</h3>
         <div class="body chartbox"><canvas id="timeProfitChart"></canvas></div>
       </section>
+    </div>
+  </div>
+</div>
+
+
+<div class="card" style="margin-top:12px">
+  <h3>縦型時系列表（コピペ対応）</h3>
+  <div class="body">
+    <div class="controls" style="margin-bottom:10px">
+      <label>表示
+        <select id="verticalTsMode">
+          <option value="bankroll">資金</option>
+          <option value="profit">累積利益</option>
+        </select>
+      </label>
+      <button id="copyVerticalTs" class="primary">表をコピー</button>
+      <button id="copyVerticalTsCsv">CSV形式でコピー</button>
+    </div>
+    <div id="verticalTsStatus" class="muted">バックテスト実行後に表示します。</div>
+    <div class="scroll" style="margin-top:10px;max-height:70vh">
+      <table id="verticalTsTable">
+        <thead id="verticalTsHead"></thead>
+        <tbody id="verticalTsBody"></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -1206,6 +1237,81 @@ function runBacktestOnHistory(historyBlocks){
   };
 }
 
+
+// ===============================
+// VERTICAL TIME-SERIES TABLE
+// ===============================
+const VerticalTimeSeries={
+  result:null,
+  render(result){
+    this.result=result;
+    if(!result?.timeline?.length || !result?.characters?.length){
+      $("#verticalTsStatus").textContent="時系列データがありません。";
+      $("#verticalTsHead").innerHTML="";
+      $("#verticalTsBody").innerHTML="";
+      return;
+    }
+
+    const mode=$("#verticalTsMode")?.value||"bankroll";
+    const chars=result.characters.slice(0,10);
+    const label=mode==="profit"?"累積利益":"資金";
+
+    $("#verticalTsHead").innerHTML=
+      `<tr><th>日時・レース</th>${chars.map(c=>`<th>${escapeHtml(c.name)}</th>`).join("")}</tr>`;
+
+    $("#verticalTsBody").innerHTML=result.timeline.map(t=>{
+      const obj=mode==="profit"?t.profit:t.bankroll;
+      return `<tr>
+        <td style="white-space:nowrap">${escapeHtml(t.label||"")}</td>
+        ${chars.map(c=>`<td style="text-align:right">${Number(obj?.[c.name]??0).toLocaleString("ja-JP")}</td>`).join("")}
+      </tr>`;
+    }).join("");
+
+    $("#verticalTsStatus").textContent=
+      `${label} / ${result.timeline.length}時点 × ${chars.length}人。表を長押し・ドラッグして直接コピーすることもできます。`;
+  },
+  matrix(mode){
+    const r=this.result;
+    if(!r?.timeline?.length)return [];
+    const chars=r.characters.slice(0,10);
+    const rows=[["日時・レース",...chars.map(c=>c.name)]];
+    for(const t of r.timeline){
+      const obj=mode==="profit"?t.profit:t.bankroll;
+      rows.push([t.label||"",...chars.map(c=>Number(obj?.[c.name]??0))]);
+    }
+    return rows;
+  },
+  async copy(delimiter="\t"){
+    const mode=$("#verticalTsMode")?.value||"bankroll";
+    const rows=this.matrix(mode);
+    if(!rows.length)return alert("先にバックテストを実行してください");
+    const quote=v=>{
+      const s=String(v??"");
+      if(delimiter==="," && /[",\n]/.test(s))return `"${s.replace(/"/g,'""')}"`;
+      return s;
+    };
+    const text=rows.map(r=>r.map(quote).join(delimiter)).join("\n");
+    try{
+      await navigator.clipboard.writeText(text);
+      $("#verticalTsStatus").textContent=
+        delimiter==="\t"
+          ?"表をコピーしました。Excel・Numbers・スプレッドシートへそのまま貼り付けできます。"
+          :"CSV形式をクリップボードへコピーしました。";
+    }catch(e){
+      const ta=document.createElement("textarea");
+      ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
+      document.body.appendChild(ta);ta.select();
+      document.execCommand("copy");ta.remove();
+      $("#verticalTsStatus").textContent="表をコピーしました。";
+    }
+  }
+};
+
+$("#verticalTsMode").onchange=()=>VerticalTimeSeries.render(VerticalTimeSeries.result);
+$("#copyVerticalTs").onclick=()=>VerticalTimeSeries.copy("\t");
+$("#copyVerticalTsCsv").onclick=()=>VerticalTimeSeries.copy(",");
+
+
 const TimeSeriesGraph={
   bank:null,
   profit:null,
@@ -1280,6 +1386,7 @@ const TimeSeriesGraph={
 
 function renderBt(result){
   TimeSeriesGraph.render(result);
+  VerticalTimeSeries.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -1475,7 +1582,7 @@ const JsonGraph={
     const n=this.normalize(data);
     if(n.type==="characters"||n.type==="bets"){
       this.renderCharacters(n.characters,n.meta||{});
-      if(n.meta?.timeline) TimeSeriesGraph.render(n.meta);
+      if(n.meta?.timeline){ TimeSeriesGraph.render(n.meta); VerticalTimeSeries.render(n.meta); }
       $("#jsonGraphStatus").textContent=`読込完了: ${n.characters.length}キャラクター`;
     }else if(n.type==="historyBlocks"){
       this.renderHistory(n.history);
