@@ -158,6 +158,13 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <div class="card" style="margin-top:12px">
   <h3>データ出力・バックテスト</h3>
+  <div class="body" style="padding-bottom:0">
+    <div class="controls">
+      <button id="chooseJsonFolder" class="primary">JSON保存先フォルダを選択</button>
+      <button id="clearJsonFolder">保存先解除</button>
+      <span id="jsonFolderStatus" class="muted">JSON保存先: 未指定</span><span class="muted">※ iPad/Safariはフォルダ直接保存非対応の場合があります</span>
+    </div>
+  </div>
   <div class="body">
     <div class="muted" style="margin-bottom:8px">JSON/CSVは対応ブラウザでは保存先を指定できます。iPhone/iPad Safariでは通常のダウンロードに自動切替します。</div>
     <div class="controls">
@@ -902,6 +909,63 @@ const UI={
     else this.roiChart=new Chart($("#roiChart"),{type:"bar",data:{labels:names,datasets:[{label:"JRA ROI",data:jra},{label:"NAR ROI",data:nar}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:"#eef7f0"}}},scales:{x:{ticks:{color:"#9ab0a1",maxRotation:70,minRotation:40}},y:{ticks:{color:"#9ab0a1"}}}}});
   }
 };
+
+
+// ===============================
+// COMMON JSON SAVE FOLDER
+// ===============================
+let jsonDirectoryHandle = null;
+
+function updateJsonFolderStatus(){
+  const el=document.getElementById("jsonFolderStatus");
+  if(!el)return;
+  if(jsonDirectoryHandle){
+    el.textContent=`JSON保存先: ${jsonDirectoryHandle.name}`;
+  }else{
+    el.textContent="JSON保存先: 未指定";
+  }
+}
+
+async function chooseJsonSaveFolder(){
+  if(!("showDirectoryPicker" in window)){
+    alert("このブラウザはフォルダ直接保存に対応していません。JSON保存時は通常のダウンロードに切り替わります。");
+    return;
+  }
+  try{
+    jsonDirectoryHandle=await window.showDirectoryPicker({mode:"readwrite"});
+    updateJsonFolderStatus();
+  }catch(e){
+    if(e?.name!=="AbortError") alert("フォルダ選択エラー: "+e.message);
+  }
+}
+
+async function saveJsonToChosenFolder(filename,obj){
+  const text=typeof obj==="string" ? obj : JSON.stringify(obj,null,2);
+
+  if(jsonDirectoryHandle){
+    try{
+      const perm=await jsonDirectoryHandle.queryPermission({mode:"readwrite"});
+      let ok=perm==="granted";
+      if(!ok){
+        const req=await jsonDirectoryHandle.requestPermission({mode:"readwrite"});
+        ok=req==="granted";
+      }
+      if(ok){
+        const fh=await jsonDirectoryHandle.getFileHandle(filename,{create:true});
+        const w=await fh.createWritable();
+        await w.write(new Blob([text],{type:"application/json"}));
+        await w.close();
+        updateJsonFolderStatus();
+        return {saved:true,method:"folder",folder:jsonDirectoryHandle.name};
+      }
+    }catch(e){
+      console.warn("Folder JSON save failed, falling back",e);
+    }
+  }
+
+  // Fallback: save picker / normal download.
+  return await saveTextFile(filename,text,"application/json");
+}
 
 async function saveTextFile(name,content,type){
   // Chromium系では保存先をユーザーが指定可能
@@ -1787,6 +1851,18 @@ $("#clearJsonGraph").onclick=()=>{
   $("#jsonGraphStatus").textContent="JSON未読込";
   $("#jsonGraphFile").value="";
 };
+
+
+document.addEventListener("DOMContentLoaded",()=>{
+  const choose=document.getElementById("chooseJsonFolder");
+  const clear=document.getElementById("clearJsonFolder");
+  if(choose)choose.onclick=chooseJsonSaveFolder;
+  if(clear)clear.onclick=()=>{
+    jsonDirectoryHandle=null;
+    updateJsonFolderStatus();
+  };
+  updateJsonFolderStatus();
+});
 
 engine.init();
 </script>
