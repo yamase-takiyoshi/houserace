@@ -196,7 +196,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   <div class="body">
     <div class="notice">
       過去WEBデータは FINAL ODDS（最終オッズ）です。発売締切3分前オッズではありません。<br>
-      <b>STRICT精算:</b> 複勝・ワイド・三連複は実際の払戻データが取得できた買い目だけ精算し、推定払戻は使用しません。
+      <b>STRICT精算:</b> 実払戻は「100円あたり払戻円」を倍率へ正規化（例 320円→3.2倍）して精算します。複勝・ワイド・三連複は実払戻が無い場合は見送りです。
     </div>
     <div class="controls" style="margin-bottom:10px">
       <button class="btPeriod active" data-days="1">1日</button>
@@ -1124,114 +1124,80 @@ function btPicks(c,race,settings){
   if(c.name==="バランス型AI") return hs.filter(h=>h.ev>=c.minEV&&h.modelProb>.055).slice(0,2);
   return hs.filter(h=>h.ev>=c.minEV).slice(0,2);
 }
+
+function btPayoutMultiplier(value){
+  // Historical JRA/NAR refund data is normally "yen returned per ¥100 stake".
+  // Example: 320 => 3.2x. Decimal values such as 3.2 are treated as already-multiplier.
+  if(value==null)return null;
+  let n=Number(String(value).replace(/[,\s円]/g,""));
+  if(!Number.isFinite(n)||n<=0)return null;
+  return n>=70 ? n/100 : n;
+}
+function btRefundYen(stake,payoutValue){
+  const mult=btPayoutMultiplier(payoutValue);
+  return mult==null ? null : Math.round(stake*mult);
+}
+
 function btSettleSingle(c,race,h,ticket,stake){
   const top3=(race.result?.top3||[]).map(Number);
   const winner=Number(race.result?.winner||top3[0]||0);
   const payouts=race.result?.payouts||{};
-  let hit=false,mult=null;
+  let hit=false,payoutValue=null;
 
   if(ticket==="単勝"){
     hit=Number(h.no)===winner;
-    // Historical win odds may use final win odds if explicit payout is unavailable.
-    mult=payouts.win?.[String(h.no)];
-    if(mult==null && Number(h.odds)>0) mult=Number(h.odds);
+    payoutValue=payouts.win?.[String(h.no)];
+    // h.odds is a decimal odds multiplier, not a refund-yen value.
+    if(payoutValue==null && Number(h.odds)>0){
+      payoutValue=Number(h.odds);
+    }
   }else if(ticket==="複勝"){
     hit=top3.includes(Number(h.no));
-    // STRICT: never invent historical place payout.
-    mult=payouts.place?.[String(h.no)];
-    if(mult==null){
-      c.skips++;
-      return {skipped:true,reason:"NO_PLACE_PAYOUT"};
-    }
+    payoutValue=payouts.place?.[String(h.no)];
+    if(payoutValue==null){c.skips++;return {skipped:true,reason:"NO_PLACE_PAYOUT"}}
   }
 
-  if(mult==null || !Number.isFinite(Number(mult)) || Number(mult)<=0){
-    c.skips++;
-    return {skipped:true,reason:"NO_PAYOUT"};
-  }
+  const mult=btPayoutMultiplier(payoutValue);
+  if(mult==null){c.skips++;return {skipped:true,reason:"NO_PAYOUT"}}
 
-  const ret=hit?Math.round(stake*Number(mult)):0;
-  c.invested+=stake;
-  c.byOrg[race.org].inv+=stake;
-  c.bankroll-=stake;
-  c.bets++;
-
+  const ret=hit?Math.round(stake*mult):0;
+  c.invested+=stake;c.byOrg[race.org].inv+=stake;c.bankroll-=stake;c.bets++;
   if(hit){
-    c.returned+=ret;
-    c.byOrg[race.org].ret+=ret;
-    c.bankroll+=ret;
-    c.wins++;
+    c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++;
     c.maxWin=Math.max(c.maxWin,ret-stake);
   }
-
   c.peak=Math.max(c.peak,c.bankroll);
   c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
-  return {skipped:false,ret};
+  return {skipped:false,ret,mult,payoutValue};
 }
 function btSettleCombo(c,race,picks,ticket,settings){
   if(ticket==="wide"&&picks.length>=2){
-    const [a,b]=picks;
-    const key=[a.no,b.no].sort((x,y)=>x-y).join("-");
+    const [a,b]=picks,key=[a.no,b.no].sort((x,y)=>x-y).join("-");
     const top3=(race.result?.top3||[]).map(Number);
     const hit=[a.no,b.no].every(n=>top3.includes(Number(n)));
-    const payout=race.result?.payouts?.wide?.[key];
-
-    // STRICT: historical wide payout must exist.
-    if(payout==null || !Number.isFinite(Number(payout)) || Number(payout)<=0){
-      c.skips++;
-      return {skipped:true,reason:"NO_WIDE_PAYOUT"};
-    }
-
+    const payoutValue=race.result?.payouts?.wide?.[key];
+    const odds=btPayoutMultiplier(payoutValue);
+    if(odds==null){c.skips++;return {skipped:true,reason:"NO_WIDE_PAYOUT"}}
     const prob=Math.max(.01,Math.min(.45,a.modelProb*b.modelProb*3));
-    const fake={...a,odds:Number(payout),modelProb:prob,ev:prob*Number(payout)};
-    const stake=btStake(c,fake,settings);
-    if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
-
-    c.invested+=stake;
-    c.byOrg[race.org].inv+=stake;
-    c.bankroll-=stake;
-    c.bets++;
-    if(hit){
-      const ret=Math.round(stake*Number(payout));
-      c.returned+=ret;
-      c.byOrg[race.org].ret+=ret;
-      c.bankroll+=ret;
-      c.wins++;
-    }
-
+    const fake={...a,odds,modelProb:prob,ev:prob*odds};
+    if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV"}}
+    const stake=btStake(c,fake,settings);if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
+    c.invested+=stake;c.byOrg[race.org].inv+=stake;c.bankroll-=stake;c.bets++;
+    if(hit){const ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
   }else if(ticket==="trio"&&picks.length>=3){
-    const [a,b,d]=picks;
-    const key=[a.no,b.no,d.no].sort((x,y)=>x-y).join("-");
+    const [a,b,d]=picks,key=[a.no,b.no,d.no].sort((x,y)=>x-y).join("-");
     const top3=(race.result?.top3||[]).map(Number).sort((x,y)=>x-y);
     const hit=key===top3.join("-");
-    const payout=race.result?.payouts?.trio?.[key];
-
-    // STRICT: historical trio payout must exist.
-    if(payout==null || !Number.isFinite(Number(payout)) || Number(payout)<=0){
-      c.skips++;
-      return {skipped:true,reason:"NO_TRIO_PAYOUT"};
-    }
-
+    const payoutValue=race.result?.payouts?.trio?.[key];
+    const odds=btPayoutMultiplier(payoutValue);
+    if(odds==null){c.skips++;return {skipped:true,reason:"NO_TRIO_PAYOUT"}}
     const prob=Math.max(.002,Math.min(.18,a.modelProb*b.modelProb*d.modelProb*8));
-    const fake={...a,odds:Number(payout),modelProb:prob,ev:prob*Number(payout)};
+    const fake={...a,odds,modelProb:prob,ev:prob*odds};
     if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV"}}
-
-    const stake=btStake(c,fake,settings);
-    if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
-
-    c.invested+=stake;
-    c.byOrg[race.org].inv+=stake;
-    c.bankroll-=stake;
-    c.bets++;
-    if(hit){
-      const ret=Math.round(stake*Number(payout));
-      c.returned+=ret;
-      c.byOrg[race.org].ret+=ret;
-      c.bankroll+=ret;
-      c.wins++;
-    }
+    const stake=btStake(c,fake,settings);if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
+    c.invested+=stake;c.byOrg[race.org].inv+=stake;c.bankroll-=stake;c.bets++;
+    if(hit){const ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
   }
-
   c.peak=Math.max(c.peak,c.bankroll);
   c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
   return {skipped:false};
@@ -1496,7 +1462,7 @@ $("#runWebBacktest").onclick=async()=>{
     btResult=runBacktestOnHistory(blocks);
     renderBt(btResult);
     $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
-    Store.set("btResultStrict",btResult);
+    Store.set("btResultPayoutNormalized",btResult);
 
     // バックテスト結果JSON相当のオブジェクトを直接グラフへ
     if(typeof JsonGraph!=="undefined"){
@@ -1521,11 +1487,11 @@ $("#exportBtJson").onclick=async()=>{
   $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
-  btResult=null;Store.del("btResultStrict");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
+  btResult=null;Store.del("btResultPayoutNormalized");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
-  const saved=Store.get("btResultStrict",null);
+  const saved=Store.get("btResultPayoutNormalized",null);
   if(saved){
     btResult=saved;
     renderBt(saved);
