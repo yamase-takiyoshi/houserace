@@ -520,10 +520,10 @@ const today=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
 const nowJST=()=>new Date();
 
 // Data contracts. Increment when settlement/cache semantics change.
-const PAYOUT_SCHEMA_VERSION=3;
+const PAYOUT_SCHEMA_VERSION=4;
 const LIVE_STATE_SCHEMA_VERSION=3;
-const BACKTEST_SCHEMA_VERSION=3;
-const HISTORY_CACHE_SCHEMA_VERSION=3;
+const BACKTEST_SCHEMA_VERSION=4;
+const HISTORY_CACHE_SCHEMA_VERSION=4;
 
 function parsePayoutValue(value){
   if(value==null)return {number:null,unit:null};
@@ -1372,19 +1372,24 @@ function freshBtCharacters(){
   }));
 }
 function btProbabilities(horses){
-  // FINAL odds market probability + deterministic mild model edge
-  const hs=horses.filter(h=>Number(h.odds)>0).map(h=>({...h,odds:Number(h.odds),pop:Number(h.pop||0)}));
+  // STRICT anti-leak: never trust provider-supplied popularity/rank fields.
+  // Recompute popularity only from FINAL odds so a mis-mapped finish order cannot leak the result.
+  const hs=horses
+    .filter(h=>Number(h?.odds)>1)
+    .map(h=>({...h,odds:Number(h.odds),no:Number(h.no)}))
+    .filter(h=>Number.isFinite(h.no)&&h.no>0);
   if(!hs.length)return hs;
+  const oddsRank=[...hs].sort((a,b)=>a.odds-b.odds || a.no-b.no);
+  oddsRank.forEach((h,i)=>{h.pop=i+1});
   ProbabilityEngine.market(hs);
   let weights=hs.map(h=>{
-    const rankBoost=h.pop?Math.max(-.08,.12-(h.pop-1)*.012):0;
-    const finishSignal=0; // result must NOT leak into prediction
+    const rankBoost=Math.max(-.08,.12-(h.pop-1)*.012);
     const deterministic=((h.no*37)%17-8)/100;
-    return Math.max(.0001,h.marketProb*(1+rankBoost+deterministic*.10+finishSignal));
+    return Math.max(.0001,h.marketProb*(1+rankBoost+deterministic*.10));
   });
-  const s=weights.reduce((a,b)=>a+b,0);
+  const total=weights.reduce((a,b)=>a+b,0);
   hs.forEach((h,i)=>{
-    h.modelProb=weights[i]/s;
+    h.modelProb=weights[i]/total;
     h.fairOdds=1/h.modelProb;
     h.ev=h.modelProb*h.odds;
     h.edge=h.modelProb-h.marketProb;
@@ -1393,6 +1398,7 @@ function btProbabilities(horses){
   });
   return hs;
 }
+
 function btStake(c,h,settings){
   let s=500;
   if(c.staking==="ratio") s=c.bankroll*.01;
@@ -1438,11 +1444,9 @@ function btSettleSingle(c,race,h,ticket,stake){
   if(ticket==="単勝"){
     hit=Number(h.no)===winner;
     payoutValue=payouts.win?.[String(h.no)];
-    // Final odds are already a decimal multiplier. Keep fallback separate from refund-yen normalization.
-    if(payoutValue==null && Number(h.odds)>0){
-      mult=Number(h.odds);
-      payoutSource="finalOddsFallback";
-    }
+    // STRICT: historical backtest requires an actual official refund value.
+    // Never substitute final odds for payout data.
+    if(payoutValue==null){c.skips++;return {skipped:true,reason:"NO_WIN_PAYOUT"}}
   }else if(ticket==="複勝"){
     hit=top3.includes(Number(h.no));
     payoutValue=payouts.place?.[String(h.no)];
@@ -1462,6 +1466,68 @@ function btSettleSingle(c,race,h,ticket,stake){
   c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
   return {skipped:false,ret,mult,payoutValue,payoutSource};
 }
+function btValidateRace(raw){
+  const org=String(raw?.org||"");
+  const horses=Array.isArray(raw?.horses)?raw.horses:[];
+  const minField=org==="JRA"?5:3;
+  if(horses.length<minField)return {ok:false,reason:`FIELD_LT_${minField}`};
+
+  const nums=horses.map(h=>Number(h?.no));
+  if(nums.some(n=>!Number.isFinite(n)||n<=0)||new Set(nums).size!==nums.length){
+    return {ok:false,reason:"BAD_OR_DUP_HORSE_NO"};
+  }
+  const odds=horses.map(h=>Number(h?.odds));
+  if(odds.some(o=>!Number.isFinite(o)||o<=1))return {ok:false,reason:"BAD_ODDS"};
+  if(new Set(odds.map(o=>o.toFixed(2))).size<Math.min(4,horses.length)){
+    return {ok:false,reason:"ODDS_NOT_DIVERSE"};
+  }
+
+  const top3=(raw?.result?.top3||[]).map(Number).filter(Number.isFinite);
+  const winner=Number(raw?.result?.winner ?? top3[0]);
+  if(!Number.isFinite(winner)||!nums.includes(winner))return {ok:false,reason:"WINNER_NOT_IN_FIELD"};
+  if(top3.length&&new Set(top3).size!==top3.length)return {ok:false,reason:"DUP_TOP3"};
+
+  const rawWin=raw?.result?.payouts?.win?.[String(winner)];
+  const winMult=btPayoutMultiplier(rawWin);
+  if(winMult==null)return {ok:false,reason:"NO_WIN_PAYOUT"};
+  const wh=horses.find(h=>Number(h.no)===winner);
+  const finalOdds=Number(wh?.odds);
+  const ratio=finalOdds>0?winMult/finalOdds:NaN;
+  // Final win odds and official refund multiplier should be close in scale.
+  if(!Number.isFinite(ratio)||ratio<0.75||ratio>1.35){
+    return {ok:false,reason:"WIN_PAYOUT_ODDS_MISMATCH",winner,finalOdds,winMult,ratio};
+  }
+  return {ok:true,winner,finalOdds,winMult};
+}
+
+function btValidateBlock(block){
+  const sourceRaces=Array.isArray(block?.races)?block.races:[];
+  const valid=[];
+  const rejected=[];
+  for(const r of sourceRaces){
+    const rr={...r,org:r.org||block.org};
+    const v=btValidateRace(rr);
+    if(v.ok)valid.push(rr); else rejected.push({race:rr,reason:v.reason,detail:v});
+  }
+
+  // Anti-synthetic/result-leak guard for JRA historical cards.
+  // A card where the final-odds favourite/top-two wins almost every race is treated as corrupted/placeholder data.
+  if(String(block?.org||valid[0]?.org||"")==="JRA"&&valid.length>=10){
+    let favWins=0,top2Wins=0;
+    for(const r of valid){
+      const ranked=[...r.horses].sort((a,b)=>Number(a.odds)-Number(b.odds)||Number(a.no)-Number(b.no));
+      const winner=Number(r.result?.winner ?? r.result?.top3?.[0]);
+      if(Number(ranked[0]?.no)===winner)favWins++;
+      if(ranked.slice(0,2).some(h=>Number(h.no)===winner))top2Wins++;
+    }
+    const favRate=favWins/valid.length,top2Rate=top2Wins/valid.length;
+    if(favRate>=0.85||top2Rate>=0.95){
+      return {ok:false,reason:"SUSPICIOUS_JRA_RESULT_LEAK",valid:[],rejected:[...rejected,...valid.map(r=>({race:r,reason:"BLOCK_QUARANTINED"}))],stats:{count:valid.length,favRate,top2Rate}};
+    }
+  }
+  return {ok:true,valid,rejected};
+}
+
 function btSettleCombo(c,race,picks,ticket,settings){
   if(ticket==="wide"&&picks.length>=2){
     const [a,b]=picks,key=[a.no,b.no].sort((x,y)=>x-y).join("-");
@@ -1508,7 +1574,14 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   const chars=freshBtCharacters();
   const races=[];
   const audit=[];
-  historyBlocks.forEach(block=>(block.races||[]).forEach(r=>races.push({...r,org:r.org||block.org})));
+  const integrity={version:BACKTEST_SCHEMA_VERSION,acceptedBlocks:0,rejectedBlocks:[],rejectedRaces:[]};
+  for(const block of historyBlocks){
+    const v=btValidateBlock(block);
+    if(v.ok)integrity.acceptedBlocks++;
+    else integrity.rejectedBlocks.push({date:block?.date||"",org:block?.org||"",reason:v.reason,stats:v.stats||null});
+    for(const r of v.valid||[])races.push(r);
+    for(const x of v.rejected||[])integrity.rejectedRaces.push({date:x.race?.date||block?.date||"",org:x.race?.org||block?.org||"",track:x.race?.track||"",no:x.race?.no||"",reason:x.reason});
+  }
   races.sort((a,b)=>(a.date||"").localeCompare(b.date||"") || (a.startTime||"").localeCompare(b.startTime||"") || a.no-b.no);
 
   const timeline=[];
@@ -1631,7 +1704,8 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
     blocks:historyBlocks.length,
     oddsTiming:"FINAL",
     audit,
-    timeline
+    timeline,
+    integrity
   };
 }
 
@@ -2059,7 +2133,9 @@ $("#runWebBacktest").onclick=async()=>{
     $("#btProgress").textContent=`描画中…`;
     await new Promise(resolve=>setTimeout(resolve,0));
     renderBt(btResult);
-    $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
+    const ig=btResult.integrity||{};
+    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${ig.rejectedRaces?.length||0}レース / 疑わしいブロック${ig.rejectedBlocks?.length||0}件 / FINAL ODDS / STRICT実払戻 / ANTI-LEAK`;
+    if(ig.rejectedBlocks?.length)UI.addLog(`整合性監査: ${ig.rejectedBlocks.length}ブロックを結果リーク/異常データ疑いで除外しました`,"warn");
     try{
       Store.set("btResultAnomalyAuditV1",btResult);
     }catch(e){
@@ -2113,7 +2189,8 @@ setTimeout(()=>{
     && Array.isArray(saved.characters)
     && Array.isArray(saved.timeline)
     && Array.isArray(saved.audit)
-    && saved.auditComplete===true;
+    && saved.auditComplete===true
+    && Number(saved?.integrity?.version)===BACKTEST_SCHEMA_VERSION;
   if(validSaved){
     btResult=saved;
     renderBt(saved);
