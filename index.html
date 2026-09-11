@@ -256,6 +256,25 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 
 
+
+<div class="card" style="margin-top:12px">
+  <h3>精算監査表</h3>
+  <div class="body">
+    <div class="notice">各レース終了時の資金差額を監査します。異常なジャンプをすぐ発見できます。</div>
+    <div class="controls" style="margin:10px 0">
+      <label>キャラクター <select id="auditCharacter"><option value="">全員</option></select></label>
+      <button id="copyAudit" class="primary">監査表をコピー</button>
+      <button id="copyAuditCsv">CSV形式でコピー</button>
+    </div>
+    <div id="auditStatus" class="muted">バックテスト実行後に表示します。</div>
+    <div class="scroll" style="max-height:70vh;margin-top:8px">
+      <table><thead><tr>
+        <th>日時・レース</th><th>キャラクター</th><th>前資金</th><th>後資金</th><th>増減</th><th>異常値</th>
+      </tr></thead><tbody id="auditBody"></tbody></table>
+    </div>
+  </div>
+</div>
+
 <div class="card" style="margin-top:12px">
   <h3>縦型時系列表（コピペ対応）</h3>
   <div class="body">
@@ -1275,6 +1294,59 @@ function runBacktestOnHistory(historyBlocks){
 // ===============================
 // VERTICAL TIME-SERIES TABLE
 // ===============================
+
+const SettlementAudit={
+  result:null, rows:[],
+  render(result){
+    this.result=result;this.rows=[];
+    const tl=result?.timeline||[], chars=result?.characters||[];
+    for(let i=1;i<tl.length;i++){
+      for(const c of chars){
+        const before=Number(tl[i-1].bankroll?.[c.name]??c.initial??0);
+        const after=Number(tl[i].bankroll?.[c.name]??before);
+        const delta=after-before;
+        if(delta!==0)this.rows.push({
+          label:tl[i].label||"",character:c.name,before,after,delta,
+          flag:Math.abs(delta)>=50000?"⚠ 大変動":""
+        });
+      }
+    }
+    $("#auditCharacter").innerHTML='<option value="">全員</option>'+
+      chars.map(c=>`<option>${escapeHtml(c.name)}</option>`).join("");
+    this.draw();
+  },
+  filtered(){
+    const c=$("#auditCharacter")?.value||"";
+    return this.rows.filter(r=>!c||r.character===c);
+  },
+  draw(){
+    const rows=this.filtered();
+    $("#auditBody").innerHTML=rows.map(r=>`<tr>
+      <td style="white-space:nowrap">${escapeHtml(r.label)}</td>
+      <td>${escapeHtml(r.character)}</td>
+      <td style="text-align:right">${r.before.toLocaleString()}</td>
+      <td style="text-align:right">${r.after.toLocaleString()}</td>
+      <td style="text-align:right">${r.delta>0?"+":""}${r.delta.toLocaleString()}</td>
+      <td>${r.flag}</td></tr>`).join("");
+    $("#auditStatus").textContent=`資金変動 ${rows.length}件。±50,000円以上は「大変動」と表示。`;
+  },
+  async copy(csv=false){
+    const rows=this.filtered();
+    if(!rows.length)return alert("監査データがありません");
+    const all=[["日時・レース","キャラクター","前資金","後資金","増減","異常値"],
+      ...rows.map(r=>[r.label,r.character,r.before,r.after,r.delta,r.flag])];
+    const d=csv?",":"\t";
+    const q=v=>{const s=String(v??"");return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s};
+    const text=all.map(r=>r.map(q).join(d)).join("\n");
+    try{await navigator.clipboard.writeText(text)}
+    catch{const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove()}
+    $("#auditStatus").textContent=`${rows.length}件をコピーしました。`;
+  }
+};
+$("#auditCharacter").onchange=()=>SettlementAudit.draw();
+$("#copyAudit").onclick=()=>SettlementAudit.copy(false);
+$("#copyAuditCsv").onclick=()=>SettlementAudit.copy(true);
+
 const VerticalTimeSeries={
   result:null,
   render(result){
@@ -1421,6 +1493,7 @@ const TimeSeriesGraph={
 function renderBt(result){
   TimeSeriesGraph.render(result);
   VerticalTimeSeries.render(result);
+  SettlementAudit.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -1462,7 +1535,7 @@ $("#runWebBacktest").onclick=async()=>{
     btResult=runBacktestOnHistory(blocks);
     renderBt(btResult);
     $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
-    Store.set("btResultPayoutNormalized",btResult);
+    Store.set("btResultAuditV2",btResult);
 
     // バックテスト結果JSON相当のオブジェクトを直接グラフへ
     if(typeof JsonGraph!=="undefined"){
@@ -1487,11 +1560,11 @@ $("#exportBtJson").onclick=async()=>{
   $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
-  btResult=null;Store.del("btResultPayoutNormalized");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
+  btResult=null;Store.del("btResultAuditV2");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
-  const saved=Store.get("btResultPayoutNormalized",null);
+  const saved=Store.get("btResultAuditV2",null);
   if(saved){
     btResult=saved;
     renderBt(saved);
