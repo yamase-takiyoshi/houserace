@@ -151,12 +151,15 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <div class="card" style="margin-top:12px">
   <h3>データ出力・バックテスト</h3>
-  <div class="body controls">
+  <div class="body">
+    <div class="muted" style="margin-bottom:8px">JSON/CSVは対応ブラウザでは保存先を指定できます。iPhone/iPad Safariでは通常のダウンロードに自動切替します。</div>
+    <div class="controls">
     <button id="exportCsv">CSV</button>
     <button id="exportJson">JSON</button>
     <button id="exportXlsx">XLSX</button>
     <label>過去データ<input id="backtestFile" type="file" accept=".json,.csv"></label>
     <button id="runBacktest">BACKTEST実行</button>
+    </div>
   </div>
 </div>
 
@@ -810,8 +813,42 @@ const UI={
   }
 };
 
+async function saveTextFile(name,content,type){
+  // Chromium系では保存先をユーザーが指定可能
+  if("showSaveFilePicker" in window){
+    try{
+      const ext="."+name.split(".").pop();
+      const handle=await window.showSaveFilePicker({
+        suggestedName:name,
+        types:[{
+          description:type.includes("json")?"JSON file":type.includes("csv")?"CSV file":"Text file",
+          accept:{[type]:[ext]}
+        }]
+      });
+      const writable=await handle.createWritable();
+      await writable.write(new Blob([content],{type}));
+      await writable.close();
+      return {saved:true,method:"picker"};
+    }catch(e){
+      if(e?.name==="AbortError") return {saved:false,cancelled:true};
+      console.warn("showSaveFilePicker failed, fallback download",e);
+    }
+  }
+
+  // iPhone/iPad Safari等は通常ダウンロードへフォールバック
+  const a=document.createElement("a");
+  const url=URL.createObjectURL(new Blob([content],{type}));
+  a.href=url;
+  a.download=name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  return {saved:true,method:"download"};
+}
+
 function download(name,content,type){
-  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([content],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)
+  return saveTextFile(name,content,type);
 }
 function betRows(){return engine.bets.map(b=>({日付:b.date,区分:b.org,競馬場:b.track,R:b.race,キャラクター:b.character,券種:b.ticket,買い目:b.selection,オッズ:b.odds,想定確率:b.modelProb,市場確率:b.marketProb,EV:b.ev,購入額:b.stake,払戻:b.return,利益:b.profit,状態:b.status}))}
 function csvEscape(v){const s=String(v??"");return /[",\n]/.test(s)?`"${s.replaceAll('"','""')}"`:s}
@@ -847,8 +884,20 @@ $("#saveSettings").onclick=()=>{
   Store.set("settings",engine.settings);
   if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
 };
-$("#exportJson").onclick=()=>download(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"application/json");
-$("#exportCsv").onclick=()=>{const rows=betRows();if(!rows.length)return alert("出力データがありません");const keys=Object.keys(rows[0]);download(`keiba_sim_${today()}.csv`,[keys.join(","),...rows.map(r=>keys.map(k=>csvEscape(r[k])).join(","))].join("\n"),"text/csv;charset=utf-8")};
+$("#exportJson").onclick=async()=>{
+  const r=await saveTextFile(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"application/json");
+  if(r?.cancelled)return;
+  UI.addLog(`JSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`);
+};
+$("#exportCsv").onclick=async()=>{
+  const rows=betRows();
+  if(!rows.length)return alert("出力データがありません");
+  const keys=Object.keys(rows[0]);
+  const csv=[keys.join(","),...rows.map(r=>keys.map(k=>csvEscape(r[k])).join(","))].join("\n");
+  const r=await saveTextFile(`keiba_sim_${today()}.csv`,csv,"text/csv;charset=utf-8");
+  if(r?.cancelled)return;
+  UI.addLog(`CSVを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`);
+};
 $("#exportXlsx").onclick=()=>{if(!window.XLSX)return alert("SheetJS未読込");const ws=XLSX.utils.json_to_sheet(betRows());const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"bets");XLSX.writeFile(wb,`keiba_sim_${today()}.xlsx`)};
 $("#runBacktest").onclick=async()=>{
   const f=$("#backtestFile").files[0];if(!f)return alert("JSONまたはCSVを選択してください");
@@ -922,13 +971,15 @@ $("#fetchHistory").onclick=async()=>{
     updateHistStatus("取得完了");
   }finally{$("#fetchHistory").disabled=false}
 };
-$("#exportHistoryJson").onclick=()=>{
+$("#exportHistoryJson").onclick=async()=>{
   if(!webHistory.length)return alert("過去データがありません");
-  download(`keiba_history_${today()}.json`,JSON.stringify({
+  const r=await saveTextFile(`keiba_history_${today()}.json`,JSON.stringify({
     format:"KEIBA_HISTORY_V1",
     note:"Historical WEB odds are FINAL ODDS, not close-minus-3-minute odds.",
     data:webHistory
   },null,2),"application/json");
+  if(r?.cancelled)return;
+  $("#histStatus").textContent=`過去JSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#clearHistory").onclick=()=>{
   if(confirm("WEB取得した過去データを消去しますか？")){
@@ -1157,9 +1208,11 @@ $("#graphBtDirect").onclick=()=>{
   document.getElementById("jsonGraphStatus")?.scrollIntoView({behavior:"smooth",block:"center"});
 };
 
-$("#exportBtJson").onclick=()=>{
+$("#exportBtJson").onclick=async()=>{
   if(!btResult)return alert("バックテスト結果がありません");
-  download(`keiba_backtest_${today()}.json`,JSON.stringify(btResult,null,2),"application/json");
+  const r=await saveTextFile(`keiba_backtest_${today()}.json`,JSON.stringify(btResult,null,2),"application/json");
+  if(r?.cancelled)return;
+  $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
   btResult=null;Store.del("btResult");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
