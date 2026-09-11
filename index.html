@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>競馬ライブ予想シミュレーション GAME</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#09110d;--panel:#111b15;--panel2:#17241b;--line:#294032;--text:#eef7f0;--muted:#9ab0a1;
+  --good:#55d68a;--warn:#f1c75b;--bad:#ff7f7f;--strong:#00d7ff;--accent:#9ee37d;--shadow:0 12px 34px rgba(0,0,0,.28);
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#07100b,#0b140f 30%,#09110d);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans JP",sans-serif}
+button,input,select{font:inherit}
+header{position:sticky;top:0;z-index:30;background:rgba(8,16,11,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.head{max-width:1600px;margin:auto;padding:10px 14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:900;letter-spacing:.04em;font-size:18px}
+.badge{padding:4px 9px;border-radius:999px;font-size:12px;font-weight:800;border:1px solid var(--line)}
+.live{background:#123b21;color:#8df0aa}.demo{background:#3a2d10;color:#ffd972}.err{background:#441717;color:#ffaaaa}.cached{background:#1f2e3a;color:#bfe2ff}
+.spacer{flex:1}
+button{border:1px solid var(--line);background:#18271d;color:var(--text);border-radius:10px;padding:8px 11px;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+button.primary{background:#2c6e3d;border-color:#3b8b50}
+button.danger{background:#6e2c2c}
+button.active{outline:2px solid var(--accent)}
+main{max-width:1600px;margin:auto;padding:12px}
+.grid{display:grid;grid-template-columns:260px minmax(0,1fr) 330px;gap:12px}
+.card{background:linear-gradient(180deg,var(--panel),#0d1711);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.card h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--line);font-size:15px}
+.card .body{padding:12px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.kpi{padding:10px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:12px}
+.kpi b{display:block;font-size:18px;margin-top:4px}
+small,.muted{color:var(--muted)}
+.racelist{display:flex;flex-direction:column;gap:7px;max-height:68vh;overflow:auto}
+.racebtn{text-align:left;padding:10px;border-radius:10px;border:1px solid var(--line);background:#101a14}
+.racebtn.current{background:#1f3325;border-color:#4d7f5c}
+.racebtn.done{opacity:.65}
+.racebtn strong{display:block}
+.scroll{overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 7px;border-bottom:1px solid #23352a;text-align:right;white-space:nowrap}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+tr.strongbuy{background:rgba(0,215,255,.08)}
+tr.buy{background:rgba(85,214,138,.08)}
+tr.watch{background:rgba(241,199,91,.06)}
+.tag{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:800}
+.tag.strongbuy{background:#0e5362;color:#bdf6ff}.tag.buy{background:#17482a;color:#aef0c7}.tag.watch{background:#534316;color:#ffe394}.tag.pass{background:#3b2323;color:#ffc3c3}
+.people{display:flex;flex-direction:column;gap:7px;max-height:68vh;overflow:auto}
+.person{border:1px solid var(--line);border-radius:11px;padding:9px;background:#101a14}
+.person .row{display:flex;align-items:center;gap:8px}
+.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#243b2a;font-size:19px}
+.person .name{font-weight:800}
+.person .stats{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;font-size:12px}
+.bottom{display:grid;grid-template-columns:1.1fr 1fr;gap:12px;margin-top:12px}
+.log{height:300px;overflow:auto;font-size:13px}
+.logline{padding:7px 8px;border-bottom:1px dashed #25372b}
+.rank{max-height:300px;overflow:auto}
+.controls{display:flex;gap:7px;flex-wrap:wrap}
+.controls label{display:flex;gap:5px;align-items:center;color:var(--muted);font-size:12px}
+input,select{background:#0d1711;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px}
+dialog{background:#0f1a13;color:var(--text);border:1px solid var(--line);border-radius:14px;max-width:760px;width:92%;box-shadow:var(--shadow)}
+dialog::backdrop{background:rgba(0,0,0,.65)}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.formgrid label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+.chartbox{height:270px}
+.notice{padding:10px;border:1px solid #664f1a;background:#2d250d;color:#ffe59a;border-radius:10px;font-size:12px;margin-bottom:10px}
+@media(max-width:1100px){.grid{grid-template-columns:220px 1fr}.right{grid-column:1/-1}.people{max-height:none;display:grid;grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.left,.right{grid-column:auto}.racelist{max-height:260px}.people{grid-template-columns:1fr}.bottom{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.formgrid{grid-template-columns:1fr}.head{gap:8px}.spacer{display:none}}
+</style>
+</head>
+<body>
+<header>
+<div class="head">
+  <div class="brand">🏇 LIVE KEIBA SIM ARENA</div>
+  <span id="dataBadge" class="badge live">LIVE DATA</span>
+  <span id="engineBadge" class="badge live">AUTO DRIVE ON</span>
+  <div class="spacer"></div>
+  <span id="clock" class="muted"></span>
+  <button id="btnAuto" class="primary">AUTO切替</button>
+  <button id="btnSettings">設定</button>
+  <button id="btnReset" class="danger">日次リセット</button>
+</div>
+</header>
+
+<main>
+<div class="notice">
+この版は「仮想馬券専用」です。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+</div>
+
+<div class="kpis">
+  <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
+  <div class="kpi"><small>発走まで</small><b id="kpiCountdown">--</b></div>
+  <div class="kpi"><small>現在レース</small><b id="kpiRace">--</b></div>
+  <div class="kpi"><small>オッズ取得</small><b id="kpiOdds">--</b></div>
+  <div class="kpi"><small>本日処理</small><b id="kpiProcessed">0</b></div>
+  <div class="kpi"><small>トップROI</small><b id="kpiTopRoi">--</b></div>
+</div>
+
+<div class="grid">
+  <section class="card left">
+    <h3>本日の開催・全レース</h3>
+    <div class="body">
+      <div class="controls" style="margin-bottom:8px">
+        <button id="filterAll" class="active">ALL</button>
+        <button id="filterJra">JRA</button>
+        <button id="filterNar">NAR</button>
+      </div>
+      <div id="raceList" class="racelist"></div>
+    </div>
+  </section>
+
+  <section class="card center">
+    <h3 id="raceTitle">レースを読み込み中...</h3>
+    <div class="body">
+      <div class="controls" style="margin-bottom:10px">
+        <span class="badge" id="raceStatus">WAITING</span>
+        <span class="badge" id="betStatus">未判定</span>
+        <span class="muted" id="raceMeta"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>馬番</th><th>馬名</th><th>人気</th><th>単勝</th><th>3分前</th>
+            <th>想定勝率</th><th>市場確率</th><th>適正</th><th>EV</th><th>乖離</th><th>評価</th>
+          </tr></thead>
+          <tbody id="horseBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="card right">
+    <h3>馬券師・評論家ランキング</h3>
+    <div class="body"><div id="people" class="people"></div></div>
+  </section>
+</div>
+
+<div class="bottom">
+  <section class="card"><h3>ライブ実況</h3><div id="log" class="body log"></div></section>
+  <section class="card"><h3>総合ランキング</h3><div class="body rank"><table><thead><tr><th>#</th><th>名前</th><th>資金</th><th>利益</th><th>ROI</th><th>的中率</th><th>DD</th></tr></thead><tbody id="rankBody"></tbody></table></div></section>
+</div>
+
+<div class="bottom">
+  <section class="card"><h3>資金推移</h3><div class="body chartbox"><canvas id="bankrollChart"></canvas></div></section>
+  <section class="card"><h3>JRA / NAR ROI比較</h3><div class="body chartbox"><canvas id="roiChart"></canvas></div></section>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <h3>データ出力・バックテスト</h3>
+  <div class="body controls">
+    <button id="exportCsv">CSV</button>
+    <button id="exportJson">JSON</button>
+    <button id="exportXlsx">XLSX</button>
+    <label>過去データ<input id="backtestFile" type="file" accept=".json,.csv"></label>
+    <button id="runBacktest">BACKTEST実行</button>
+  </div>
+</div>
+</main>
+
+<dialog id="settingsDlg">
+  <form method="dialog">
+    <h2>設定</h2>
+    <div class="formgrid">
+      <label>モード
+        <select id="sMode"><option value="demo">DEMO</option><option value="live">LIVE API</option></select>
+      </label>
+      <label>締切判定（分前）<input id="sBetTiming" type="number" min="1" max="20"></label>
+      <label>EV購入基準<input id="sEvPositive" type="number" step="0.01" min="0.5" max="3"></label>
+      <label>Strong Buy<input id="sEvStrong" type="number" step="0.01" min="0.5" max="3"></label>
+      <label>初期資金<input id="sBankroll" type="number" step="1000"></label>
+      <label>1レース最大投資額<input id="sMaxRace" type="number" step="100"></label>
+      <label>1日最大投資額<input id="sMaxDay" type="number" step="100"></label>
+      <label>更新間隔（秒）<input id="sRefresh" type="number" min="5" max="300"></label>
+      <label>JRA使用<select id="sJra"><option value="1">ON</option><option value="0">OFF</option></select></label>
+      <label>NAR使用<select id="sNar"><option value="1">ON</option><option value="0">OFF</option></select></label>
+      <label style="grid-column:1/-1">LIVE API Base URL（houserace 接続済み）
+        <input id="sApi" placeholder="https://houserace.nitta-katsuhiko.workers.dev">
+      </label>
+    </div>
+    <p class="muted">想定エンドポイント: /races?date=YYYY-MM-DD, /odds?raceId=...&org=JRA|NAR, /result?raceId=...&org=JRA|NAR</p>
+    <div class="controls"><button value="cancel">キャンセル</button><button id="saveSettings" class="primary" value="default">保存</button></div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const fmtY=n=>Math.round(n).toLocaleString("ja-JP")+"円";
+const pct=n=>(n*100).toFixed(1)+"%";
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const today=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+const nowJST=()=>new Date();
+
+const DEFAULTS={
+  mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
+  initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
+  jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev"
+};
+const Store={
+  get(k,d){try{return JSON.parse(localStorage.getItem("keibaSim."+k))??d}catch{return d}},
+  set(k,v){localStorage.setItem("keibaSim."+k,JSON.stringify(v))},
+  del(k){localStorage.removeItem("keibaSim."+k)}
+};
+
+class ProbabilityEngine{
+  static market(horses){
+    const raws=horses.map(h=>1/Math.max(1.01,h.odds));
+    const sum=raws.reduce((a,b)=>a+b,0);
+    horses.forEach((h,i)=>h.marketProb=raws[i]/sum);
+  }
+  static model(horses){
+    this.market(horses);
+    let weights=horses.map(h=>{
+      const form=(h.formScore??0.5), draw=(h.drawScore??0.5), jockey=(h.jockeyScore??0.5);
+      const noise=(h.modelNoise??((Math.random()-.5)*0.25));
+      return Math.max(.001,h.marketProb*(1+0.45*(form-.5)+0.22*(jockey-.5)+0.12*(draw-.5)+noise));
+    });
+    const s=weights.reduce((a,b)=>a+b,0);
+    horses.forEach((h,i)=>{
+      h.modelProb=weights[i]/s;
+      h.fairOdds=1/h.modelProb;
+      h.ev=h.modelProb*h.odds;
+      h.edge=h.modelProb-h.marketProb;
+      h.valueRatio=h.modelProb/h.marketProb;
+      h.oddsEdge=h.odds/h.fairOdds;
+    });
+  }
+}
+class ExpectedValueEngine{
+  static label(ev,settings){
+    if(ev>=1.20)return "STRONG BUY";
+    if(ev>=1.10)return "BUY";
+    if(ev>=1.00)return "WATCH";
+    return "PASS";
+  }
+}
+class DemoProvider{
+  constructor(){this.kind="demo";}
+  async getRaces(){
+    const key="demoRaces."+today();
+    let saved=Store.get(key,null);
+    if(saved) return saved.map(r=>({...r,startTime:new Date(r.startTime)}));
+    const now=Date.now();
+    const venues=[
+      {track:"中山",org:"JRA"},{track:"阪神",org:"JRA"},
+      {track:"大井",org:"NAR"},{track:"園田",org:"NAR"}
+    ];
+    const races=[];
+    let idx=0;
+    for(const v of venues){
+      for(let n=1;n<=12;n++){
+        const start=new Date(now + 65000 + idx*22000); // demo: fast day simulation
+        races.push(this.makeRace(v.track,v.org,n,start));
+        idx++;
+      }
+    }
+    races.sort((a,b)=>new Date(a.startTime)-new Date(b.startTime));
+    Store.set(key,races);
+    return races;
+  }
+  makeRace(track,org,n,start){
+    const count=12+Math.floor(Math.random()*5);
+    const horses=Array.from({length:count},(_,i)=>({
+      no:i+1,name:["ミライスター","グリーンアロー","サクラミスト","ノーブルロード","オッズキング","ブライトラン","レッドセイバー","ブルームーン","ゴールドギア","シルバーノート","トップスピード","フェアバリュー","ラストコール","ハイランド","エッジランナー","アナハンター"][i]||("Horse"+(i+1)),
+      odds:+(1.7+Math.pow(Math.random(),1.8)*24).toFixed(1),
+      formScore:Math.random(),jockeyScore:Math.random(),drawScore:Math.random(),modelNoise:(Math.random()-.5)*.35,
+      odds3:null
+    }));
+    horses.sort((a,b)=>a.odds-b.odds).forEach((h,i)=>h.pop=i+1);
+    horses.sort((a,b)=>a.no-b.no);
+    return {id:`${today()}-${org}-${track}-${n}`,date:today(),org,track,no:n,title:`${track} ${n}R`,startTime:start.toISOString(),status:"WAITING",horses,result:null,betLocked:false,settled:false};
+  }
+  async getOdds(race){
+    race.horses.forEach(h=>{
+      const drift=1+(Math.random()-.5)*.08;
+      h.odds=+clamp(h.odds*drift,1.1,99.9).toFixed(1);
+    });
+    race.horses.slice().sort((a,b)=>a.odds-b.odds).forEach((h,i)=>h.pop=i+1);
+    return {status:"DEMO",horses:race.horses,at:new Date().toISOString()};
+  }
+  async getResult(race){
+    if(race.result)return race.result;
+    ProbabilityEngine.model(race.horses);
+    const pool=race.horses.map(h=>({...h}));
+    const top3=[];
+    for(let pos=0;pos<3 && pool.length;pos++){
+      const s=pool.reduce((a,h)=>a+h.modelProb,0);
+      let x=Math.random()*s,acc=0,idx=0;
+      for(let i=0;i<pool.length;i++){acc+=pool[i].modelProb;if(x<=acc){idx=i;break}}
+      top3.push(pool[idx].no); pool.splice(idx,1);
+    }
+    const winner=race.horses.find(h=>h.no===top3[0]);
+    const winOdds=winner?.odds||1;
+    const placeOdds=Math.max(1.1,+(winOdds*.34).toFixed(1));
+    race.result={
+      winner:top3[0],top3,
+      payouts:{
+        win:{[String(top3[0])]:winOdds},
+        place:Object.fromEntries(top3.map((n,i)=>[String(n),Math.max(1.1,+(placeOdds*(1+i*.08)).toFixed(1))])),
+        wide:{},
+        trio:{}
+      },
+      at:new Date().toISOString()
+    };
+    return race.result;
+  }
+}
+class HttpProvider{
+  constructor(base){this.base=(base||"").replace(/\/$/,"");this.kind="live";}
+  async json(url){
+    if(!this.base) throw new Error("LIVE API Base URL（houserace 接続済み）が未設定です");
+    const r=await fetch(this.base+url,{cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    return await r.json();
+  }
+  async getRaces(){
+    const d=await this.json("/races?date="+encodeURIComponent(today()));
+    return (d.races||d).map(r=>({...r,startTime:new Date(r.startTime).toISOString(),status:r.status||"WAITING",betLocked:!!r.betLocked,settled:!!r.settled}));
+  }
+  async getOdds(race){
+    const d=await this.json("/odds?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
+    race.horses=(d.horses||d);
+    if(!Array.isArray(race.horses) || !race.horses.length) throw new Error("オッズ/出馬表が空です");
+    return {status:"LIVE",horses:race.horses,at:d.at||new Date().toISOString()};
+  }
+  async getResult(race){
+    return await this.json("/result?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
+  }
+}
+class CharacterEngine{
+  static templates(){
+    return [
+      ["EVプロ","📈","EV1.10以上","win",1.10,"fixed",0.25],
+      ["本命評論家","🎯","1〜3人気中心","win",1.00,"fixed",0.16],
+      ["穴馬ハンター","🕳️","6人気以下×高EV","win",1.15,"fixed",0.30],
+      ["ケリー馬券師","🧮","Half Kelly","win",1.02,"kelly",0.24],
+      ["複勝専門家","🛡️","高確率・低分散","place",1.00,"ratio",0.10],
+      ["ワイド職人","🧵","高確率ペア","wide",1.03,"fixed",0.12],
+      ["三連系評論家","🎲","高配当狙い","trio",1.12,"fixed",0.38],
+      ["市場逆張りAI","🤖","市場との乖離重視","win",1.08,"ratio",0.22],
+      ["オッズ変動分析家","📡","締切前変動重視","win",1.05,"fixed",0.20],
+      ["バランス型AI","⚖️","EV×確率×分散","win",1.05,"quarter",0.18]
+    ];
+  }
+  static create(settings){
+    return this.templates().map((t,i)=>({
+      id:"c"+i,name:t[0],avatar:t[1],desc:t[2],ticket:t[3],minEV:t[4],staking:t[5],risk:t[6],
+      bankroll:settings.initialBankroll,initial:settings.initialBankroll,invested:0,returned:0,wins:0,bets:0,skips:0,
+      peak:settings.initialBankroll,maxDD:0,maxWin:0,dayInvested:0,history:[settings.initialBankroll],byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}}
+    }));
+  }
+  static picks(c,race,settings){
+    const hs=race.horses.slice().sort((a,b)=>b.ev-a.ev);
+    if(c.name==="本命評論家") return hs.filter(h=>h.pop<=3 && h.ev>=c.minEV).slice(0,1);
+    if(c.name==="穴馬ハンター") return hs.filter(h=>h.pop>=6 && h.ev>=c.minEV).slice(0,2);
+    if(c.name==="市場逆張りAI") return hs.filter(h=>h.ev>=c.minEV && h.edge>.015).slice(0,2);
+    if(c.name==="オッズ変動分析家") return hs.filter(h=>h.ev>=c.minEV && h.odds3 && Math.abs(h.odds-h.odds3)/h.odds3>.03).slice(0,1);
+    if(c.name==="複勝専門家") return race.horses.slice().sort((a,b)=>b.modelProb-a.modelProb).filter(h=>h.modelProb>.12).slice(0,1);
+    if(c.name==="ワイド職人") return race.horses.slice().sort((a,b)=>b.modelProb-a.modelProb).slice(0,2);
+    if(c.name==="三連系評論家") return hs.filter(h=>h.ev>=c.minEV).slice(0,3);
+    if(c.name==="バランス型AI") return hs.filter(h=>h.ev>=c.minEV && h.modelProb>.055).slice(0,2);
+    return hs.filter(h=>h.ev>=c.minEV).slice(0,2);
+  }
+  static stake(c,h,settings){
+    let s=500;
+    if(c.staking==="ratio")s=c.bankroll*.01;
+    if(c.staking==="kelly"||c.staking==="quarter"){
+      const b=h.odds-1,p=h.modelProb,q=1-p;
+      let f=Math.max(0,(b*p-q)/b);
+      f*=c.staking==="kelly"?.5:.25;
+      s=c.bankroll*f;
+    }
+    s=Math.floor(s/100)*100;
+    return clamp(s,100,settings.maxRace);
+  }
+}
+class SimulationEngine{
+  constructor(){
+    this.settings={...DEFAULTS,...Store.get("settings",{})};
+    this.characters=Store.get("characters",null)||CharacterEngine.create(this.settings);
+    this.bets=Store.get("bets",[]);
+    this.races=[];
+    this.selected=null;this.lastOddsAt=null;this.filter="ALL";
+    this.provider=this.settings.mode==="live"?new HttpProvider(this.settings.apiBase):new DemoProvider();
+    this.timer=null;
+  }
+  save(){Store.set("settings",this.settings);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
+  async init(){
+    try{
+      this.races=await this.provider.getRaces();
+      this.restoreRaceState();
+      this.log("システム起動。本日の開催を読み込みました。");
+      this.setDataBadge(this.provider.kind==="live"?"LIVE":"DEMO");
+    }catch(e){
+      this.log("開催取得エラー: "+e.message,"error");this.setDataBadge("ERROR");
+      if(this.settings.mode==="live"){this.races=[]}
+    }
+    UI.renderAll(this);
+    this.loop();
+    this.timer=setInterval(()=>this.loop(),1000);
+  }
+  restoreRaceState(){
+    const rt=Store.get("runtime",null);
+    if(!rt?.races)return;
+    const map=new Map(rt.races.map(r=>[r.id,r]));
+    this.races=this.races.map(r=>{
+      const old=map.get(r.id);
+      return old?{...r,status:old.status,betLocked:old.betLocked,settled:old.settled,result:old.result,horses:old.horses||r.horses}:r;
+    });
+  }
+  setDataBadge(s){UI.dataStatus=s}
+  async loop(){
+    const now=Date.now();
+    $("#clock").textContent=new Date().toLocaleString("ja-JP");
+    if(!this.settings.auto){UI.updateKpis(this);return}
+    const races=this.races.filter(r=>(r.org==="JRA"?this.settings.jra:this.settings.nar));
+    for(const race of races){
+      const start=new Date(race.startTime).getTime();
+      const diff=(start-now)/1000;
+      if(diff<=this.settings.betTiming*60+30 && diff>-120 && !race.settled){
+        this.selected=race;
+        if(diff>0 && (this.lastOddsAt===null || now-this.lastOddsAt>this.settings.refreshSec*1000)){
+          await this.refreshOdds(race);
+          this.lastOddsAt=now;
+        }
+        if(diff<=this.settings.betTiming*60 && diff>0 && !race.betLocked){
+          await this.lockAndBet(race);
+        }
+        if(diff<=-18 && !race.settled){
+          await this.settle(race);
+        }
+      }
+    }
+    UI.renderAll(this);
+  }
+  async refreshOdds(race){
+    try{
+      const d=await this.provider.getOdds(race);
+      this.lastOddsAt=Date.now();this.setDataBadge(d.status||"LIVE");
+      ProbabilityEngine.model(race.horses);
+      this.log(`${race.title} オッズ更新`);
+    }catch(e){this.setDataBadge("ERROR");this.log(`${race.title} オッズ取得失敗: ${e.message}`,"error")}
+  }
+  async lockAndBet(race){
+    try{await this.refreshOdds(race)}catch{}
+    ProbabilityEngine.model(race.horses);
+    race.horses.forEach(h=>{if(h.odds3==null)h.odds3=h.odds});
+    race.betLocked=true;race.status="BET LOCKED";
+    this.log(`${race.title} 発走${this.settings.betTiming}分前。勝負判定開始！`);
+    for(const c of this.characters){
+      if(c.bankroll<=0){this.log(`${c.name} は BANKRUPT`);continue}
+      const picks=CharacterEngine.picks(c,race,this.settings);
+      if(!picks.length){c.skips++;this.log(`${c.name} は見送り`);continue}
+      let made=0;
+      if(c.ticket==="wide" && picks.length>=2){
+        const a=picks[0],b=picks[1], prob=clamp(a.modelProb*b.modelProb*3.0,.01,.45);
+        const odds=+(Math.max(1.5,(a.odds+b.odds)/2*.85)).toFixed(1);
+        const fake={...a,odds,modelProb:prob,ev:prob*odds,label:`${a.no}-${b.no}`};
+        made+=this.placeBet(c,race,fake,"ワイド");
+      }else if(c.ticket==="trio" && picks.length>=3){
+        const [a,b,d]=picks, prob=clamp(a.modelProb*b.modelProb*d.modelProb*8,.002,.18);
+        const odds=+(Math.max(5,(a.odds*b.odds*d.odds)**.58)).toFixed(1);
+        const fake={...a,odds,modelProb:prob,ev:prob*odds,label:`${a.no}-${b.no}-${d.no}`};
+        if(fake.ev>=c.minEV)made+=this.placeBet(c,race,fake,"三連複");
+      }else{
+        for(const h of picks)made+=this.placeBet(c,race,h,c.ticket==="place"?"複勝":"単勝");
+      }
+      if(!made){c.skips++;this.log(`${c.name} は資金条件で見送り`)}
+    }
+    this.save();
+  }
+  placeBet(c,race,h,ticket){
+    let stake=CharacterEngine.stake(c,h,this.settings);
+    stake=Math.min(stake,c.bankroll,this.settings.maxDay-c.dayInvested);
+    stake=Math.floor(stake/100)*100;
+    if(stake<100)return 0;
+    c.bankroll-=stake;c.invested+=stake;c.dayInvested+=stake;c.bets++;
+    c.byOrg[race.org].inv+=stake;
+    const bet={id:crypto.randomUUID?.()||Math.random().toString(36),date:race.date,raceId:race.id,org:race.org,track:race.track,race:race.no,
+      character:c.name,ticket,selection:h.label||String(h.no),horseNo:h.no,odds:h.odds,modelProb:h.modelProb,marketProb:h.marketProb||0,ev:h.ev,stake,
+      return:0,profit:-stake,status:"OPEN"};
+    this.bets.push(bet);
+    this.log(`${c.name}、${race.title} ${ticket} ${bet.selection} を ${fmtY(stake)}購入！ EV ${h.ev.toFixed(2)}`);
+    return 1;
+  }
+  async settle(race){
+    try{
+      const res=await this.provider.getResult(race);
+      race.result=res;race.settled=true;race.status="SETTLED";
+      this.log(`${race.title} 確定。上位 ${(res.top3||[res.winner]).join(" - ")}番`);
+      const rbets=this.bets.filter(b=>b.raceId===race.id&&b.status==="OPEN");
+      for(const b of rbets){
+        const c=this.characters.find(x=>x.name===b.character);
+        const top3=(res.top3||[res.winner]).map(Number);
+        const keySorted=s=>s.split("-").map(Number).sort((a,b)=>a-b).join("-");
+        let hit=false, mult=0;
+        if(b.ticket==="単勝"){
+          hit=Number(b.horseNo)===Number(res.winner);
+          mult=res.payouts?.win?.[String(b.horseNo)] ?? b.odds;
+        }else if(b.ticket==="複勝"){
+          hit=top3.includes(Number(b.horseNo));
+          mult=res.payouts?.place?.[String(b.horseNo)] ?? Math.max(1.1,b.odds*.35);
+        }else if(b.ticket==="ワイド"){
+          const nums=b.selection.split("-").map(Number);
+          hit=nums.every(n=>top3.includes(n));
+          mult=res.payouts?.wide?.[keySorted(b.selection)] ?? b.odds;
+        }else if(b.ticket==="三連複"){
+          const nums=b.selection.split("-").map(Number).sort((a,b)=>a-b);
+          hit=nums.length===3 && nums.every(n=>top3.includes(n));
+          mult=res.payouts?.trio?.[keySorted(b.selection)] ?? b.odds;
+        }
+        let ret=0;
+        if(hit){
+          ret=Math.round(b.stake*Number(mult||b.odds));
+          c.wins++;c.returned+=ret;c.bankroll+=ret;c.byOrg[race.org].ret+=ret;c.maxWin=Math.max(c.maxWin,ret-b.stake);
+          this.log(`${c.name} 的中！ 払戻 ${fmtY(ret)}`);
+        }
+        b.return=ret;b.profit=ret-b.stake;b.status="SETTLED";
+      }
+      for(const c of this.characters){
+        c.peak=Math.max(c.peak,c.bankroll);
+        const dd=(c.peak-c.bankroll)/Math.max(1,c.peak);c.maxDD=Math.max(c.maxDD,dd);
+        c.history.push(c.bankroll);
+      }
+      this.save();
+    }catch(e){this.setDataBadge("ERROR");this.log(`${race.title} 結果取得失敗: ${e.message}`,"error")}
+  }
+  log(msg,type="info"){UI.addLog(`[${new Date().toLocaleTimeString("ja-JP")}] ${msg}`,type)}
+}
+const UI={
+  engine:null,dataStatus:"DEMO",bankChart:null,roiChart:null,
+  addLog(msg,type){const d=document.createElement("div");d.className="logline";d.textContent=msg;if(type==="error")d.style.color="#ffaaaa";$("#log").prepend(d)},
+  renderAll(e){this.engine=e;this.renderBadges();this.updateKpis(e);this.renderRaces(e);this.renderCurrent(e);this.renderPeople(e);this.renderRank(e);this.renderCharts(e)},
+  renderBadges(){
+    const b=$("#dataBadge");b.textContent=this.dataStatus==="LIVE"?"LIVE DATA":this.dataStatus==="DEMO"?"DEMO DATA":this.dataStatus;
+    b.className="badge "+(this.dataStatus==="LIVE"?"live":this.dataStatus==="ERROR"?"err":"demo");
+    $("#engineBadge").textContent=this.engine.settings.auto?"AUTO DRIVE ON":"AUTO DRIVE OFF";
+    $("#engineBadge").className="badge "+(this.engine.settings.auto?"live":"err");
+  },
+  updateKpis(e){
+    const now=Date.now(), upcoming=e.races.filter(r=>!r.settled&&new Date(r.startTime).getTime()>now).sort((a,b)=>new Date(a.startTime)-new Date(b.startTime))[0];
+    $("#kpiNext").textContent=upcoming?upcoming.title:"終了";
+    if(upcoming){const sec=Math.max(0,Math.floor((new Date(upcoming.startTime)-now)/1000));$("#kpiCountdown").textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,"0")}`}else $("#kpiCountdown").textContent="--";
+    $("#kpiRace").textContent=e.selected?.title||"--";
+    $("#kpiOdds").textContent=e.lastOddsAt?new Date(e.lastOddsAt).toLocaleTimeString("ja-JP"):"--";
+    $("#kpiProcessed").textContent=e.races.filter(r=>r.settled).length;
+    const top=e.characters.slice().sort((a,b)=>(b.returned/Math.max(1,b.invested))-(a.returned/Math.max(1,a.invested)))[0];
+    $("#kpiTopRoi").textContent=top&&top.invested?`${top.name} ${(top.returned/top.invested*100).toFixed(1)}%`:"--";
+  },
+  renderRaces(e){
+    const el=$("#raceList");el.innerHTML="";
+    e.races.filter(r=>e.filter==="ALL"||r.org===e.filter).forEach(r=>{
+      const b=document.createElement("button");b.className="racebtn"+(e.selected?.id===r.id?" current":"")+(r.settled?" done":"");
+      b.innerHTML=`<strong>${r.org} ${r.title}</strong><span class="muted">${new Date(r.startTime).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",second:"2-digit"})} · ${r.status}</span>`;
+      b.onclick=()=>{e.selected=r;UI.renderAll(e)};el.appendChild(b);
+    })
+  },
+  renderCurrent(e){
+    const r=e.selected||e.races[0];if(!r)return;
+    $("#raceTitle").textContent=`${r.org} ${r.title}`;
+    $("#raceStatus").textContent=r.status;
+    $("#betStatus").textContent=r.betLocked?`${e.settings.betTiming}分前固定済`:"未判定";
+    $("#raceMeta").textContent=`発走 ${new Date(r.startTime).toLocaleTimeString("ja-JP")} / ${r.horses?.length||0}頭`;
+    if(r.horses?.length)ProbabilityEngine.model(r.horses);
+    $("#horseBody").innerHTML=(r.horses||[]).map(h=>{
+      const label=ExpectedValueEngine.label(h.ev||0,e.settings),cls=label.toLowerCase().replace(" ","");
+      return `<tr class="${cls}">
+      <td>${h.no}</td><td>${h.name||""}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
+      <td>${pct(h.modelProb||0)}</td><td>${pct(h.marketProb||0)}</td><td>${(h.fairOdds||0).toFixed(2)}</td>
+      <td><b>${(h.ev||0).toFixed(2)}</b></td><td>${pct(h.edge||0)}</td><td><span class="tag ${cls}">${label}</span></td></tr>`
+    }).join("");
+  },
+  renderPeople(e){
+    const sorted=e.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
+    $("#people").innerHTML=sorted.map(c=>{
+      const roi=c.invested?c.returned/c.invested*100:0;
+      return `<div class="person"><div class="row"><div class="avatar">${c.avatar}</div><div><div class="name">${c.name}</div><div class="muted">${c.desc}</div></div></div>
+      <div class="stats"><span>資金 ${fmtY(c.bankroll)}</span><span>ROI ${roi.toFixed(1)}%</span><span>勝負 ${c.bets}</span><span>見送り ${c.skips}</span></div></div>`
+    }).join("")
+  },
+  renderRank(e){
+    const sorted=e.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
+    $("#rankBody").innerHTML=sorted.map((c,i)=>{
+      const roi=c.invested?c.returned/c.invested*100:0,hit=c.bets?c.wins/c.bets:0;
+      return `<tr><td>${i+1}</td><td>${c.avatar} ${c.name}</td><td>${fmtY(c.bankroll)}</td><td>${fmtY(c.bankroll-c.initial)}</td><td>${roi.toFixed(1)}%</td><td>${pct(hit)}</td><td>${pct(c.maxDD)}</td></tr>`
+    }).join("")
+  },
+  renderCharts(e){
+    if(!window.Chart)return;
+    const labels=Array.from({length:Math.max(...e.characters.map(c=>c.history.length))},(_,i)=>i);
+    const datasets=e.characters.slice(0,5).map(c=>({label:c.name,data:c.history,borderWidth:2,pointRadius:0}));
+    if(this.bankChart){this.bankChart.data.labels=labels;this.bankChart.data.datasets=datasets;this.bankChart.update("none")}
+    else this.bankChart=new Chart($("#bankrollChart"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:"#eef7f0"}}},scales:{x:{ticks:{color:"#9ab0a1"}},y:{ticks:{color:"#9ab0a1"}}}}});
+    const names=e.characters.map(c=>c.name);
+    const jra=e.characters.map(c=>c.byOrg.JRA.inv?c.byOrg.JRA.ret/c.byOrg.JRA.inv*100:0);
+    const nar=e.characters.map(c=>c.byOrg.NAR.inv?c.byOrg.NAR.ret/c.byOrg.NAR.inv*100:0);
+    if(this.roiChart){this.roiChart.data.labels=names;this.roiChart.data.datasets[0].data=jra;this.roiChart.data.datasets[1].data=nar;this.roiChart.update("none")}
+    else this.roiChart=new Chart($("#roiChart"),{type:"bar",data:{labels:names,datasets:[{label:"JRA ROI",data:jra},{label:"NAR ROI",data:nar}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:"#eef7f0"}}},scales:{x:{ticks:{color:"#9ab0a1",maxRotation:70,minRotation:40}},y:{ticks:{color:"#9ab0a1"}}}}});
+  }
+};
+
+function download(name,content,type){
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([content],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)
+}
+function betRows(){return engine.bets.map(b=>({日付:b.date,区分:b.org,競馬場:b.track,R:b.race,キャラクター:b.character,券種:b.ticket,買い目:b.selection,オッズ:b.odds,想定確率:b.modelProb,市場確率:b.marketProb,EV:b.ev,購入額:b.stake,払戻:b.return,利益:b.profit,状態:b.status}))}
+function csvEscape(v){const s=String(v??"");return /[",\n]/.test(s)?`"${s.replaceAll('"','""')}"`:s}
+let engine=new SimulationEngine();
+
+$("#btnAuto").onclick=()=>{engine.settings.auto=!engine.settings.auto;engine.save();UI.renderAll(engine)};
+$("#btnSettings").onclick=()=>openSettings();
+$("#btnReset").onclick=()=>{if(confirm("本日のシミュレーション成績をリセットしますか？")){["characters","bets","runtime"].forEach(k=>Store.del(k));location.reload()}};
+$("#filterAll").onclick=()=>setFilter("ALL");
+$("#filterJra").onclick=()=>setFilter("JRA");
+$("#filterNar").onclick=()=>setFilter("NAR");
+function setFilter(f){engine.filter=f;["filterAll","filterJra","filterNar"].forEach(id=>$("#"+id).classList.remove("active"));$("#filter"+(f==="ALL"?"All":f==="JRA"?"Jra":"Nar")).classList.add("active");UI.renderRaces(engine)}
+function openSettings(){
+  const s=engine.settings;$("#sMode").value=s.mode;$("#sBetTiming").value=s.betTiming;$("#sEvPositive").value=s.evPositive;$("#sEvStrong").value=s.evStrong;
+  $("#sBankroll").value=s.initialBankroll;$("#sMaxRace").value=s.maxRace;$("#sMaxDay").value=s.maxDay;$("#sRefresh").value=s.refreshSec;
+  $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";$("#sApi").value=s.apiBase||"";$("#settingsDlg").showModal();
+}
+$("#saveSettings").onclick=()=>{
+  engine.settings={...engine.settings,mode:$("#sMode").value,betTiming:+$("#sBetTiming").value,evPositive:+$("#sEvPositive").value,evStrong:+$("#sEvStrong").value,
+    initialBankroll:+$("#sBankroll").value,maxRace:+$("#sMaxRace").value,maxDay:+$("#sMaxDay").value,refreshSec:+$("#sRefresh").value,
+    jra:$("#sJra").value==="1",nar:$("#sNar").value==="1",apiBase:$("#sApi").value.trim()};
+  Store.set("settings",engine.settings);
+  if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
+};
+$("#exportJson").onclick=()=>download(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"application/json");
+$("#exportCsv").onclick=()=>{const rows=betRows();if(!rows.length)return alert("出力データがありません");const keys=Object.keys(rows[0]);download(`keiba_sim_${today()}.csv`,[keys.join(","),...rows.map(r=>keys.map(k=>csvEscape(r[k])).join(","))].join("\n"),"text/csv;charset=utf-8")};
+$("#exportXlsx").onclick=()=>{if(!window.XLSX)return alert("SheetJS未読込");const ws=XLSX.utils.json_to_sheet(betRows());const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"bets");XLSX.writeFile(wb,`keiba_sim_${today()}.xlsx`)};
+$("#runBacktest").onclick=async()=>{
+  const f=$("#backtestFile").files[0];if(!f)return alert("JSONまたはCSVを選択してください");
+  let rows=[];
+  if(f.name.toLowerCase().endsWith(".json"))rows=JSON.parse(await f.text());
+  else{
+    const wb=XLSX.read(await f.arrayBuffer(),{type:"array"});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+  }
+  alert(`バックテスト入力 ${rows.length}件を読み込みました。\nこの完成版では、正規化された race/horse/odds/result 列を持つデータをLIVEエンジンへ流用できます。`);
+};
+engine.init();
+</script>
+</body>
+</html>
