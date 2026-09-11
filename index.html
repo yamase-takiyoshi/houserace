@@ -258,19 +258,38 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 
 <div class="card" style="margin-top:12px">
-  <h3>精算監査表</h3>
+  <h3>精算デバッグ監査表</h3>
   <div class="body">
-    <div class="notice">各レース終了時の資金差額を監査します。異常なジャンプをすぐ発見できます。</div>
+    <div class="notice">
+      全購入について「購入額 / 元払戻値 / 変換倍率 / 実払戻 / 利益 / 想定確率 / EV / 生払戻JSON」を表示します。
+    </div>
     <div class="controls" style="margin:10px 0">
-      <label>キャラクター <select id="auditCharacter"><option value="">全員</option></select></label>
+      <label>キャラクター
+        <select id="auditCharacter"><option value="">全員</option></select>
+      </label>
+      <label>券種
+        <select id="auditTicket"><option value="">全券種</option></select>
+      </label>
+      <label>表示
+        <select id="auditOnly">
+          <option value="">全件</option>
+          <option value="hit">的中のみ</option>
+          <option value="large">利益5万円以上のみ</option>
+        </select>
+      </label>
       <button id="copyAudit" class="primary">監査表をコピー</button>
       <button id="copyAuditCsv">CSV形式でコピー</button>
     </div>
     <div id="auditStatus" class="muted">バックテスト実行後に表示します。</div>
-    <div class="scroll" style="max-height:70vh;margin-top:8px">
-      <table><thead><tr>
-        <th>日時・レース</th><th>キャラクター</th><th>前資金</th><th>後資金</th><th>増減</th><th>異常値</th>
-      </tr></thead><tbody id="auditBody"></tbody></table>
+    <div class="scroll" style="max-height:72vh;margin-top:8px">
+      <table>
+        <thead><tr>
+          <th>日時</th><th>競馬場</th><th>R</th><th>キャラクター</th><th>券種</th><th>馬/組番</th>
+          <th>購入額</th><th>元払戻値</th><th>変換倍率</th><th>実払戻</th><th>利益</th>
+          <th>想定確率</th><th>EV</th><th>判定</th><th>生払戻JSON</th>
+        </tr></thead>
+        <tbody id="auditBody"></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -1196,34 +1215,45 @@ function btSettleCombo(c,race,picks,ticket,settings){
     const hit=[a.no,b.no].every(n=>top3.includes(Number(n)));
     const payoutValue=race.result?.payouts?.wide?.[key];
     const odds=btPayoutMultiplier(payoutValue);
-    if(odds==null){c.skips++;return {skipped:true,reason:"NO_WIDE_PAYOUT"}}
+    if(odds==null){c.skips++;return {skipped:true,reason:"NO_WIDE_PAYOUT",selection:key,ticket:"ワイド",payoutValue:null,mult:null}}
     const prob=Math.max(.01,Math.min(.45,a.modelProb*b.modelProb*3));
-    const fake={...a,odds,modelProb:prob,ev:prob*odds};
-    if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV"}}
-    const stake=btStake(c,fake,settings);if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
+    const ev=prob*odds;
+    const fake={...a,odds,modelProb:prob,ev};
+    if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV",selection:key,ticket:"ワイド",payoutValue,mult:odds,prob,ev}}
+    const stake=btStake(c,fake,settings);
+    if(stake<100){c.skips++;return {skipped:true,reason:"STAKE",selection:key,ticket:"ワイド",payoutValue,mult:odds,prob,ev}}
     c.invested+=stake;c.byOrg[race.org].inv+=stake;c.bankroll-=stake;c.bets++;
-    if(hit){const ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
+    let ret=0;
+    if(hit){ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
+    c.peak=Math.max(c.peak,c.bankroll);
+    c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
+    return {skipped:false,selection:key,ticket:"ワイド",stake,ret,profit:ret-stake,payoutValue,mult:odds,prob,ev,hit};
   }else if(ticket==="trio"&&picks.length>=3){
     const [a,b,d]=picks,key=[a.no,b.no,d.no].sort((x,y)=>x-y).join("-");
     const top3=(race.result?.top3||[]).map(Number).sort((x,y)=>x-y);
     const hit=key===top3.join("-");
     const payoutValue=race.result?.payouts?.trio?.[key];
     const odds=btPayoutMultiplier(payoutValue);
-    if(odds==null){c.skips++;return {skipped:true,reason:"NO_TRIO_PAYOUT"}}
+    if(odds==null){c.skips++;return {skipped:true,reason:"NO_TRIO_PAYOUT",selection:key,ticket:"三連複",payoutValue:null,mult:null}}
     const prob=Math.max(.002,Math.min(.18,a.modelProb*b.modelProb*d.modelProb*8));
-    const fake={...a,odds,modelProb:prob,ev:prob*odds};
-    if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV"}}
-    const stake=btStake(c,fake,settings);if(stake<100){c.skips++;return {skipped:true,reason:"STAKE"}}
+    const ev=prob*odds;
+    const fake={...a,odds,modelProb:prob,ev};
+    if(fake.ev<c.minEV){c.skips++;return {skipped:true,reason:"EV",selection:key,ticket:"三連複",payoutValue,mult:odds,prob,ev}}
+    const stake=btStake(c,fake,settings);
+    if(stake<100){c.skips++;return {skipped:true,reason:"STAKE",selection:key,ticket:"三連複",payoutValue,mult:odds,prob,ev}}
     c.invested+=stake;c.byOrg[race.org].inv+=stake;c.bankroll-=stake;c.bets++;
-    if(hit){const ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
+    let ret=0;
+    if(hit){ret=Math.round(stake*odds);c.returned+=ret;c.byOrg[race.org].ret+=ret;c.bankroll+=ret;c.wins++}
+    c.peak=Math.max(c.peak,c.bankroll);
+    c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
+    return {skipped:false,selection:key,ticket:"三連複",stake,ret,profit:ret-stake,payoutValue,mult:odds,prob,ev,hit};
   }
-  c.peak=Math.max(c.peak,c.bankroll);
-  c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
-  return {skipped:false};
+  return {skipped:true,reason:"NO_COMBO"};
 }
 function runBacktestOnHistory(historyBlocks){
   const chars=freshBtCharacters();
   const races=[];
+  const audit=[];
   historyBlocks.forEach(block=>(block.races||[]).forEach(r=>races.push({...r,org:r.org||block.org})));
   races.sort((a,b)=>(a.date||"").localeCompare(b.date||"") || (a.startTime||"").localeCompare(b.startTime||"") || a.no-b.no);
 
@@ -1240,6 +1270,7 @@ function runBacktestOnHistory(historyBlocks){
     const hs=btProbabilities(raw.horses||[]);
     if(!hs.length||!raw.result)continue;
     const race={...raw,horses:hs};
+    const rawPayoutJson=JSON.stringify(raw.result?.payouts||{});
 
     for(const c of chars){
       if(c.bankroll<=0){
@@ -1252,14 +1283,53 @@ function runBacktestOnHistory(historyBlocks){
       if(!picks.length){
         c.skips++;
       }else if(c.ticket==="wide"||c.ticket==="trio"){
-        btSettleCombo(c,race,picks,c.ticket,engine.settings);
+        const rr=btSettleCombo(c,race,picks,c.ticket,engine.settings);
+        if(rr && !rr.skipped){
+          audit.push({
+            date:race.date||"",
+            track:race.track||"",
+            no:race.no||"",
+            character:c.name,
+            ticket:rr.ticket,
+            selection:rr.selection,
+            stake:rr.stake,
+            rawPayout:rr.payoutValue,
+            multiplier:rr.mult,
+            refund:rr.ret,
+            profit:rr.profit,
+            prob:rr.prob,
+            ev:rr.ev,
+            status:rr.hit?"的中":"不的中",
+            rawJson:rawPayoutJson
+          });
+        }
       }else{
         let made=false;
         for(const h of picks){
           const stake=btStake(c,h,engine.settings);
           if(stake<100)continue;
-          btSettleSingle(c,race,h,c.ticket==="place"?"複勝":"単勝",stake);
-          made=true;
+          const ticket=c.ticket==="place"?"複勝":"単勝";
+          const rr=btSettleSingle(c,race,h,ticket,stake);
+          if(rr && !rr.skipped){
+            audit.push({
+              date:race.date||"",
+              track:race.track||"",
+              no:race.no||"",
+              character:c.name,
+              ticket,
+              selection:String(h.no),
+              stake,
+              rawPayout:rr.payoutValue,
+              multiplier:rr.mult,
+              refund:rr.ret,
+              profit:rr.ret-stake,
+              prob:h.modelProb,
+              ev:h.ev,
+              status:rr.ret>0?"的中":"不的中",
+              rawJson:rawPayoutJson
+            });
+            made=true;
+          }
         }
         if(!made)c.skips++;
       }
@@ -1286,55 +1356,50 @@ function runBacktestOnHistory(historyBlocks){
     races:races.length,
     blocks:historyBlocks.length,
     oddsTiming:"FINAL",
+    audit,
     timeline
   };
 }
 
-
-// ===============================
-// VERTICAL TIME-SERIES TABLE
-// ===============================
-
-const SettlementAudit={
-  result:null, rows:[],
-  render(result){
-    this.result=result;this.rows=[];
-    const tl=result?.timeline||[], chars=result?.characters||[];
-    for(let i=1;i<tl.length;i++){
-      for(const c of chars){
-        const before=Number(tl[i-1].bankroll?.[c.name]??c.initial??0);
-        const after=Number(tl[i].bankroll?.[c.name]??before);
-        const delta=after-before;
-        if(delta!==0)this.rows.push({
-          label:tl[i].label||"",character:c.name,before,after,delta,
-          flag:Math.abs(delta)>=50000?"⚠ 大変動":""
-        });
-      }
-    }
-    $("#auditCharacter").innerHTML='<option value="">全員</option>'+
-      chars.map(c=>`<option>${escapeHtml(c.name)}</option>`).join("");
-    this.draw();
-  },
+const DetailedAudit={
+  result:null,
   filtered(){
+    let rows=this.result?.audit||[];
     const c=$("#auditCharacter")?.value||"";
-    return this.rows.filter(r=>!c||r.character===c);
+    const t=$("#auditTicket")?.value||"";
+    const only=$("#auditOnly")?.value||"";
+    rows=rows.filter(r=>(!c||r.character===c)&&(!t||r.ticket===t));
+    if(only==="hit") rows=rows.filter(r=>r.status==="的中");
+    if(only==="large") rows=rows.filter(r=>Number(r.profit)>=50000);
+    return rows;
+  },
+  render(result){
+    this.result=result;
+    const rows=result?.audit||[];
+    const chars=[...new Set(rows.map(r=>r.character))];
+    const tickets=[...new Set(rows.map(r=>r.ticket))];
+    $("#auditCharacter").innerHTML='<option value="">全員</option>'+chars.map(x=>`<option>${escapeHtml(x)}</option>`).join("");
+    $("#auditTicket").innerHTML='<option value="">全券種</option>'+tickets.map(x=>`<option>${escapeHtml(x)}</option>`).join("");
+    this.draw();
   },
   draw(){
     const rows=this.filtered();
     $("#auditBody").innerHTML=rows.map(r=>`<tr>
-      <td style="white-space:nowrap">${escapeHtml(r.label)}</td>
-      <td>${escapeHtml(r.character)}</td>
-      <td style="text-align:right">${r.before.toLocaleString()}</td>
-      <td style="text-align:right">${r.after.toLocaleString()}</td>
-      <td style="text-align:right">${r.delta>0?"+":""}${r.delta.toLocaleString()}</td>
-      <td>${r.flag}</td></tr>`).join("");
-    $("#auditStatus").textContent=`資金変動 ${rows.length}件。±50,000円以上は「大変動」と表示。`;
+      <td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.track)}</td><td>${r.no}</td>
+      <td>${escapeHtml(r.character)}</td><td>${escapeHtml(r.ticket)}</td><td>${escapeHtml(r.selection)}</td>
+      <td>${Number(r.stake||0).toLocaleString()}</td><td>${escapeHtml(String(r.rawPayout??""))}</td>
+      <td>${r.multiplier==null?"":Number(r.multiplier).toFixed(3)}</td>
+      <td>${Number(r.refund||0).toLocaleString()}</td><td>${Number(r.profit||0).toLocaleString()}</td>
+      <td>${(Number(r.prob||0)*100).toFixed(2)}%</td><td>${Number(r.ev||0).toFixed(3)}</td>
+      <td>${escapeHtml(r.status)}</td><td style="max-width:420px;white-space:normal">${escapeHtml(r.rawJson||"")}</td>
+    </tr>`).join("");
+    $("#auditStatus").textContent=`表示 ${rows.length}件 / 全${this.result?.audit?.length||0}件`;
   },
   async copy(csv=false){
     const rows=this.filtered();
     if(!rows.length)return alert("監査データがありません");
-    const all=[["日時・レース","キャラクター","前資金","後資金","増減","異常値"],
-      ...rows.map(r=>[r.label,r.character,r.before,r.after,r.delta,r.flag])];
+    const all=[["日時","競馬場","R","キャラクター","券種","馬/組番","購入額","元払戻値","変換倍率","実払戻","利益","想定確率","EV","判定","生払戻JSON"],
+      ...rows.map(r=>[r.date,r.track,r.no,r.character,r.ticket,r.selection,r.stake,r.rawPayout,r.multiplier,r.refund,r.profit,r.prob,r.ev,r.status,r.rawJson])];
     const d=csv?",":"\t";
     const q=v=>{const s=String(v??"");return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s};
     const text=all.map(r=>r.map(q).join(d)).join("\n");
@@ -1343,10 +1408,15 @@ const SettlementAudit={
     $("#auditStatus").textContent=`${rows.length}件をコピーしました。`;
   }
 };
-$("#auditCharacter").onchange=()=>SettlementAudit.draw();
-$("#copyAudit").onclick=()=>SettlementAudit.copy(false);
-$("#copyAuditCsv").onclick=()=>SettlementAudit.copy(true);
+$("#auditCharacter").onchange=()=>DetailedAudit.draw();
+$("#auditTicket").onchange=()=>DetailedAudit.draw();
+$("#auditOnly").onchange=()=>DetailedAudit.draw();
+$("#copyAudit").onclick=()=>DetailedAudit.copy(false);
+$("#copyAuditCsv").onclick=()=>DetailedAudit.copy(true);
 
+// ===============================
+// VERTICAL TIME-SERIES TABLE
+// ===============================
 const VerticalTimeSeries={
   result:null,
   render(result){
@@ -1493,7 +1563,7 @@ const TimeSeriesGraph={
 function renderBt(result){
   TimeSeriesGraph.render(result);
   VerticalTimeSeries.render(result);
-  SettlementAudit.render(result);
+  DetailedAudit.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -1535,7 +1605,7 @@ $("#runWebBacktest").onclick=async()=>{
     btResult=runBacktestOnHistory(blocks);
     renderBt(btResult);
     $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
-    Store.set("btResultAuditV2",btResult);
+    Store.set("btResultDetailedAuditV1",btResult);
 
     // バックテスト結果JSON相当のオブジェクトを直接グラフへ
     if(typeof JsonGraph!=="undefined"){
@@ -1560,11 +1630,11 @@ $("#exportBtJson").onclick=async()=>{
   $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
-  btResult=null;Store.del("btResultAuditV2");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
+  btResult=null;Store.del("btResultDetailedAuditV1");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
-  const saved=Store.get("btResultAuditV2",null);
+  const saved=Store.get("btResultDetailedAuditV1",null);
   if(saved){
     btResult=saved;
     renderBt(saved);
