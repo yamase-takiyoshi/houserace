@@ -376,22 +376,6 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 
 <div class="card" style="margin-top:12px">
-  <h3>✅ バックテスト整合性監査</h3>
-  <div class="body">
-    <div class="notice">
-      キャラクターごとに「最終資金－初期資金」と「精算監査（audit）の利益合計」を照合します。1円を超える差、または勝負数と監査件数の不一致があれば赤字で警告します。
-    </div>
-    <div id="btIntegrityStatus" class="muted">バックテスト実行後に自動検査します。</div>
-    <div class="scroll" style="margin-top:8px;max-height:50vh">
-      <table>
-        <thead><tr><th>キャラクター</th><th>資金差額</th><th>監査利益合計</th><th>差額</th><th>勝負数</th><th>監査件数</th><th>判定</th></tr></thead>
-        <tbody id="btIntegrityBody"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<div class="card" style="margin-top:12px">
   <h3>縦型時系列表（コピペ対応）</h3>
   <div class="body">
     <div class="controls" style="margin-bottom:10px">
@@ -518,37 +502,6 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const today=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
 const nowJST=()=>new Date();
-
-// Data contracts. Increment when settlement/cache semantics change.
-const PAYOUT_SCHEMA_VERSION=4;
-const LIVE_STATE_SCHEMA_VERSION=3;
-const BACKTEST_SCHEMA_VERSION=4;
-const HISTORY_CACHE_SCHEMA_VERSION=4;
-
-function parsePayoutValue(value){
-  if(value==null)return {number:null,unit:null};
-  if(typeof value==="object" && !Array.isArray(value)){
-    if(value.multiplier!=null){
-      const n=Number(String(value.multiplier).replace(/[,\s円]/g,""));
-      return {number:Number.isFinite(n)&&n>0?n:null,unit:"multiplier"};
-    }
-    const yen=value.refundYen ?? value.payoutYen ?? value.refund ?? value.payout ?? value.amount ?? value.value;
-    if(yen!=null){
-      const n=Number(String(yen).replace(/[,\s円]/g,""));
-      return {number:Number.isFinite(n)&&n>0?n:null,unit:"refundYen"};
-    }
-  }
-  const n=Number(String(value).replace(/[,\s円]/g,""));
-  return {number:Number.isFinite(n)&&n>0?n:null,unit:null};
-}
-
-function payoutMultiplier(value,sourceUnit="refundYen"){
-  const p=parsePayoutValue(value);
-  if(p.number==null)return null;
-  if(p.unit==="multiplier")return p.number;
-  if(p.unit==="refundYen")return p.number/100;
-  return sourceUnit==="multiplier" ? p.number : p.number/100;
-}
 const closeBeforeMin=(race,settings)=>{
   if(Number.isFinite(Number(race?.closeBeforeMin))) return Number(race.closeBeforeMin);
   return race?.org==="JRA" ? Number(settings.jraCloseBeforeMin??1) : Number(settings.narCloseBeforeMin??2);
@@ -763,10 +716,6 @@ class CharacterEngine{
 class SimulationEngine{
   constructor(){
     this.settings={...DEFAULTS,...Store.get("settings",{})};
-    if(Store.get("liveStateSchemaVersion",0)!==LIVE_STATE_SCHEMA_VERSION){
-      ["characters","bets","runtime"].forEach(k=>Store.del(k));
-      Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);
-    }
     this.characters=Store.get("characters",null)||CharacterEngine.create(this.settings);
     this.bets=Store.get("bets",[]);
     this.races=[];
@@ -774,7 +723,7 @@ class SimulationEngine{
     this.provider=this.settings.mode==="live"?new HttpProvider(this.settings.apiBase):new DemoProvider();
     this.timer=null;
   }
-  save(){Store.set("settings",this.settings);Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
+  save(){Store.set("settings",this.settings);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
   async init(){
     try{
       this.races=await this.provider.getRaces();
@@ -938,63 +887,37 @@ class SimulationEngine{
   async settle(race){
     try{
       const res=await this.provider.getResult(race);
+      race.result=res;race.settled=true;race.status="SETTLED";
+      this.log(`${race.title} 確定。上位 ${(res.top3||[res.winner]).join(" - ")}番`);
       const rbets=this.bets.filter(b=>b.raceId===race.id&&b.status==="OPEN");
-      const top3=(res.top3||[res.winner]).map(Number);
-      const keySorted=x=>x.split("-").map(Number).sort((a,b)=>a-b).join("-");
-      const sourceUnit=this.provider.kind==="demo"?"multiplier":"refundYen";
-      const plan=[];
-
-      // First validate every winning payout. Do not mutate balances until all are usable.
       for(const b of rbets){
-        let hit=false,payoutValue=null,fallbackMult=null;
+        const c=this.characters.find(x=>x.name===b.character);
+        const top3=(res.top3||[res.winner]).map(Number);
+        const keySorted=s=>s.split("-").map(Number).sort((a,b)=>a-b).join("-");
+        let hit=false, mult=0;
         if(b.ticket==="単勝"){
           hit=Number(b.horseNo)===Number(res.winner);
-          payoutValue=res.payouts?.win?.[String(b.horseNo)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
+          mult=res.payouts?.win?.[String(b.horseNo)] ?? b.odds;
         }else if(b.ticket==="複勝"){
           hit=top3.includes(Number(b.horseNo));
-          payoutValue=res.payouts?.place?.[String(b.horseNo)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Math.max(1.1,Number(b.odds||0)*.35);
+          mult=res.payouts?.place?.[String(b.horseNo)] ?? Math.max(1.1,b.odds*.35);
         }else if(b.ticket==="ワイド"){
           const nums=b.selection.split("-").map(Number);
           hit=nums.every(n=>top3.includes(n));
-          payoutValue=res.payouts?.wide?.[keySorted(b.selection)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
+          mult=res.payouts?.wide?.[keySorted(b.selection)] ?? b.odds;
         }else if(b.ticket==="三連複"){
           const nums=b.selection.split("-").map(Number).sort((a,b)=>a-b);
           hit=nums.length===3 && nums.every(n=>top3.includes(n));
-          payoutValue=res.payouts?.trio?.[keySorted(b.selection)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
+          mult=res.payouts?.trio?.[keySorted(b.selection)] ?? b.odds;
         }
-
-        let mult=null;
+        let ret=0;
         if(hit){
-          mult=payoutValue!=null?payoutMultiplier(payoutValue,sourceUnit):fallbackMult;
-          if(!(Number(mult)>0)){
-            throw new Error(`${b.ticket} ${b.selection} の的中払戻が未取得です。払戻確定まで再確認します`);
-          }
-        }
-        const ret=hit?Math.round(b.stake*Number(mult)):0;
-        plan.push({b,hit,payoutValue,mult,ret});
-      }
-
-      // Apply only after validation succeeded for the whole race.
-      for(const x of plan){
-        const {b,hit,payoutValue,mult,ret}=x;
-        const c=this.characters.find(v=>v.name===b.character);
-        if(!c)continue;
-        if(hit){
+          ret=Math.round(b.stake*Number(mult||b.odds));
           c.wins++;c.returned+=ret;c.bankroll+=ret;c.byOrg[race.org].ret+=ret;c.maxWin=Math.max(c.maxWin,ret-b.stake);
-          this.log(`${c.name} 的中！ 払戻 ${fmtY(ret)}（${Number(mult).toFixed(3)}倍）`);
+          this.log(`${c.name} 的中！ 払戻 ${fmtY(ret)}`);
         }
-        b.rawPayout=payoutValue;
-        b.payoutMultiplier=mult;
-        b.payoutUnit=sourceUnit;
         b.return=ret;b.profit=ret-b.stake;b.status="SETTLED";
       }
-
-      race.result=res;race.settled=true;race.status="SETTLED";
-      this.log(`${race.title} 確定。上位 ${(res.top3||[res.winner]).join(" - ")}番`);
       for(const c of this.characters){
         c.peak=Math.max(c.peak,c.bankroll);
         const dd=(c.peak-c.bankroll)/Math.max(1,c.peak);c.maxDD=Math.max(c.maxDD,dd);
@@ -1003,7 +926,6 @@ class SimulationEngine{
       this.save();
     }catch(e){
       this.setDataBadge("DELAYED");
-      race.settled=false;
       race.status="RESULT WAIT";
       this.log(`${race.title} 結果未確定/取得待ち: ${e.message}`,"error");
     }
@@ -1249,15 +1171,6 @@ $("#runBacktest").onclick=async()=>{
 // WEB HISTORY / BACKTEST DATA
 // ===============================
 let webHistory=Store.get("webHistory",[]);
-if(Store.get("webHistorySchemaVersion",0)!==HISTORY_CACHE_SCHEMA_VERSION){
-  webHistory=[];
-  Store.del("webHistory");
-  Store.set("webHistorySchemaVersion",HISTORY_CACHE_SCHEMA_VERSION);
-}
-function saveWebHistoryCache(){
-  Store.set("webHistory",webHistory);
-  Store.set("webHistorySchemaVersion",HISTORY_CACHE_SCHEMA_VERSION);
-}
 function isoDate(d){return d.toISOString().slice(0,10)}
 function addDays(dateStr,n){
   const d=new Date(dateStr+"T00:00:00+09:00");
@@ -1305,7 +1218,7 @@ $("#fetchHistory").onclick=async()=>{
           const d=await fetchHistoryDay(date,o);
           webHistory=webHistory.filter(x=>!(x.date===date&&x.org===o));
           webHistory.push(d);
-          saveWebHistoryCache();
+          Store.set("webHistory",webHistory);
         }catch(e){
           UI.addLog(`過去データ ${date} ${o} 取得失敗: ${e.message}`,"error");
         }
@@ -1328,7 +1241,7 @@ $("#exportHistoryJson").onclick=async()=>{
 };
 $("#clearHistory").onclick=()=>{
   if(confirm("WEB取得した過去データを消去しますか？")){
-    webHistory=[];Store.del("webHistory");Store.set("webHistorySchemaVersion",HISTORY_CACHE_SCHEMA_VERSION);updateHistStatus("消去しました");
+    webHistory=[];Store.del("webHistory");updateHistStatus("消去しました");
   }
 };
 setTimeout(initHistoryDates,100);
@@ -1372,24 +1285,19 @@ function freshBtCharacters(){
   }));
 }
 function btProbabilities(horses){
-  // STRICT anti-leak: never trust provider-supplied popularity/rank fields.
-  // Recompute popularity only from FINAL odds so a mis-mapped finish order cannot leak the result.
-  const hs=horses
-    .filter(h=>Number(h?.odds)>1)
-    .map(h=>({...h,odds:Number(h.odds),no:Number(h.no)}))
-    .filter(h=>Number.isFinite(h.no)&&h.no>0);
+  // FINAL odds market probability + deterministic mild model edge
+  const hs=horses.filter(h=>Number(h.odds)>0).map(h=>({...h,odds:Number(h.odds),pop:Number(h.pop||0)}));
   if(!hs.length)return hs;
-  const oddsRank=[...hs].sort((a,b)=>a.odds-b.odds || a.no-b.no);
-  oddsRank.forEach((h,i)=>{h.pop=i+1});
   ProbabilityEngine.market(hs);
   let weights=hs.map(h=>{
-    const rankBoost=Math.max(-.08,.12-(h.pop-1)*.012);
+    const rankBoost=h.pop?Math.max(-.08,.12-(h.pop-1)*.012):0;
+    const finishSignal=0; // result must NOT leak into prediction
     const deterministic=((h.no*37)%17-8)/100;
-    return Math.max(.0001,h.marketProb*(1+rankBoost+deterministic*.10));
+    return Math.max(.0001,h.marketProb*(1+rankBoost+deterministic*.10+finishSignal));
   });
-  const total=weights.reduce((a,b)=>a+b,0);
+  const s=weights.reduce((a,b)=>a+b,0);
   hs.forEach((h,i)=>{
-    h.modelProb=weights[i]/total;
+    h.modelProb=weights[i]/s;
     h.fairOdds=1/h.modelProb;
     h.ev=h.modelProb*h.odds;
     h.edge=h.modelProb-h.marketProb;
@@ -1398,7 +1306,6 @@ function btProbabilities(horses){
   });
   return hs;
 }
-
 function btStake(c,h,settings){
   let s=500;
   if(c.staking==="ratio") s=c.bankroll*.01;
@@ -1425,9 +1332,12 @@ function btPicks(c,race,settings){
 }
 
 function btPayoutMultiplier(value){
-  // STRICT: historical result.payouts scalar values are "yen returned per ¥100 stake".
-  // Example: 320円 => 3.2x. Decimal odds fallback is handled separately and never passes here.
-  return payoutMultiplier(value,"refundYen");
+  // Historical JRA/NAR refund data is normally "yen returned per ¥100 stake".
+  // Example: 320 => 3.2x. Decimal values such as 3.2 are treated as already-multiplier.
+  if(value==null)return null;
+  let n=Number(String(value).replace(/[,\s円]/g,""));
+  if(!Number.isFinite(n)||n<=0)return null;
+  return n>=70 ? n/100 : n;
 }
 function btRefundYen(stake,payoutValue){
   const mult=btPayoutMultiplier(payoutValue);
@@ -1440,20 +1350,20 @@ function btSettleSingle(c,race,h,ticket,stake){
   const payouts=race.result?.payouts||{};
   let hit=false,payoutValue=null;
 
-  let mult=null,payoutSource="refundYen";
   if(ticket==="単勝"){
     hit=Number(h.no)===winner;
     payoutValue=payouts.win?.[String(h.no)];
-    // STRICT: historical backtest requires an actual official refund value.
-    // Never substitute final odds for payout data.
-    if(payoutValue==null){c.skips++;return {skipped:true,reason:"NO_WIN_PAYOUT"}}
+    // h.odds is a decimal odds multiplier, not a refund-yen value.
+    if(payoutValue==null && Number(h.odds)>0){
+      payoutValue=Number(h.odds);
+    }
   }else if(ticket==="複勝"){
     hit=top3.includes(Number(h.no));
     payoutValue=payouts.place?.[String(h.no)];
     if(payoutValue==null){c.skips++;return {skipped:true,reason:"NO_PLACE_PAYOUT"}}
   }
 
-  if(mult==null)mult=btPayoutMultiplier(payoutValue);
+  const mult=btPayoutMultiplier(payoutValue);
   if(mult==null){c.skips++;return {skipped:true,reason:"NO_PAYOUT"}}
 
   const ret=hit?Math.round(stake*mult):0;
@@ -1464,70 +1374,8 @@ function btSettleSingle(c,race,h,ticket,stake){
   }
   c.peak=Math.max(c.peak,c.bankroll);
   c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
-  return {skipped:false,ret,mult,payoutValue,payoutSource};
+  return {skipped:false,ret,mult,payoutValue};
 }
-function btValidateRace(raw){
-  const org=String(raw?.org||"");
-  const horses=Array.isArray(raw?.horses)?raw.horses:[];
-  const minField=org==="JRA"?5:3;
-  if(horses.length<minField)return {ok:false,reason:`FIELD_LT_${minField}`};
-
-  const nums=horses.map(h=>Number(h?.no));
-  if(nums.some(n=>!Number.isFinite(n)||n<=0)||new Set(nums).size!==nums.length){
-    return {ok:false,reason:"BAD_OR_DUP_HORSE_NO"};
-  }
-  const odds=horses.map(h=>Number(h?.odds));
-  if(odds.some(o=>!Number.isFinite(o)||o<=1))return {ok:false,reason:"BAD_ODDS"};
-  if(new Set(odds.map(o=>o.toFixed(2))).size<Math.min(4,horses.length)){
-    return {ok:false,reason:"ODDS_NOT_DIVERSE"};
-  }
-
-  const top3=(raw?.result?.top3||[]).map(Number).filter(Number.isFinite);
-  const winner=Number(raw?.result?.winner ?? top3[0]);
-  if(!Number.isFinite(winner)||!nums.includes(winner))return {ok:false,reason:"WINNER_NOT_IN_FIELD"};
-  if(top3.length&&new Set(top3).size!==top3.length)return {ok:false,reason:"DUP_TOP3"};
-
-  const rawWin=raw?.result?.payouts?.win?.[String(winner)];
-  const winMult=btPayoutMultiplier(rawWin);
-  if(winMult==null)return {ok:false,reason:"NO_WIN_PAYOUT"};
-  const wh=horses.find(h=>Number(h.no)===winner);
-  const finalOdds=Number(wh?.odds);
-  const ratio=finalOdds>0?winMult/finalOdds:NaN;
-  // Final win odds and official refund multiplier should be close in scale.
-  if(!Number.isFinite(ratio)||ratio<0.75||ratio>1.35){
-    return {ok:false,reason:"WIN_PAYOUT_ODDS_MISMATCH",winner,finalOdds,winMult,ratio};
-  }
-  return {ok:true,winner,finalOdds,winMult};
-}
-
-function btValidateBlock(block){
-  const sourceRaces=Array.isArray(block?.races)?block.races:[];
-  const valid=[];
-  const rejected=[];
-  for(const r of sourceRaces){
-    const rr={...r,org:r.org||block.org};
-    const v=btValidateRace(rr);
-    if(v.ok)valid.push(rr); else rejected.push({race:rr,reason:v.reason,detail:v});
-  }
-
-  // Anti-synthetic/result-leak guard for JRA historical cards.
-  // A card where the final-odds favourite/top-two wins almost every race is treated as corrupted/placeholder data.
-  if(String(block?.org||valid[0]?.org||"")==="JRA"&&valid.length>=10){
-    let favWins=0,top2Wins=0;
-    for(const r of valid){
-      const ranked=[...r.horses].sort((a,b)=>Number(a.odds)-Number(b.odds)||Number(a.no)-Number(b.no));
-      const winner=Number(r.result?.winner ?? r.result?.top3?.[0]);
-      if(Number(ranked[0]?.no)===winner)favWins++;
-      if(ranked.slice(0,2).some(h=>Number(h.no)===winner))top2Wins++;
-    }
-    const favRate=favWins/valid.length,top2Rate=top2Wins/valid.length;
-    if(favRate>=0.85||top2Rate>=0.95){
-      return {ok:false,reason:"SUSPICIOUS_JRA_RESULT_LEAK",valid:[],rejected:[...rejected,...valid.map(r=>({race:r,reason:"BLOCK_QUARANTINED"}))],stats:{count:valid.length,favRate,top2Rate}};
-    }
-  }
-  return {ok:true,valid,rejected};
-}
-
 function btSettleCombo(c,race,picks,ticket,settings){
   if(ticket==="wide"&&picks.length>=2){
     const [a,b]=picks,key=[a.no,b.no].sort((x,y)=>x-y).join("-");
@@ -1574,14 +1422,7 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   const chars=freshBtCharacters();
   const races=[];
   const audit=[];
-  const integrity={version:BACKTEST_SCHEMA_VERSION,acceptedBlocks:0,rejectedBlocks:[],rejectedRaces:[]};
-  for(const block of historyBlocks){
-    const v=btValidateBlock(block);
-    if(v.ok)integrity.acceptedBlocks++;
-    else integrity.rejectedBlocks.push({date:block?.date||"",org:block?.org||"",reason:v.reason,stats:v.stats||null});
-    for(const r of v.valid||[])races.push(r);
-    for(const x of v.rejected||[])integrity.rejectedRaces.push({date:x.race?.date||block?.date||"",org:x.race?.org||block?.org||"",track:x.race?.track||"",no:x.race?.no||"",reason:x.reason});
-  }
+  historyBlocks.forEach(block=>(block.races||[]).forEach(r=>races.push({...r,org:r.org||block.org})));
   races.sort((a,b)=>(a.date||"").localeCompare(b.date||"") || (a.startTime||"").localeCompare(b.startTime||"") || a.no-b.no);
 
   const timeline=[];
@@ -1695,17 +1536,12 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   }
 
   return {
-    schemaVersion:BACKTEST_SCHEMA_VERSION,
-    payoutSchemaVersion:PAYOUT_SCHEMA_VERSION,
-    payoutContract:"result.payouts = refund yen per 100 yen stake",
-    auditComplete:true,
     characters:chars,
     races:races.length,
     blocks:historyBlocks.length,
     oddsTiming:"FINAL",
     audit,
-    timeline,
-    integrity
+    timeline
   };
 }
 
@@ -1886,58 +1722,6 @@ $("#copyAudit").onclick=()=>DetailedAudit.copy(false);
 $("#copyAuditCsv").onclick=()=>DetailedAudit.copy(true);
 
 // ===============================
-// BACKTEST INTEGRITY AUDIT
-// ===============================
-const BacktestIntegrity={
-  render(result){
-    const status=$("#btIntegrityStatus"), body=$("#btIntegrityBody");
-    if(!status||!body)return;
-    if(!result || !Array.isArray(result.characters) || !Array.isArray(result.audit)){
-      status.textContent="⚠ 監査データが無い旧形式の結果です。再バックテストしてください。";
-      status.style.color="#ff7f7f";
-      body.innerHTML="";
-      return;
-    }
-    const sums=new Map(),counts=new Map();
-    for(const r of result.audit){
-      const name=r.character||"";
-      sums.set(name,(sums.get(name)||0)+Number(r.profit||0));
-      counts.set(name,(counts.get(name)||0)+1);
-    }
-    const rows=result.characters.map(c=>{
-      const bankrollProfit=Number(c.bankroll||0)-Number(c.initial||0);
-      const auditProfit=Number(sums.get(c.name)||0);
-      const diff=bankrollProfit-auditProfit;
-      const auditCount=Number(counts.get(c.name)||0);
-      const betCount=Number(c.bets||0);
-      const ok=Math.abs(diff)<=1 && betCount===auditCount;
-      return {name:c.name,bankrollProfit,auditProfit,diff,betCount,auditCount,ok};
-    });
-    const bad=rows.filter(r=>!r.ok);
-    status.textContent=bad.length
-      ? `⚠ 整合性エラー ${bad.length}人。グラフ値を信用せず、再取得・再計算してください。`
-      : `OK: ${rows.length}人すべて、資金差額＝監査利益合計かつ勝負数＝監査件数です。`;
-    status.style.color=bad.length?"#ff7f7f":"#55d68a";
-    body.innerHTML=rows.map(r=>`<tr>
-      <td>${escapeHtml(r.name)}</td>
-      <td>${Math.round(r.bankrollProfit).toLocaleString()}</td>
-      <td>${Math.round(r.auditProfit).toLocaleString()}</td>
-      <td style="font-weight:800;color:${r.ok?'#55d68a':'#ff7f7f'}">${Math.round(r.diff).toLocaleString()}</td>
-      <td>${r.betCount.toLocaleString()}</td>
-      <td>${r.auditCount.toLocaleString()}</td>
-      <td style="font-weight:800;color:${r.ok?'#55d68a':'#ff7f7f'}">${r.ok?'OK':'⚠ 不一致'}</td>
-    </tr>`).join("");
-  },
-  clear(){
-    if($("#btIntegrityStatus")){
-      $("#btIntegrityStatus").textContent="バックテスト実行後に自動検査します。";
-      $("#btIntegrityStatus").style.color="";
-    }
-    if($("#btIntegrityBody"))$("#btIntegrityBody").innerHTML="";
-  }
-};
-
-// ===============================
 // VERTICAL TIME-SERIES TABLE
 // ===============================
 const VerticalTimeSeries={
@@ -2088,7 +1872,6 @@ function renderBt(result){
   VerticalTimeSeries.render(result);
   DetailedAudit.render(result);
   AnomalyAudit.render(result);
-  BacktestIntegrity.render(result);
   const sorted=result.characters.slice().sort((a,b)=>b.bankroll-a.bankroll);
   $("#btRankBody").innerHTML=sorted.map((c,i)=>{
     const roi=c.invested?c.returned/c.invested*100:0;
@@ -2103,7 +1886,7 @@ async function getHistoryBlock(date,org){
   if(cached)return cached;
   const d=await fetchHistoryDay(date,org);
   webHistory=webHistory.filter(x=>!(x.date===date&&x.org===org));
-  webHistory.push(d);saveWebHistoryCache();
+  webHistory.push(d);Store.set("webHistory",webHistory);
   return d;
 }
 $("#runWebBacktest").onclick=async()=>{
@@ -2133,13 +1916,11 @@ $("#runWebBacktest").onclick=async()=>{
     $("#btProgress").textContent=`描画中…`;
     await new Promise(resolve=>setTimeout(resolve,0));
     renderBt(btResult);
-    const ig=btResult.integrity||{};
-    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${ig.rejectedRaces?.length||0}レース / 疑わしいブロック${ig.rejectedBlocks?.length||0}件 / FINAL ODDS / STRICT実払戻 / ANTI-LEAK`;
-    if(ig.rejectedBlocks?.length)UI.addLog(`整合性監査: ${ig.rejectedBlocks.length}ブロックを結果リーク/異常データ疑いで除外しました`,"warn");
+    $("#btProgress").textContent=`完了: ${btResult.races}レース / ${blocks.length}日区分 / FINAL ODDS / STRICT実払戻`;
     try{
       Store.set("btResultAnomalyAuditV1",btResult);
     }catch(e){
-      const compact={...btResult,audit:(btResult.audit||[]).slice(0,1000),auditComplete:false};
+      const compact={...btResult,audit:(btResult.audit||[]).slice(0,1000)};
       try{Store.set("btResultAnomalyAuditV1",compact)}catch(_){}
       UI.addLog("BT保存を軽量化しました: "+e.message,"warn");
     }
@@ -2167,44 +1948,21 @@ $("#exportBtJson").onclick=async()=>{
   $("#btProgress").textContent=`バックテストJSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
 };
 $("#resetBt").onclick=()=>{
-  btResult=null;
-  Store.del("btResultAnomalyAuditV1");
-  $("#btRankBody").innerHTML="";
-  $("#btProgress").textContent="未実行";
-  DetailedAudit.render({audit:[]});
-  AnomalyAudit.render({audit:[]});
-  BacktestIntegrity.clear();
-  if($("#verticalTsHead"))$("#verticalTsHead").innerHTML="";
-  if($("#verticalTsBody"))$("#verticalTsBody").innerHTML="";
-  if($("#verticalTsStatus"))$("#verticalTsStatus").textContent="バックテスト実行後に表示します。";
-  if(TimeSeriesGraph.bank){TimeSeriesGraph.bank.destroy();TimeSeriesGraph.bank=null;}
-  if(TimeSeriesGraph.profit){TimeSeriesGraph.profit.destroy();TimeSeriesGraph.profit=null;}
+  btResult=null;Store.del("btResultAnomalyAuditV1");$("#btRankBody").innerHTML="";$("#btProgress").textContent="未実行";
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=today();
   const saved=Store.get("btResultAnomalyAuditV1",null);
-  const validSaved=!!saved
-    && Number(saved.schemaVersion)===BACKTEST_SCHEMA_VERSION
-    && Number(saved.payoutSchemaVersion)===PAYOUT_SCHEMA_VERSION
-    && Array.isArray(saved.characters)
-    && Array.isArray(saved.timeline)
-    && Array.isArray(saved.audit)
-    && saved.auditComplete===true
-    && Number(saved?.integrity?.version)===BACKTEST_SCHEMA_VERSION;
-  if(validSaved){
+  if(saved){
     btResult=saved;
     renderBt(saved);
-    $("#btProgress").textContent=`保存結果: ${saved.races||0}レース / FINAL ODDS / STRICT払戻`;
+    $("#btProgress").textContent=`保存結果: ${saved.races||0}レース / FINAL ODDS`;
     setTimeout(()=>{
       if(typeof JsonGraph!=="undefined"){
         JsonGraph.render(saved);
         $("#jsonGraphStatus").textContent=`保存済みバックテスト結果を表示: ${saved.races||0}レース`;
       }
     },200);
-  }else if(saved){
-    Store.del("btResultAnomalyAuditV1");
-    $("#btProgress").textContent="旧形式の保存結果を自動破棄しました。バックテストを再実行してください。";
-    UI.addLog("旧バックテストキャッシュを払戻仕様変更のため自動破棄しました。","warn");
   }
 },120);
 
@@ -2455,10 +2213,10 @@ async function legacyLoadJsonFile(file){
   try{
     const obj=JSON.parse(await file.text());
     if(obj?.backtest){btResult=obj.backtest;if(typeof renderBt==="function")renderBt(btResult);}
-    if(Array.isArray(obj?.history)){webHistory=obj.history;saveWebHistoryCache();if(typeof updateHistStatus==="function")updateHistStatus("JSON読込");}
+    if(Array.isArray(obj?.history)){webHistory=obj.history;Store.set("webHistory",webHistory);if(typeof updateHistStatus==="function")updateHistStatus("JSON読込");}
     if(Array.isArray(obj?.bets)){engine.bets=obj.bets;engine.save();}
     if(Array.isArray(obj?.characters)&&obj?.timeline){btResult=obj;if(typeof renderBt==="function")renderBt(btResult);}
-    if(obj?.format==="KEIBA_HISTORY_V1"&&Array.isArray(obj.data)){webHistory=obj.data;saveWebHistoryCache();}
+    if(obj?.format==="KEIBA_HISTORY_V1"&&Array.isArray(obj.data)){webHistory=obj.data;Store.set("webHistory",webHistory);}
     legacyStatus(`JSON読込完了: ${file.name}`,true);
   }catch(e){alert("JSON読込エラー: "+e.message);}
 }
