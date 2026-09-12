@@ -3171,5 +3171,300 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   console.log("✅ JRA HISTORY BRIDGE FALLBACK v1.1 loaded",window.__narBridgeVersion||"");
 })();
 </script>
+<script>
+/* ============================================================
+   JRA HISTORY BRIDGE-SP RESULT FIX v1.2
+   2026-09-12
+   - JRAはBridgeが使える場合、Workerより先に住宅回線で取得
+   - race.sp.netkeiba.com の結果ページ1枚から
+     着順 + 全馬最終単勝オッズ + 人気 + 払戻を同時取得
+   - Worker upstream 400 の36連発を回避
+   ============================================================ */
+(() => {
+  if(window.__JRA_BRIDGE_SP_RESULT_V12__) return;
+  window.__JRA_BRIDGE_SP_RESULT_V12__ = true;
+
+  const sleep12 = ms => new Promise(r => setTimeout(r, ms));
+  const tracks12 = {
+    "01":"札幌","02":"函館","03":"福島","04":"新潟","05":"東京",
+    "06":"中山","07":"中京","08":"京都","09":"阪神","10":"小倉"
+  };
+  const clean12 = s => String(s||"").replace(/[\u00a0\s　]+/g," ").trim();
+  const half12 = s => String(s||"").replace(/[０-９．，－]/g,c=>({
+    "０":"0","１":"1","２":"2","３":"3","４":"4","５":"5","６":"6","７":"7","８":"8","９":"9",
+    "．":".","，":",","－":"-"
+  }[c]||c));
+  const num12 = s => {
+    const m = half12(clean12(s)).match(/-?\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : 0;
+  };
+
+  function bridgeReady12(){
+    return typeof window.__narBridgeFetch === "function" && window.__bridgeAbsent !== true;
+  }
+
+  async function bridgeGet12(url){
+    if(!bridgeReady12()) throw new Error("Bridge v1.7.x がページ側から利用できません");
+    const r = await window.__narBridgeFetch(url);
+    const status = Number(r?.status||0);
+    const text = String(r?.text||"");
+    if(!(status>=200 && status<400)) throw new Error(`Bridge HTTP ${status||0}${r?.error?`: ${r.error}`:""}`);
+    if(text.length < 500) throw new Error(`Bridge本文が短すぎます (${text.length}字)`);
+    return {text,status,finalUrl:String(r?.finalUrl||url),charset:String(r?.charset||"")};
+  }
+
+  async function bridgeFirst12(urls, validator){
+    const errors=[];
+    for(const url of urls){
+      try{
+        const r=await bridgeGet12(url);
+        if(!validator || validator(r.text,r)) return {...r,url};
+        errors.push(`${url}: 本文判定NG`);
+      }catch(e){
+        errors.push(`${url}: ${e?.message||e}`);
+      }
+    }
+    throw new Error(errors.slice(0,4).join(" | "));
+  }
+
+  function raceIds12(html,date){
+    const year=String(date||"").slice(0,4);
+    const raw=String(html||"");
+    const ids=new Set();
+    const patterns=[
+      /race_id[=:%\\u003d\\u003D&;quot'"\s]+(\d{12})/g,
+      /data-race-id=["']?(\d{12})/g,
+      /race_id%3D(\d{12})/gi,
+      /(?:^|[^0-9])(20\d{10})(?:[^0-9]|$)/g
+    ];
+    for(const re of patterns){
+      let m;
+      while((m=re.exec(raw))){
+        const id=String(m[1]||"");
+        if(!/^\d{12}$/.test(id) || id.slice(0,4)!==year) continue;
+        const venue=Number(id.slice(4,6));
+        const rn=Number(id.slice(10,12));
+        if(venue>=1&&venue<=10&&rn>=1&&rn<=12) ids.add(id);
+      }
+    }
+    return [...ids].sort();
+  }
+
+  function parsePayoutRows12(doc){
+    const payouts={win:{},place:{},wide:{},trio:{}};
+    const labels=["単勝","複勝","ワイド","3連複","三連複"];
+    for(const tr of doc.querySelectorAll("tr")){
+      const cells=[...tr.querySelectorAll("th,td")].map(c=>half12(clean12(c.textContent)));
+      if(!cells.length) continue;
+      const joined=cells.join(" ");
+      const label=labels.find(x=>joined.includes(x));
+      if(!label) continue;
+      const amounts=[];
+      cells.forEach(c=>{
+        for(const m of String(c).matchAll(/([\d,]+)\s*円/g)){
+          const n=Number(m[1].replace(/,/g,""));
+          if(n>0) amounts.push(n);
+        }
+      });
+      if(!amounts.length) continue;
+      const comboCells=cells.filter(c=>!/円/.test(c)&&!labels.includes(c));
+      const comboText=comboCells.join(" ").replace(/[－ー―→＞>]/g,"-");
+      if(label==="単勝" || label==="複勝"){
+        const nums=[];
+        comboCells.forEach(c=>{
+          for(const m of String(c).matchAll(/(?:^|[^\d])([1-9]|1[0-8])(?:[^\d]|$)/g)){
+            const n=Number(m[1]); if(!nums.includes(n)) nums.push(n);
+          }
+        });
+        nums.slice(0,amounts.length).forEach((n,i)=>{
+          (label==="単勝"?payouts.win:payouts.place)[String(n)]=amounts[Math.min(i,amounts.length-1)];
+        });
+      }else if(label==="ワイド"){
+        const cs=[...comboText.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)];
+        cs.slice(0,amounts.length).forEach((m,i)=>{
+          const k=[Number(m[1]),Number(m[2])].sort((a,b)=>a-b).join("-");
+          payouts.wide[k]=amounts[Math.min(i,amounts.length-1)];
+        });
+      }else{
+        const cs=[...comboText.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)];
+        cs.slice(0,amounts.length).forEach((m,i)=>{
+          const k=[Number(m[1]),Number(m[2]),Number(m[3])].sort((a,b)=>a-b).join("-");
+          payouts.trio[k]=amounts[Math.min(i,amounts.length-1)];
+        });
+      }
+    }
+    return payouts;
+  }
+
+  function parseSpResult12(html,id,date){
+    const doc=new DOMParser().parseFromString(String(html||""),"text/html");
+    const horses=[];
+    const finish=[];
+    const seen=new Set();
+
+    for(const tr of doc.querySelectorAll("tr")){
+      const link=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+      if(!link) continue;
+      const cells=[...tr.querySelectorAll("th,td")].map(c=>half12(clean12(c.textContent)));
+      if(cells.length<3) continue;
+      const row=half12(clean12(tr.textContent));
+
+      let rank=0,no=0;
+      const rm=row.match(/(?:^|\s)(\d{1,2})\s*着(?:\s|$)/);
+      if(rm) rank=Number(rm[1]);
+      if(!rank){
+        const first=half12(cells[0]||"").match(/^(\d{1,2})(?:着)?$/);
+        if(first) rank=Number(first[1]);
+      }
+
+      // SP結果は概ね 着順 / 枠 / 馬番 / 馬名 ... の順。
+      const ints=[];
+      for(const c of cells.slice(0,5)){
+        const m=half12(c).match(/^(?:第)?(\d{1,2})(?:着)?$/);
+        if(m){ const v=Number(m[1]); if(v>=1&&v<=18) ints.push(v); }
+      }
+      if(ints.length>=3) no=ints[2];
+      else if(ints.length>=2) no=ints[ints.length-1];
+      if(!(no>=1&&no<=18)){
+        const ue=tr.querySelector('.Umaban,[class*="Umaban"],[class*="HorseNum"]');
+        no=num12(ue?.textContent||"");
+      }
+      if(!(no>=1&&no<=18) || seen.has(no)) continue;
+
+      const om=row.match(/(\d{1,4}(?:\.\d+)?)\s*倍/);
+      let odds=om?Number(om[1]):0;
+      let pop=0;
+      const pm=row.match(/(?:^|\s)([1-9]|1[0-8])\s*人気(?:\s|$)/);
+      if(pm) pop=Number(pm[1]);
+      if(!(odds>=1)){
+        const oe=tr.querySelector('span.OddsVal,[class*="OddsVal"],td.Odds,td[class*="Odds"],td[class*="odds"]');
+        const mm=half12(clean12(oe?.textContent||"")).match(/(\d{1,4}\.\d+)/);
+        if(mm) odds=Number(mm[1]);
+      }
+      if(!(pop>=1&&pop<=18)){
+        const pe=tr.querySelector('td.Popular,td[class*="Popular"],td[class*="Ninki"],span[class*="Popular"]');
+        pop=num12(pe?.textContent||"");
+      }
+
+      const name=clean12(link.textContent);
+      seen.add(no);
+      if(odds>=1 && odds<=9999.9){
+        horses.push({no,name:name||`#${no}`,odds:Math.round(odds*10)/10,pop:(pop>=1&&pop<=18)?pop:0});
+      }
+      if(rank>=1&&rank<=50) finish.push({rank,no,name:name||`#${no}`});
+    }
+
+    // 人気が欠けた行は最終単勝オッズ順から再生成。
+    horses.slice().sort((a,b)=>a.odds-b.odds||a.no-b.no).forEach((h,i)=>{ if(!h.pop) h.pop=i+1; });
+    finish.sort((a,b)=>a.rank-b.rank);
+    const top3=finish.slice(0,3).map(x=>x.no);
+
+    const body=half12(clean12(doc.body?.innerText||doc.body?.textContent||""));
+    let start=null;
+    const tm=body.match(/(?:^|\s)(\d{1,2}):(\d{2})\s+(?:芝|ダ|障|直|右|左|外)/);
+    if(tm) start=[Number(tm[1]),Number(tm[2])];
+    if(!start){
+      const tm2=body.match(/発走(?:時刻)?\s*[:：]?\s*(\d{1,2})[:時](\d{2})/);
+      if(tm2) start=[Number(tm2[1]),Number(tm2[2])];
+    }
+    const title=clean12(doc.querySelector('h1,.RaceName,.race_name')?.textContent||"");
+    const payouts=parsePayoutRows12(doc);
+    return {horses,finish,top3,start,title,payouts};
+  }
+
+  async function loadRace12(date,id){
+    const r=await bridgeFirst12([
+      `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_toggle_menu`,
+      `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_submenu`,
+      `https://race.netkeiba.com/race/result.html?race_id=${id}&rf=race_submenu`,
+      `https://db.netkeiba.com/race/${id}/`
+    ],html=>/結果払戻|払戻金|着\s*順|\d+(?:\.\d+)?\s*倍|人気/i.test(html));
+
+    const p=parseSpResult12(r.text,id,date);
+    if(p.top3.length<3) throw new Error(`Top3不足 ${p.top3.length}`);
+    if(p.horses.length<5) throw new Error(`最終単勝オッズ ${p.horses.length}頭`);
+
+    const track=tracks12[id.slice(4,6)]||"JRA";
+    const no=Number(id.slice(10,12));
+    const startTime=p.start?`${date}T${String(p.start[0]).padStart(2,"0")}:${String(p.start[1]).padStart(2,"0")}:00+09:00`:null;
+    return {
+      id,date,org:"JRA",track,no,
+      title:p.title||`${track}${no}R`,startTime,
+      oddsTiming:"FINAL",horses:p.horses,
+      result:{winner:p.top3[0],top3:p.top3,finish:p.finish,payouts:p.payouts},
+      source:`Bridge ${window.__narBridgeVersion||"1.7.x"} / race.sp result FINAL ODDS`,
+      historySafe:true
+    };
+  }
+
+  async function historyBridge12(date){
+    if(!bridgeReady12()) throw new Error("Bridge未接続");
+    const ymd=String(date).replace(/-/g,"");
+    const list=await bridgeFirst12([
+      `https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
+      `https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,
+      `https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`
+    ],html=>raceIds12(html,date).length>0);
+    const ids=raceIds12(list.text,date);
+    if(!ids.length) throw new Error("開催一覧からrace_idを取得できません");
+
+    const races=[],errors=[];
+    const concurrency=2;
+    for(let i=0;i<ids.length;i+=concurrency){
+      const batch=ids.slice(i,i+concurrency);
+      const got=await Promise.all(batch.map(async id=>{
+        try{return await loadRace12(date,id)}
+        catch(e){errors.push({raceId:id,error:String(e?.message||e)});return null}
+      }));
+      got.forEach(x=>{if(x) races.push(x)});
+      const pr=document.getElementById("btProgress");
+      if(pr) pr.textContent=`JRA Bridge-SP取得中… ${Math.min(i+batch.length,ids.length)}/${ids.length} / 成功${races.length}`;
+      await sleep12(60);
+    }
+    races.sort((a,b)=>(a.startTime||"").localeCompare(b.startTime||"")||a.track.localeCompare(b.track)||a.no-b.no);
+    if(!races.length) throw new Error(`Bridge-SPでも0件 / ${errors.slice(0,3).map(x=>x.raceId+":"+x.error).join(" / ")}`);
+    return {
+      ok:true,date,org:"JRA",oddsTiming:"FINAL",races,count:races.length,
+      diagnostics:{meetingSource:"bridge-sp-result",requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,errors:errors.slice(0,20)},
+      diagnosticSummary:{meetingSource:"bridge-sp-result",requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,firstErrors:errors.slice(0,5)},
+      source:`Bridge ${window.__narBridgeVersion||"1.7.x"} / SP-result`
+    };
+  }
+
+  // fixed11までのfetchHistoryDayを退避。NARとBridge失敗時の保険として使う。
+  const previousFetchHistoryDay12=fetchHistoryDay;
+  fetchHistoryDay=async function(date,org,options={}){
+    const kind=String(org||"").toUpperCase();
+    if(kind==="JRA" && bridgeReady12()){
+      try{
+        UI?.addLog?.(`JRA ${date}: Bridge ${window.__narBridgeVersion||"1.7.x"} を優先使用（SP結果ページからFINAL ODDS取得）`,"ok");
+        const d=await historyBridge12(date);
+        UI?.addLog?.(`JRA ${date}: Bridge-SP ${d.races.length}レース取得成功`,"ok");
+        return d;
+      }catch(e){
+        UI?.addLog?.(`JRA ${date}: Bridge-SP失敗 → Workerへフォールバック: ${e?.message||e}`,"warn");
+      }
+    }
+    return await previousFetchHistoryDay12(date,org,options);
+  };
+
+  // バージョンを画面で確認できる小さな表示。
+  setTimeout(()=>{
+    const diag=document.getElementById("btFetchDiag");
+    const host=diag || document.getElementById("btProgress")?.parentElement;
+    if(host && !document.getElementById("jraBridgeSpV12Badge")){
+      const s=document.createElement("span");
+      s.id="jraBridgeSpV12Badge";
+      s.className="muted";
+      s.style.marginLeft="8px";
+      s.textContent=`JRA取得: Bridge-SP v1.2 / ${window.__narBridgeVersion||"Bridge待機"}`;
+      host.appendChild(s);
+    }
+  },1000);
+
+  console.log("✅ JRA HISTORY BRIDGE-SP RESULT FIX v1.2 loaded",window.__narBridgeVersion||"");
+})();
+</script>
+
 </body>
 </html>
