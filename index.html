@@ -525,7 +525,7 @@ const nowJST=()=>new Date();
 const PAYOUT_SCHEMA_VERSION=5;
 const LIVE_STATE_SCHEMA_VERSION=3;
 const BACKTEST_SCHEMA_VERSION=6;
-const HISTORY_CACHE_SCHEMA_VERSION=5;
+const HISTORY_CACHE_SCHEMA_VERSION=6;
 
 function parsePayoutValue(value){
   if(value==null)return {number:null,unit:null};
@@ -1302,12 +1302,35 @@ function updateHistStatus(extra=""){
   const races=webHistory.reduce((n,d)=>n+(d.races?.length||0),0);
   $("#histStatus").textContent=`保存済み ${webHistory.length}日区分 / ${races}レース`+(extra?` / ${extra}`:"");
 }
-async function fetchHistoryDay(date,org){
+async function fetchHistoryDay(date,org,options={}){
   const base=(engine.settings.apiBase||"").replace(/\/$/,"");
-  const r=await fetch(`${base}/history?date=${encodeURIComponent(date)}&org=${encodeURIComponent(org)}`,{cache:"no-store"});
-  const d=await r.json();
-  if(!r.ok || d.error) throw new Error(d.message||d.error||("HTTP "+r.status));
-  return d;
+  const retries=Math.max(1,Number(options.retries||3));
+  const timeoutMs=Math.max(3000,Number(options.timeoutMs||12000));
+  let lastError=null;
+
+  for(let attempt=1;attempt<=retries;attempt++){
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
+    try{
+      const url=`${base}/history?date=${encodeURIComponent(date)}&org=${encodeURIComponent(org)}&_=${Date.now()}_${attempt}`;
+      const r=await fetch(url,{cache:"no-store",signal:ctrl.signal,headers:{"Cache-Control":"no-cache","Pragma":"no-cache"}});
+      const text=await r.text();
+      let d;
+      try{d=text?JSON.parse(text):{}}catch(_){throw new Error(`JSON解析失敗 HTTP ${r.status}: ${text.slice(0,120)}`)}
+      if(!r.ok || d.error)throw new Error(d.message||d.error||("HTTP "+r.status));
+      if(!Array.isArray(d.races))d.races=[];
+      d.date=d.date||date;
+      d.org=d.org||org;
+      d._fetchMeta={attempt,status:r.status,fetchedAt:new Date().toISOString()};
+      return d;
+    }catch(e){
+      lastError=e?.name==="AbortError"?new Error(`タイムアウト ${timeoutMs}ms`):e;
+      if(attempt<retries)await new Promise(resolve=>setTimeout(resolve,350*attempt));
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+  throw lastError||new Error("取得失敗");
 }
 $("#fetchHistory").onclick=async()=>{
   const from=$("#histFrom").value,to=$("#histTo").value,org=$("#histOrg").value;
@@ -2161,10 +2184,12 @@ function renderBt(result){
     return `<tr><td>${i+1}</td><td>${c.avatar} ${c.name}</td><td>${fmtY(c.bankroll)}</td><td>${fmtY(c.bankroll-c.initial)}</td><td>${roi.toFixed(1)}%</td><td>${hit.toFixed(1)}%</td><td>${(c.maxDD*100).toFixed(1)}%</td><td>${c.bets}</td><td>${jra.toFixed(1)}%</td><td>${nar.toFixed(1)}%</td></tr>`;
   }).join("");
 }
-async function getHistoryBlock(date,org){
+async function getHistoryBlock(date,org,options={}){
+  const force=!!options.force;
   const cached=webHistory.find(x=>x.date===date&&x.org===org);
-  if(cached)return cached;
-  const d=await fetchHistoryDay(date,org);
+  // 空ブロックは古い取得失敗の可能性があるため再取得する。
+  if(!force && cached && Array.isArray(cached.races) && cached.races.length>0)return cached;
+  const d=await fetchHistoryDay(date,org,{retries:3,timeoutMs:12000});
   webHistory=webHistory.filter(x=>!(x.date===date&&x.org===org));
   webHistory.push(d);saveWebHistoryCache();
   return d;
@@ -2177,22 +2202,77 @@ $("#runWebBacktest").onclick=async()=>{
   const orgs=org==="BOTH"?["JRA","NAR"]:[org];
   const total=dates.length*orgs.length;
   const blocks=[];
+  const fetchStats={JRA:{races:0,blocks:0,empty:0,errors:[]},NAR:{races:0,blocks:0,empty:0,errors:[]}};
+
+  let diag=document.getElementById("btFetchDiag");
+  if(!diag){
+    diag=document.createElement("div");
+    diag.id="btFetchDiag";
+    diag.className="notice";
+    diag.style.marginTop="8px";
+    const p=document.getElementById("btProgress");
+    p?.insertAdjacentElement("afterend",diag);
+  }
+  const renderDiag=()=>{
+    const j=fetchStats.JRA,n=fetchStats.NAR;
+    diag.innerHTML=`<b>取得状況</b>　JRA ${j.races}レース / ${j.blocks}日区分 / 空${j.empty} / エラー${j.errors.length}件　｜　NAR ${n.races}レース / ${n.blocks}日区分 / 空${n.empty} / エラー${n.errors.length}件`;
+  };
+
   $("#runWebBacktest").disabled=true;
   try{
     let n=0;
     for(const date of dates){
       for(const o of orgs){
         $("#btProgress").textContent=`${date} ${o} 取得中… ${n}/${total}`;
-        try{blocks.push(await getHistoryBlock(date,o))}
-        catch(e){UI.addLog(`BT ${date} ${o} 取得失敗: ${e.message}`,"error")}
+        try{
+          // 必ず現在のWorkerを再確認。特にJRAの空キャッシュを再利用しない。
+          const d=await getHistoryBlock(date,o,{force:o==="JRA"});
+          blocks.push(d);
+          const cnt=Array.isArray(d.races)?d.races.length:0;
+          fetchStats[o].races+=cnt;
+          fetchStats[o].blocks++;
+          if(cnt===0){
+            fetchStats[o].empty++;
+            const dow=new Date(date+"T00:00:00+09:00").getDay();
+            if(o==="JRA"&&(dow===0||dow===6)){
+              UI.addLog(`JRA ${date}: 0レース応答（週末）。Worker /history を要確認`,"warn");
+            }
+          }
+        }catch(e){
+          fetchStats[o].errors.push({date,message:e.message});
+          UI.addLog(`BT ${date} ${o} 取得失敗（3回試行）: ${e.message}`,"error");
+        }
         n++;
-        $("#btProgress").textContent=`取得 ${n}/${total}`;
+        renderDiag();
+        $("#btProgress").textContent=`取得 ${n}/${total} / JRA ${fetchStats.JRA.races} / NAR ${fetchStats.NAR.races}レース`;
       }
     }
-    $("#btProgress").textContent=`計算準備中… ${blocks.length}ブロック`;
+
+    // JRAを要求したのに1レースも取得できなければ、NARだけで「JRA+NAR完了」にしない。
+    if((org==="BOTH"||org==="JRA") && fetchStats.JRA.races===0){
+      btResult=null;
+      try{Store.del("btResultAnomalyAuditV1")}catch(_){}
+      const errText=fetchStats.JRA.errors.length
+        ? fetchStats.JRA.errors.map(x=>`${x.date}:${x.message}`).slice(0,3).join(" / ")
+        : "JRA /history が全日0レースを返しました";
+      $("#btProgress").textContent=`停止: JRA 0レース / NAR ${fetchStats.NAR.races}レース。JRA未取得のためバックテストしません。`;
+      diag.style.borderColor="#8b3131";
+      diag.innerHTML+=`<div style="margin-top:6px;color:#ff9c9c"><b>JRA取得エラー:</b> ${errText}</div>`;
+      UI.addLog("JRAが0レースのため、NARだけの誤バックテストを防止して停止しました","error");
+      return;
+    }
+
+    if(org==="NAR" && fetchStats.NAR.races===0){
+      btResult=null;
+      $("#btProgress").textContent="停止: NAR 0レース。取得結果を確認してください。";
+      return;
+    }
+
+    $("#btProgress").textContent=`計算準備中… JRA ${fetchStats.JRA.races} / NAR ${fetchStats.NAR.races}レース`;
     btResult=await runBacktestOnHistory(blocks,(done,total)=>{
-      $("#btProgress").textContent=`計算中… ${done}/${total}レース`;
+      $("#btProgress").textContent=`計算中… ${done}/${total}レース / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races}`;
     });
+    btResult.fetchStats=fetchStats;
     $("#btProgress").textContent=`描画中…`;
     await new Promise(resolve=>setTimeout(resolve,0));
     renderBt(btResult);
@@ -2201,7 +2281,9 @@ $("#runWebBacktest").onclick=async()=>{
     const rejectedBlockCount=ig.rejectedBlocks?.length||0;
     const warningBlockCount=ig.warningBlocks?.length||0;
     const warningRaceCount=ig.warningRaces?.length||0;
-    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${rejectedCount}レース / 警告ブロック${warningBlockCount}件 / 警告レース${warningRaceCount}件 / FINAL ODDS / JRA+NAR / ANTI-LEAK`;
+    const modeLabel=org==="BOTH"?"JRA+NAR":org;
+    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races} / 除外${rejectedCount} / 警告ブロック${warningBlockCount} / ${modeLabel} / FINAL ODDS / ANTI-LEAK`;
+    renderDiag();
     if(rejectedBlockCount)UI.addLog(`整合性監査: ${rejectedBlockCount}ブロックを構造異常で除外しました`,"warn");
     if(warningBlockCount)UI.addLog(`JRA警告: ${warningBlockCount}ブロックで結果分布が偏っていますが、予測入力から着順/popを遮断した上で採用しました`,"warn");
     if(btResult.races===0){
@@ -2218,10 +2300,9 @@ $("#runWebBacktest").onclick=async()=>{
       UI.addLog("BT保存を軽量化しました: "+e.message,"warn");
     }
 
-    // バックテスト結果JSON相当のオブジェクトを直接グラフへ
     if(typeof JsonGraph!=="undefined"){
       JsonGraph.render(btResult);
-      $("#jsonGraphStatus").textContent=`バックテスト結果を直接グラフ化: ${btResult.races}レース`;
+      $("#jsonGraphStatus").textContent=`バックテスト結果を直接グラフ化: ${btResult.races}レース / JRA ${fetchStats.JRA.races} / NAR ${fetchStats.NAR.races}`;
     }
   }finally{$("#runWebBacktest").disabled=false}
 };
