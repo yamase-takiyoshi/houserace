@@ -177,7 +177,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED17 本日開催フォールバック対応</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
 
 <div class="kpis">
@@ -839,6 +839,213 @@ class DemoProvider{
     return race.result;
   }
 }
+
+/* ============================================================
+   FIXED17 TODAY RACE DISCOVERY / FAIL-SAFE
+   - /races が空・失敗でも即「本日終了」にしない
+   - Worker /history の正規化済みraceを第2候補として利用
+   - Cloudflare odds proxy / 住宅IP Bridge 経由の netkeiba開催一覧を第3候補に利用
+   - race_id / 発走時刻を実データから復元（架空レースは生成しない）
+   ============================================================ */
+const LIVE_JRA_TRACKS={
+  "01":"札幌","02":"函館","03":"福島","04":"新潟","05":"東京",
+  "06":"中山","07":"中京","08":"京都","09":"阪神","10":"小倉"
+};
+const LIVE_NAR_TRACK_WORDS=["帯広","門別","盛岡","水沢","浦和","船橋","大井","川崎","金沢","笠松","名古屋","園田","姫路","高知","佐賀"];
+
+function liveExtractRaceArray(d){
+  if(Array.isArray(d)) return d;
+  if(!d || typeof d!=="object") return [];
+  if(Array.isArray(d.races)) return d.races;
+  if(Array.isArray(d.items)) return d.items;
+  if(Array.isArray(d.schedule)) return d.schedule;
+  if(Array.isArray(d.data)) return d.data;
+  if(Array.isArray(d.data?.races)) return d.data.races;
+  return [];
+}
+function liveParseStart(value,date){
+  if(value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
+  const raw=String(value??"").trim();
+  if(!raw) return null;
+  let m=raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if(m){
+    const hh=Number(m[1]),mm=Number(m[2]),ss=Number(m[3]||0);
+    if(hh<24&&mm<60&&ss<60) return `${date}T${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}+09:00`;
+  }
+  let normalized=raw;
+  if(/^\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}/.test(normalized)) normalized=normalized.replace(/\s+/,"T");
+  if(/^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?$/.test(normalized)) normalized += "+09:00";
+  const t=new Date(normalized);
+  return Number.isFinite(t.getTime())?t.toISOString():null;
+}
+function liveNormalizeRace(r,date,forcedOrg=""){
+  if(!r || typeof r!=="object") return null;
+  const id=String(r.id??r.raceId??r.race_id??"").trim();
+  const org=String(forcedOrg||r.org||r.organization||r.type||"").toUpperCase()==="NAR"?"NAR":"JRA";
+  const no=Number(r.no??r.raceNo??r.race_no??(id.match(/^\d{12}$/)?id.slice(10,12):0));
+  const startTime=liveParseStart(r.startTime??r.start_time??r.postTime??r.post_time??r.raceTime??r.race_time??r.time,date);
+  if(!startTime) return null;
+  let track=String(r.track??r.venue??r.course??r.place??"").trim();
+  if(!track && org==="JRA" && /^\d{12}$/.test(id)) track=LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA";
+  if(!track) track=org;
+  const title=String(r.title??r.raceName??r.race_name??"").trim()||`${track} ${Number.isFinite(no)&&no>0?no:"?"}R`;
+  return {
+    ...r,id:id||`${date}-${org}-${track}-${no||title}`,date:r.date||date,org,track,
+    no:Number.isFinite(no)&&no>0?no:(Number(r.no)||0),title,startTime,
+    status:r.status||"WAITING",horses:Array.isArray(r.horses)?r.horses:[],
+    result:r.result||null,betLocked:!!r.betLocked,settled:!!r.settled
+  };
+}
+function liveNormalizeRaceList(raw,date,forcedOrg=""){
+  const seen=new Set(),out=[];
+  for(const r of liveExtractRaceArray(raw)){
+    const x=liveNormalizeRace(r,date,forcedOrg);
+    if(!x) continue;
+    const key=x.id||`${x.org}|${x.track}|${x.no}|${x.startTime}`;
+    if(seen.has(key)) continue;
+    seen.add(key);out.push(x);
+  }
+  return out.sort((a,b)=>new Date(a.startTime)-new Date(b.startTime)||String(a.track).localeCompare(String(b.track),"ja")||Number(a.no)-Number(b.no));
+}
+function liveRaceIdFromHref(href){
+  const s=String(href||"");
+  let m=s.match(/[?&]race_id=(\d{12})/i)||s.match(/race_id%3D(\d{12})/i)||s.match(/(?:^|[^0-9])(20\d{10})(?:[^0-9]|$)/);
+  return m?m[1]:"";
+}
+function liveNearestContext(anchor){
+  let n=anchor;
+  for(let i=0;n&&i<9;i++,n=n.parentElement){
+    const tx=String(n.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
+    if(tx.length>=3 && tx.length<1000 && /\b\d{1,2}:\d{2}\b/.test(tx)) return tx;
+  }
+  return String(anchor?.parentElement?.textContent||anchor?.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
+}
+function liveInferNarTrack(text){
+  const t=String(text||"");
+  return LIVE_NAR_TRACK_WORDS.find(x=>t.includes(x))||"NAR";
+}
+function liveParseNetkeibaRaceList(html,date,org){
+  const doc=new DOMParser().parseFromString(String(html||""),"text/html");
+  const map=new Map();
+  const anchors=[...doc.querySelectorAll('a[href*="race_id"],a[data-race-id]')];
+  for(const a of anchors){
+    const id=String(a.dataset?.raceId||liveRaceIdFromHref(a.getAttribute("href")||a.href||"")).replace(/\D/g,"");
+    if(!/^20\d{10}$/.test(id) || id.slice(0,4)!==date.slice(0,4)) continue;
+    const no=Number(id.slice(10,12));
+    if(!(no>=1&&no<=12)) continue;
+    const ctx=liveNearestContext(a);
+    const tm=ctx.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+    const startTime=tm?`${date}T${String(Number(tm[1])).padStart(2,"0")}:${tm[2]}:00+09:00`:null;
+    const track=org==="JRA"?(LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA"):liveInferNarTrack(ctx);
+    const at=String(a.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
+    const raceName=(at && at.length<80 && !/^\d+R$/.test(at))?at:"";
+    const x={id,date,org,track,no,title:raceName||`${track} ${no}R`,startTime,status:"WAITING",horses:[],result:null,betLocked:false,settled:false,source:"netkeiba race list"};
+    const old=map.get(id);
+    if(!old || (!old.startTime && startTime)) map.set(id,x);
+  }
+  return [...map.values()];
+}
+async function liveHtmlViaProxyOrBridge(url){
+  const st=Store.get("settings",{});
+  const proxy=String(st.netkeibaProxyUrl||"").trim().replace(/\/$/,"");
+  const errors=[];
+  if(proxy){
+    try{
+      const ep=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
+      const r=await fetch(ep,{cache:"no-store"});
+      const text=await r.text();
+      const ct=String(r.headers.get("content-type")||"").toLowerCase();
+      if(r.ok && text.length>=300 && !ct.includes("application/json")) return {text,via:"cloudflare-proxy"};
+      errors.push(`proxy HTTP ${r.status}`);
+    }catch(e){errors.push(`proxy ${e?.message||e}`)}
+  }
+  if(typeof window.__narBridgeFetch==="function" && window.__bridgeAbsent!==true){
+    try{
+      const r=await window.__narBridgeFetch(url);
+      const status=Number(r?.status||0),text=String(r?.text||"");
+      if(status>=200&&status<400&&text.length>=300) return {text,via:`Bridge ${window.__narBridgeVersion||""}`.trim()};
+      errors.push(`Bridge HTTP ${status||0}`);
+    }catch(e){errors.push(`Bridge ${e?.message||e}`)}
+  }
+  throw new Error(errors.join(" / ")||"Cloudflare Proxy / 住宅IP Bridge が利用できません");
+}
+async function liveResolveRaceDetail(r,date){
+  if(r.startTime) return r;
+  const base=r.org==="NAR"?"https://nar.netkeiba.com/race/shutuba.html":"https://race.netkeiba.com/race/shutuba.html";
+  try{
+    const x=await liveHtmlViaProxyOrBridge(`${base}?race_id=${encodeURIComponent(r.id)}`);
+    const doc=new DOMParser().parseFromString(x.text,"text/html");
+    const body=String(doc.body?.textContent||"").replace(/[\u00a0　\s]+/g," ");
+    const tm=body.match(/([01]?\d|2[0-3]):([0-5]\d)\s*発走/)||body.match(/発走(?:時刻)?\s*[:：]?\s*([01]?\d|2[0-3])[:時]([0-5]\d)/);
+    if(tm) r.startTime=`${date}T${String(Number(tm[1])).padStart(2,"0")}:${tm[2]}:00+09:00`;
+    const title=String(doc.querySelector('.RaceName,h1.RaceName,.race_name,h1')?.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
+    if(title && title.length<100) r.title=title;
+    r.source=(r.source?`${r.source} + `:"")+x.via;
+  }catch(_){ }
+  return r;
+}
+async function liveFillMissingTimes(races,date){
+  const miss=races.filter(r=>!r.startTime);
+  const concurrency=4;
+  for(let i=0;i<miss.length;i+=concurrency){
+    await Promise.all(miss.slice(i,i+concurrency).map(r=>liveResolveRaceDetail(r,date)));
+  }
+  return races.filter(r=>r.startTime&&Number.isFinite(new Date(r.startTime).getTime()));
+}
+async function liveJraPlanFromHistory(provider,date){
+  try{
+    const d=await provider.json(`/history?date=${encodeURIComponent(date)}&org=JRA&_plan=${Date.now()}`);
+    const direct=liveNormalizeRaceList(d,date,"JRA");
+    if(direct.length) return direct;
+    const meetings=Array.isArray(d?.diagnostics?.meetings)?d.diagnostics.meetings:[];
+    const ids=[];
+    for(const m of meetings){
+      const venue=String(m?.venueCode||"").padStart(2,"0");
+      const kai=String(Number(m?.kai||0)).padStart(2,"0");
+      const day=String(Number(m?.day||0)).padStart(2,"0");
+      const count=Math.min(12,Math.max(1,Number(m?.count||12)));
+      if(!/^\d{2}$/.test(venue)||Number(venue)<1||Number(venue)>10||Number(kai)<1||Number(day)<1) continue;
+      for(let no=1;no<=count;no++) ids.push(`${date.slice(0,4)}${venue}${kai}${day}${String(no).padStart(2,"0")}`);
+    }
+    return ids.map(id=>({id,date,org:"JRA",track:LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA",no:Number(id.slice(10,12)),title:`${LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA"} ${Number(id.slice(10,12))}R`,startTime:null,status:"WAITING",horses:[],result:null,betLocked:false,settled:false,source:"Worker history meeting plan"}));
+  }catch(_){return []}
+}
+async function liveDiscoverViaNetkeiba(provider,date){
+  const ymd=date.replace(/-/g,"");
+  const out=[],errors=[];
+  const specs=[
+    ["JRA",[
+      `https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
+      `https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,
+      `https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`
+    ]],
+    ["NAR",[
+      `https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
+      `https://nar.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`
+    ]]
+  ];
+  for(const [org,urls] of specs){
+    let found=[];
+    for(const u of urls){
+      try{
+        const x=await liveHtmlViaProxyOrBridge(u);
+        const parsed=liveParseNetkeibaRaceList(x.text,date,org);
+        if(parsed.length){found=parsed;break}
+      }catch(e){errors.push(`${org}: ${e?.message||e}`)}
+    }
+    if(org==="JRA" && !found.length) found=await liveJraPlanFromHistory(provider,date);
+    if(found.length){
+      found=await liveFillMissingTimes(found,date);
+      out.push(...found);
+    }
+  }
+  const seen=new Set();
+  const clean=out.filter(r=>{if(!r?.id||seen.has(r.id))return false;seen.add(r.id);return true});
+  clean.sort((a,b)=>new Date(a.startTime)-new Date(b.startTime)||String(a.track).localeCompare(String(b.track),"ja")||a.no-b.no);
+  if(!clean.length) throw new Error(errors.slice(0,4).join(" / ")||"netkeiba開催一覧から0件");
+  return clean;
+}
+
 class HttpProvider{
   constructor(base){this.base=(base||"").replace(/\/$/,"");this.kind="live";}
   async json(url){
@@ -848,8 +1055,39 @@ class HttpProvider{
     return await r.json();
   }
   async getRaces(){
-    const d=await this.json("/races?date="+encodeURIComponent(today()));
-    return (d.races||d).map(r=>({...r,startTime:new Date(r.startTime).toISOString(),status:r.status||"WAITING",betLocked:!!r.betLocked,settled:!!r.settled}));
+    const date=today();
+    const errors=[];
+
+    // 1) 正規のLIVE /races。配列以外のラッパー形式も受け付ける。
+    try{
+      const d=await this.json("/races?date="+encodeURIComponent(date));
+      const direct=liveNormalizeRaceList(d,date);
+      if(direct.length){this.lastRaceSource="LIVE /races";return direct}
+      errors.push("/races: 0件");
+    }catch(e){errors.push("/races: "+(e?.message||e))}
+
+    // 2) /history が当日raceを返せるWorkerなら、その正規化済みraceを利用。
+    const merged=[];
+    for(const org of ["JRA","NAR"]){
+      try{
+        const d=await this.json(`/history?date=${encodeURIComponent(date)}&org=${org}&_today=${Date.now()}`);
+        merged.push(...liveNormalizeRaceList(d,date,org));
+      }catch(e){errors.push(`/history ${org}: ${e?.message||e}`)}
+    }
+    if(merged.length){
+      const seen=new Set();
+      const races=merged.filter(r=>!seen.has(r.id)&&(seen.add(r.id),true)).sort((a,b)=>new Date(a.startTime)-new Date(b.startTime));
+      this.lastRaceSource="LIVE /history fallback";
+      return races;
+    }
+
+    // 3) Workerが開催一覧を返さない時は、Cloudflare Proxy / 住宅IP Bridge でnetkeibaの実開催一覧へフォールバック。
+    try{
+      const races=await liveDiscoverViaNetkeiba(this,date);
+      if(races.length){this.lastRaceSource="netkeiba race-list fallback";return races}
+    }catch(e){errors.push("netkeiba: "+(e?.message||e))}
+
+    throw new Error("本日の開催取得に失敗: "+errors.slice(0,6).join(" / "));
   }
   async getOdds(race){
     const d=await this.json("/odds?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
@@ -921,21 +1159,43 @@ class SimulationEngine{
     this.selected=null;this.lastOddsAt=null;this.filter="ALL";
     this.provider=this.settings.mode==="live"?new HttpProvider(this.settings.apiBase):new DemoProvider();
     this.timer=null;
+    this.raceLoadError="";
+    this.lastRaceReloadAt=0;
+    this._reloadingRaces=false;
   }
   save(){Store.set("settings",this.settings);Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
   async init(){
-    try{
-      this.races=await this.provider.getRaces();
-      this.restoreRaceState();
-      this.log("システム起動。本日の開催を読み込みました。");
-      this.setDataBadge(this.provider.kind==="live"?"LIVE":"DEMO");
-    }catch(e){
-      this.log("開催取得エラー: "+e.message,"error");this.setDataBadge("ERROR");
-      if(this.settings.mode==="live"){this.races=[]}
-    }
+    await this.reloadTodayRaces(false);
     UI.renderAll(this);
     this.loop();
     this.timer=setInterval(()=>this.loop(),1000);
+  }
+  async reloadTodayRaces(manual=false){
+    if(this._reloadingRaces) return false;
+    this._reloadingRaces=true;
+    this.lastRaceReloadAt=Date.now();
+    try{
+      const races=await this.provider.getRaces();
+      this.races=Array.isArray(races)?races:[];
+      this.restoreRaceState();
+      this.raceLoadError="";
+      this.setDataBadge(this.provider.kind==="live"?"LIVE":"DEMO");
+      const now=Date.now();
+      this.selected=this.races.find(r=>new Date(r.startTime).getTime()>now&&!r.settled)||this.races.find(r=>!r.settled)||this.races[0]||null;
+      const src=this.provider.lastRaceSource?` / ${this.provider.lastRaceSource}`:"";
+      this.log(`${manual?"再取得":"システム起動"}。本日の開催 ${this.races.length}レースを読み込みました${src}。`);
+      return true;
+    }catch(e){
+      this.raceLoadError=String(e?.message||e);
+      this.log("開催取得エラー: "+this.raceLoadError,"error");
+      this.setDataBadge("ERROR");
+      if(this.settings.mode==="live") this.races=[];
+      this.selected=null;
+      return false;
+    }finally{
+      this._reloadingRaces=false;
+      if(manual) UI.renderAll(this);
+    }
   }
   restoreRaceState(){
     const rt=Store.get("runtime",null);
@@ -950,6 +1210,12 @@ class SimulationEngine{
   async loop(){
     const now=Date.now();
     $("#clock").textContent=new Date().toLocaleString("ja-JP");
+
+    // LIVE開催取得に失敗した時は「本日終了」にせず30秒ごとに自動再取得。
+    if(this.settings.mode==="live" && !this.races.length && UI.dataStatus==="ERROR" && !this._reloadingRaces && now-this.lastRaceReloadAt>=30000){
+      UI.autoStep="開催情報を再取得中";
+      await this.reloadTodayRaces(false);
+    }
 
     const activeRaces=this.races
       .filter(r=>(r.org==="JRA"?this.settings.jra:this.settings.nar))
@@ -1026,7 +1292,7 @@ class SimulationEngine{
           p==="WAIT_RESULT" ? `${next.title} 結果待ち` :
           p;
       }else{
-        UI.autoStep="本日終了";
+        UI.autoStep=(this.raceLoadError||UI.dataStatus==="ERROR")?"開催取得エラー":"本日終了";
       }
     }
 
@@ -1171,7 +1437,7 @@ const UI={
   },
   updateKpis(e){
     const now=Date.now(), upcoming=e.races.filter(r=>!r.settled&&new Date(r.startTime).getTime()>now).sort((a,b)=>new Date(a.startTime)-new Date(b.startTime))[0];
-    $("#kpiNext").textContent=upcoming?upcoming.title:"終了";
+    $("#kpiNext").textContent=upcoming?upcoming.title:((e.raceLoadError||this.dataStatus==="ERROR")?"取得エラー":"終了");
     if(upcoming){
       const closeSec=Math.max(0,Math.floor((betCloseTime(upcoming,e.settings)-now)/1000));
       $("#kpiCountdown").textContent=`${Math.floor(closeSec/60)}:${String(closeSec%60).padStart(2,"0")}`;
@@ -1188,14 +1454,35 @@ const UI={
   },
   renderRaces(e){
     const el=$("#raceList");el.innerHTML="";
-    e.races.filter(r=>e.filter==="ALL"||r.org===e.filter).forEach(r=>{
+    const visible=e.races.filter(r=>e.filter==="ALL"||r.org===e.filter);
+    if(!visible.length){
+      if(e.raceLoadError||this.dataStatus==="ERROR"){
+        const d=document.createElement("div");
+        d.style.cssText="padding:12px;border:1px solid #6e3a3a;border-radius:10px;background:#2a1515;color:#ffd0d0;line-height:1.55";
+        d.innerHTML=`<b>⚠ 開催情報の取得に失敗しました</b><div class="muted" style="margin:6px 0 10px;white-space:normal">${escapeHtml(e.raceLoadError||"通信エラー")}</div><button type="button" class="primary" id="retryTodayRaces">本日の開催を再取得</button>`;
+        el.appendChild(d);
+        const b=d.querySelector("#retryTodayRaces");if(b)b.onclick=()=>e.reloadTodayRaces(true);
+      }else{
+        const d=document.createElement("div");d.className="muted";d.style.padding="12px";d.textContent="本日の開催はありません。";el.appendChild(d);
+      }
+      return;
+    }
+    visible.forEach(r=>{
       const b=document.createElement("button");b.className="racebtn"+(e.selected?.id===r.id?" current":"")+(r.settled?" done":"");
       b.innerHTML=`<strong>${r.org} ${r.title}</strong><span class="muted">${new Date(r.startTime).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",second:"2-digit"})} · ${r.status}</span>`;
       b.onclick=()=>{e.selected=r;UI.renderAll(e)};el.appendChild(b);
     })
   },
   renderCurrent(e){
-    const r=e.selected||e.races[0];if(!r)return;
+    const r=e.selected||e.races[0];
+    if(!r){
+      $("#raceTitle").textContent=(e.raceLoadError||this.dataStatus==="ERROR")?"開催情報を取得できません":"本日の開催はありません";
+      $("#raceStatus").textContent=(e.raceLoadError||this.dataStatus==="ERROR")?"ERROR":"NO RACE";
+      $("#betStatus").textContent="未判定";
+      $("#raceMeta").textContent=e.raceLoadError?"再取得を実行してください":"";
+      $("#horseBody").innerHTML="";
+      return;
+    }
     $("#raceTitle").textContent=`${r.org} ${r.title}`;
     $("#raceStatus").textContent=r.status;
     $("#betStatus").textContent=r.betLocked?`締切${e.settings.betTiming}分前固定済`:"未判定";
