@@ -4367,5 +4367,141 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 })();
 </script>
 
+
+<script>
+/* ============================================================
+   NAR STRICT PAYOUT CACHE BYPASS v1.8
+   2026-09-12
+   原因修正:
+   - getHistoryBlock が NAR の旧 webHistory を先に返していたため、
+     v1.7 の厳密払戻再取得が呼ばれないケースを修正。
+   - v1.8 初回は旧NAR履歴と旧バックテスト結果を強制破棄。
+   - NARキャッシュは strict payout contract 付きだけ再利用。
+   ============================================================ */
+(() => {
+  'use strict';
+  if(window.__NAR_STRICT_CACHE_BYPASS_V18__) return;
+  window.__NAR_STRICT_CACHE_BYPASS_V18__=true;
+
+  const KEY='narStrictPayoutV18';
+
+  function clearLegacyNarCache18(){
+    try{
+      if(Store.get(KEY,0)!==18){
+        Store.del('webHistory');
+        Store.del('btResultAnomalyAuditV1');
+        Store.set(KEY,18);
+        try{ webHistory=[]; }catch(_){ }
+        try{ btResult=null; }catch(_){ }
+        console.warn('NAR STRICT v1.8: 旧NAR履歴キャッシュ/BT結果を強制破棄');
+        const p=document.getElementById('btProgress');
+        if(p) p.textContent='NAR厳密払戻 v1.8: 旧キャッシュを破棄しました。再取得してください。';
+      }
+    }catch(e){ console.warn('NAR v1.8 cache clear',e); }
+  }
+
+  function isStrictNarBlock18(block){
+    if(!block || String(block.org||'').toUpperCase()!=='NAR' || !Array.isArray(block.races)) return false;
+    const c=block.narPayoutContract;
+    if(!c || c.strict!==true || String(c.unit||'')!=='yen_per_100') return false;
+    // 旧プレーン数値が1件でも残っていれば再利用禁止。
+    for(const race of block.races){
+      const p=race?.result?.payouts||{};
+      for(const bucket of ['win','place','wide','trio']){
+        for(const v of Object.values(p[bucket]||{})){
+          if(v==null) continue;
+          if(typeof v!=='object' || Array.isArray(v)) return false;
+          const y=Number(v.refundYen ?? v.payoutYen ?? v.amount);
+          if(!(Number.isFinite(y)&&y>=100&&y%10===0&&v.trusted===true)) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  clearLegacyNarCache18();
+
+  if(typeof getHistoryBlock==='function'){
+    const oldGetHistoryBlock18=getHistoryBlock;
+    getHistoryBlock=async function(date,org,options={}){
+      const kind=String(org||'').toUpperCase();
+      if(kind!=='NAR') return oldGetHistoryBlock18(date,org,options);
+
+      const cached=(Array.isArray(webHistory)?webHistory:[]).find(x=>x.date===date&&String(x.org||'').toUpperCase()==='NAR');
+      if(!options.force && isStrictNarBlock18(cached)){
+        UI?.addLog?.(`NAR ${date}: 厳密払戻キャッシュを再利用 (${cached.races.length}R)`,'ok');
+        return cached;
+      }
+
+      if(cached){
+        UI?.addLog?.(`NAR ${date}: 旧/非厳密キャッシュを無視して公式払戻を再取得`,'warn');
+      }else{
+        UI?.addLog?.(`NAR ${date}: 公式払戻を厳密取得`,'ok');
+      }
+
+      const d=await fetchHistoryDay(date,'NAR',{...options,force:true,retries:3,timeoutMs:18000});
+      if(!isStrictNarBlock18(d)){
+        const c=d?.narPayoutContract||{};
+        throw new Error(`NAR厳密払戻契約が成立しません loaded=${c.loaded??'-'} failed=${c.failed??'-'}`);
+      }
+
+      webHistory=(Array.isArray(webHistory)?webHistory:[]).filter(x=>!(x.date===date&&String(x.org||'').toUpperCase()==='NAR'));
+      webHistory.push(d);
+      try{ saveWebHistoryCache(); }catch(e){ console.warn('NAR v1.8 history save',e); }
+      return d;
+    };
+  }
+
+  // バックテスト直前の最終防衛。NARにプレーン数値払戻が残っていれば即時除去。
+  if(typeof runBacktestOnHistory==='function'){
+    const oldRun18=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      let removed=0, trusted=0, narRaces=0;
+      const safe=(Array.isArray(historyBlocks)?historyBlocks:[]).map(block=>{
+        if(String(block?.org||'').toUpperCase()!=='NAR') return block;
+        const b={...block,races:(block.races||[]).map(r=>{
+          narRaces++;
+          const rr={...r,result:{...(r.result||{})}};
+          const src=r?.result?.payouts||{};
+          const dst={win:{},place:{},wide:{},trio:{}};
+          for(const bucket of ['win','place','wide','trio']){
+            for(const [k,v] of Object.entries(src[bucket]||{})){
+              const ok=v && typeof v==='object' && !Array.isArray(v) &&
+                Number.isFinite(Number(v.refundYen ?? v.payoutYen ?? v.amount)) &&
+                Number(v.refundYen ?? v.payoutYen ?? v.amount)>=100 &&
+                Number(v.refundYen ?? v.payoutYen ?? v.amount)%10===0 &&
+                v.trusted===true && String(v.unit||'')==='yen_per_100';
+              if(ok){ dst[bucket][k]=v; trusted++; }
+              else if(v!=null){ removed++; }
+            }
+          }
+          rr.result.payouts=dst;
+          return rr;
+        })};
+        return b;
+      });
+      const result=await oldRun18(safe,onProgress);
+      result.narStrictV18={narRaces,trustedPayoutEntries:trusted,removedUntrustedEntries:removed,strict:true};
+      return result;
+    };
+  }
+
+  // 画面にv1.8稼働を表示。
+  setTimeout(()=>{
+    const host=document.getElementById('btFetchDiag') || document.getElementById('btProgress');
+    if(host && !document.getElementById('narStrictV18Badge')){
+      const el=document.createElement('div');
+      el.id='narStrictV18Badge';
+      el.className='muted';
+      el.style.marginTop='5px';
+      el.textContent='NAR払戻: STRICT v1.8 / 公式「円」表のみ / 旧キャッシュ無効';
+      host.insertAdjacentElement('afterend',el);
+    }
+  },600);
+
+  console.log('✅ NAR STRICT PAYOUT CACHE BYPASS v1.8 loaded');
+})();
+</script>
+
 </body>
 </html>
