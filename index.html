@@ -524,7 +524,7 @@ const nowJST=()=>new Date();
 // Data contracts. Increment when settlement/cache semantics change.
 const PAYOUT_SCHEMA_VERSION=5;
 const LIVE_STATE_SCHEMA_VERSION=3;
-const BACKTEST_SCHEMA_VERSION=5;
+const BACKTEST_SCHEMA_VERSION=6;
 const HISTORY_CACHE_SCHEMA_VERSION=5;
 
 function parsePayoutValue(value){
@@ -1496,6 +1496,7 @@ function btValidateRace(raw){
   if(nums.some(n=>!Number.isFinite(n)||n<=0)||new Set(nums).size!==nums.length){
     return {ok:false,reason:"BAD_OR_DUP_HORSE_NO"};
   }
+
   const odds=horses.map(h=>Number(h?.odds));
   if(odds.some(o=>!Number.isFinite(o)||o<=1))return {ok:false,reason:"BAD_ODDS"};
   if(new Set(odds.map(o=>o.toFixed(2))).size<Math.min(4,horses.length)){
@@ -1506,32 +1507,62 @@ function btValidateRace(raw){
   const winner=Number(raw?.result?.winner ?? top3[0]);
   if(!Number.isFinite(winner)||!nums.includes(winner))return {ok:false,reason:"WINNER_NOT_IN_FIELD"};
   if(top3.length&&new Set(top3).size!==top3.length)return {ok:false,reason:"DUP_TOP3"};
+  if(top3.length&&top3.some(n=>!nums.includes(n)))return {ok:false,reason:"TOP3_NOT_IN_FIELD"};
 
+  // JRAを含め、払戻値/最終オッズの不一致は「除外」ではなく警告にする。
+  // 予測側ではproviderのpop/着順を一切使わず、人気は最終オッズから再計算済み。
+  // 実際の精算時だけ公式払戻を使うため、ここでブロック全体を落とさない。
+  const warnings=[];
   const rawWin=raw?.result?.payouts?.win?.[String(winner)];
   const wh=horses.find(h=>Number(h.no)===winner);
   const finalOdds=Number(wh?.odds);
-  const winMult=btPayoutMultiplier(rawWin,finalOdds);
-  if(winMult==null)return {ok:false,reason:"NO_WIN_PAYOUT"};
-  const ratio=finalOdds>0?winMult/finalOdds:NaN;
-  // Final win odds and official refund multiplier should be close in scale.
-  if(!Number.isFinite(ratio)||ratio<0.75||ratio>1.35){
-    return {ok:false,reason:"WIN_PAYOUT_ODDS_MISMATCH",winner,finalOdds,winMult,ratio};
+
+  if(rawWin==null){
+    warnings.push("NO_WIN_PAYOUT");
+  }else{
+    const winMult=btPayoutMultiplier(rawWin,finalOdds);
+    if(winMult==null){
+      warnings.push("BAD_WIN_PAYOUT");
+    }else{
+      const ratio=finalOdds>0?winMult/finalOdds:NaN;
+      if(!Number.isFinite(ratio)||ratio<0.60||ratio>1.60){
+        warnings.push("WIN_PAYOUT_ODDS_MISMATCH");
+      }
+    }
   }
-  return {ok:true,winner,finalOdds,winMult};
+
+  return {ok:true,winner,finalOdds,warnings};
 }
 
 function btValidateBlock(block){
   const sourceRaces=Array.isArray(block?.races)?block.races:[];
   const valid=[];
   const rejected=[];
+  const warnings=[];
+
   for(const r of sourceRaces){
     const rr={...r,org:r.org||block.org};
     const v=btValidateRace(rr);
-    if(v.ok)valid.push(rr); else rejected.push({race:rr,reason:v.reason,detail:v});
+    if(v.ok){
+      valid.push(rr);
+      if(v.warnings?.length){
+        warnings.push({
+          date:rr.date||block?.date||"",
+          org:rr.org||block?.org||"",
+          track:rr.track||"",
+          no:rr.no||"",
+          reasons:v.warnings
+        });
+      }
+    }else{
+      rejected.push({race:rr,reason:v.reason,detail:v});
+    }
   }
 
-  // Anti-synthetic/result-leak guard for JRA historical cards.
-  // A card where the final-odds favourite/top-two wins almost every race is treated as corrupted/placeholder data.
+  // 結果リーク疑いの統計は警告だけ出す。JRAをブロック単位では除外しない。
+  // 予測はbtProbabilities()で provider-supplied pop を破棄しているため、
+  // ここでJRA全体を隔離する必要はない。
+  let stats=null;
   if(String(block?.org||valid[0]?.org||"")==="JRA"&&valid.length>=10){
     let favWins=0,top2Wins=0;
     for(const r of valid){
@@ -1541,11 +1572,19 @@ function btValidateBlock(block){
       if(ranked.slice(0,2).some(h=>Number(h.no)===winner))top2Wins++;
     }
     const favRate=favWins/valid.length,top2Rate=top2Wins/valid.length;
-    if(favRate>=0.85||top2Rate>=0.95){
-      return {ok:false,reason:"SUSPICIOUS_JRA_RESULT_LEAK",valid:[],rejected:[...rejected,...valid.map(r=>({race:r,reason:"BLOCK_QUARANTINED"}))],stats:{count:valid.length,favRate,top2Rate}};
+    stats={count:valid.length,favRate,top2Rate};
+    if(favRate>=0.70||top2Rate>=0.90){
+      warnings.push({
+        date:block?.date||"",
+        org:"JRA",
+        track:"",
+        no:"",
+        reasons:[`SUSPICIOUS_RATE fav=${(favRate*100).toFixed(1)}% top2=${(top2Rate*100).toFixed(1)}%`]
+      });
     }
   }
-  return {ok:true,valid,rejected};
+
+  return {ok:true,valid,rejected,warnings,stats};
 }
 
 function btSettleCombo(c,race,picks,ticket,settings){
@@ -1594,11 +1633,15 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   const chars=freshBtCharacters();
   const races=[];
   const audit=[];
-  const integrity={version:BACKTEST_SCHEMA_VERSION,acceptedBlocks:0,rejectedBlocks:[],rejectedRaces:[]};
+  const integrity={version:BACKTEST_SCHEMA_VERSION,acceptedBlocks:0,rejectedBlocks:[],warningBlocks:[],warningRaces:[],rejectedRaces:[]};
   for(const block of historyBlocks){
     const v=btValidateBlock(block);
     if(v.ok)integrity.acceptedBlocks++;
     else integrity.rejectedBlocks.push({date:block?.date||"",org:block?.org||"",reason:v.reason,stats:v.stats||null});
+    if(v.stats && (v.stats.favRate>=0.70 || v.stats.top2Rate>=0.90)){
+      integrity.warningBlocks.push({date:block?.date||"",org:block?.org||"",reason:"SUSPICIOUS_RESULT_RATE",stats:v.stats});
+    }
+    for(const w of v.warnings||[])integrity.warningRaces.push(w);
     for(const r of v.valid||[])races.push(r);
     for(const x of v.rejected||[])integrity.rejectedRaces.push({date:x.race?.date||block?.date||"",org:x.race?.org||block?.org||"",track:x.race?.track||"",no:x.race?.no||"",reason:x.reason});
   }
@@ -1717,7 +1760,7 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   return {
     schemaVersion:BACKTEST_SCHEMA_VERSION,
     payoutSchemaVersion:PAYOUT_SCHEMA_VERSION,
-    payoutContract:"result.payouts = refund-yen or multiplier; auto-normalized",
+    payoutContract:"result.payouts = refund-yen or multiplier; auto-normalized; JRA/NAR enabled",
     auditComplete:true,
     characters:chars,
     races:races.length,
@@ -2156,8 +2199,11 @@ $("#runWebBacktest").onclick=async()=>{
     const ig=btResult.integrity||{};
     const rejectedCount=ig.rejectedRaces?.length||0;
     const rejectedBlockCount=ig.rejectedBlocks?.length||0;
-    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${rejectedCount}レース / 疑わしいブロック${rejectedBlockCount}件 / FINAL ODDS / AUTO払戻判定 / ANTI-LEAK`;
-    if(ig.rejectedBlocks?.length)UI.addLog(`整合性監査: ${ig.rejectedBlocks.length}ブロックを結果リーク/異常データ疑いで除外しました`,"warn");
+    const warningBlockCount=ig.warningBlocks?.length||0;
+    const warningRaceCount=ig.warningRaces?.length||0;
+    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${rejectedCount}レース / 警告ブロック${warningBlockCount}件 / 警告レース${warningRaceCount}件 / FINAL ODDS / JRA+NAR / ANTI-LEAK`;
+    if(rejectedBlockCount)UI.addLog(`整合性監査: ${rejectedBlockCount}ブロックを構造異常で除外しました`,"warn");
+    if(warningBlockCount)UI.addLog(`JRA警告: ${warningBlockCount}ブロックで結果分布が偏っていますが、予測入力から着順/popを遮断した上で採用しました`,"warn");
     if(btResult.races===0){
       const reasons={};
       for(const x of (ig.rejectedRaces||[]))reasons[x.reason]=(reasons[x.reason]||0)+1;
