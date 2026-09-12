@@ -7031,7 +7031,50 @@ const clean=s=>String(s??'').replace(/[\u00a0　]/g,' ').replace(/\s+/g,' ').tri
 const num=s=>{const m=clean(s).replace(/,/g,'').match(/\d+(?:\.\d+)?/);return m?Number(m[0]):NaN};
 const range=s=>{const a=[...clean(s).replace(/,/g,'').matchAll(/\d+(?:\.\d+)?/g)].map(x=>Number(x[0])).filter(Number.isFinite);if(!a.length)return null;return {low:a[0],high:a[1]??a[0],mid:(a[0]+(a[1]??a[0]))/2,text:a.length>1?`${a[0].toFixed(1)} - ${a[1].toFixed(1)}`:a[0].toFixed(1)}};
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-function raceId(r){for(const v of [r?.raceId,r?.race_id,r?.id,r?.url,r?.sourceUrl]){const m=String(v??'').match(/(20\d{10})/);if(m)return m[1]}return ''}
+const NAR_TRACK_CODE_ODDS={
+  '門別':'30','盛岡':'35','水沢':'36','浦和':'42','船橋':'43','大井':'44','川崎':'45',
+  '金沢':'46','笠松':'47','名古屋':'48','園田':'50','姫路':'51','高知':'54','佐賀':'55',
+  '帯広':'65','帯広(ば)':'65','ばんえい':'65'
+};
+function raceDateYmd(r){
+  let d=String(r?.date||'').replace(/[^0-9]/g,'').slice(0,8);
+  if(/^20\d{6}$/.test(d))return d;
+  const raw=r?.startTime||r?.start_time||r?.postTime||'';
+  if(raw){
+    try{
+      const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(raw));
+      const o=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+      d=`${o.year}${o.month}${o.day}`;
+      if(/^20\d{6}$/.test(d))return d;
+    }catch(_){ }
+  }
+  return '';
+}
+function raceId(r){
+  // まずAPI/URLに含まれる公式12桁race_idを優先する。
+  for(const v of [r?.raceId,r?.race_id,r?.officialRaceId,r?.official_race_id,r?.netkeibaRaceId,r?.sourceRaceId,r?.id,r?.url,r?.sourceUrl,r?.resultUrl]){
+    const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);if(m)return m[1];
+  }
+  try{const m=JSON.stringify(r).match(/(?:race_id[^0-9]{0,12})?(20\d{10})/);if(m)return m[1]}catch(_){ }
+
+  // NARは 日付 + 競馬場コード + R からnetkeibaの12桁race_idを復元できる。
+  // 例: 2026-09-12 帯広6R => 202665091206
+  const org=String(r?.org||'').toUpperCase();
+  if(org==='NAR'){
+    const ymd=raceDateYmd(r);
+    const track=clean(r?.track||r?.venue||r?.course||'').replace(/\s+/g,'');
+    let code=NAR_TRACK_CODE_ODDS[track];
+    if(!code){const k=Object.keys(NAR_TRACK_CODE_ODDS).find(k=>track.includes(k));if(k)code=NAR_TRACK_CODE_ODDS[k]}
+    const no=Number(r?.no??r?.raceNo??r?.race_no??r?.r??0);
+    if(/^20\d{6}$/.test(ymd)&&code&&no>=1&&no<=12)return ymd.slice(0,4)+code+ymd.slice(4,8)+String(no).padStart(2,'0');
+  }
+  return '';
+}
+function allOddsIsDemo(){
+  try{if(typeof engine!=='undefined'&&engine?.provider?.kind)return engine.provider.kind==='demo'}catch(_){ }
+  try{const ui=uiRef();if(ui?.engine?.provider?.kind)return ui.engine.provider.kind==='demo'}catch(_){ }
+  return false;
+}
 function ensureUI(){
   if(document.getElementById('ticketOddsModule')) return;
   const body=document.querySelector('section.card.center .body'); if(!body)return;
@@ -7071,8 +7114,8 @@ async function ensureType(r,st,type,force=false){await loadOverview(r,st,force);
 function demoRows(r,type){const hs=(r?.horses||[]).slice().sort((a,b)=>(b.modelProb||0)-(a.modelProb||0));const out=[];const push=(sel,odds,p)=>out.push({selection:sel,odds,oddsText:odds.toFixed(1),prob:p,ev:p*odds,rank:out.length+1,demo:true});if(type==='単勝')for(const h of hs)push(String(h.no),Number(h.odds)||1,pWin(h));else if(type==='複勝')for(const h of hs.slice(0,12)){const p=placeProb(r,h.no);push(String(h.no),Math.max(1.1,1/Math.max(.01,p)*.78),p)}else if(['馬連','ワイド','馬単'].includes(type)){for(let i=0;i<Math.min(7,hs.length);i++)for(let j=0;j<Math.min(7,hs.length);j++){if(i===j)continue;if(type!=='馬単'&&j<=i)continue;const p=type==='ワイド'?calcProb(type,`${hs[i].no}-${hs[j].no}`,r):pairProb(r,hs[i].no,hs[j].no,type==='馬単');push(`${hs[i].no}-${hs[j].no}`,Math.max(1.1,1/Math.max(.001,p)*.78),p);if(out.length>=40)return out}}else if(['3連複','3連単'].includes(type)){const n=Math.min(6,hs.length);for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(let k=0;k<n;k++){if(new Set([i,j,k]).size<3)continue;if(type==='3連複'&&!(i<j&&j<k))continue;const sel=`${hs[i].no}-${hs[j].no}-${hs[k].no}`,p=trioProb(r,[hs[i].no,hs[j].no,hs[k].no],type==='3連単');push(sel,Math.max(1.1,1/Math.max(.0001,p)*.74),p);if(out.length>=50)return out}}return out}
 function setStatus(t){const e=document.getElementById('ticketOddsStatus');if(e)e.textContent=t}
 function enrich(rows,type,r){return rows.map(x=>{let p=Number.isFinite(x.prob)?x.prob:calcProb(type,x.selection,r);let ev=Number.isFinite(p)?p*Number(x.odds):NaN;return {...x,prob:p,ev}})}
-function renderRows(){ensureUI();if(!currentRace)return;const st=stateFor(currentRace),tbody=document.getElementById('ticketOddsBody');if(!tbody)return;let rows=st.rows[active]||[];let isDemo=false;if(!raceId(currentRace)){isDemo=true;rows=demoRows(currentRace,active)}rows=enrich(rows,active,currentRace);if(sortMode==='ev')rows.sort((a,b)=>(b.ev||-1)-(a.ev||-1));else if(sortMode==='odds')rows.sort((a,b)=>(a.odds||1e9)-(b.odds||1e9));else rows.sort((a,b)=>(a.rank||9999)-(b.rank||9999));if(!rows.length){tbody.innerHTML=`<tr><td colspan="6" class="odds-missing">${st.loading?'取得中…':esc(st.error||`${active}オッズはまだ取得できていません`)}</td></tr>`}else{tbody.innerHTML=rows.slice(0,200).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(x.selection)}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('')}const src=isDemo?'DEMO計算値（実オッズではありません）':st.source?`実オッズ / ${active} / ${st.at?st.at.toLocaleTimeString('ja-JP'):''}`:(st.error||'実オッズ未取得');setStatus(src)}
-async function renderOrLoad(userAction=false,force=false){ensureUI();if(!currentRace){setStatus('レース選択待ち');return}const st=stateFor(currentRace);renderRows();if(!raceId(currentRace))return;if(active==='単勝'||active==='複勝')await loadOverview(currentRace,st,force);else await ensureType(currentRace,st,active,force)}
+function renderRows(){ensureUI();if(!currentRace)return;const st=stateFor(currentRace),tbody=document.getElementById('ticketOddsBody');if(!tbody)return;let rows=st.rows[active]||[];const rid=raceId(currentRace);const isDemo=allOddsIsDemo();if(isDemo&&!rid)rows=demoRows(currentRace,active);rows=enrich(rows,active,currentRace);if(sortMode==='ev')rows.sort((a,b)=>(b.ev||-1)-(a.ev||-1));else if(sortMode==='odds')rows.sort((a,b)=>(a.odds||1e9)-(b.odds||1e9));else rows.sort((a,b)=>(a.rank||9999)-(b.rank||9999));if(!rows.length){const missing=(!isDemo&&!rid)?'LIVEレースの公式race_idを解決できません（架空オッズには切替えません）':`${active}オッズはまだ取得できていません`;tbody.innerHTML=`<tr><td colspan="6" class="odds-missing">${st.loading?'取得中…':esc(st.error||missing)}</td></tr>`}else{tbody.innerHTML=rows.slice(0,200).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(x.selection)}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('')}const src=isDemo&&!rid?'DEMO計算値（実オッズではありません）':st.source?`実オッズ / ${active} / ${st.at?st.at.toLocaleTimeString('ja-JP'):''}`:(!rid?'LIVE / race_id未解決':(st.error||'実オッズ未取得'));setStatus(src)}
+async function renderOrLoad(userAction=false,force=false){ensureUI();if(!currentRace){setStatus('レース選択待ち');return}const st=stateFor(currentRace);const rid=raceId(currentRace);renderRows();if(!rid){if(!allOddsIsDemo()){st.error='LIVEレースの公式race_idを解決できません';renderRows()}return}if(st.id!==rid){st.id=rid;st.loaded=false;st.rows=Object.fromEntries(TYPES.map(t=>[t,[]]))}if(active==='単勝'||active==='複勝')await loadOverview(currentRace,st,force);else await ensureType(currentRace,st,active,force)}
 function uiRef(){
   // UI は本体側で const UI = {...} として宣言されているため、window.UI には載らない。
   // 後段 script からはグローバル lexical binding の UI を直接参照できるので、そちらを優先する。
@@ -7110,7 +7153,7 @@ function hook(){
 }
 window.__oddsBoard={onRace,render:renderOrLoad,cache,hook};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000)},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000)}
-console.log('✅ v5.18.299 ALL TICKET ODDS TABS UI-HOOK FIX loaded');
+console.log('✅ v5.18.300 ALL TICKET ODDS LIVE race_id + EV FIX loaded');
 })();
 </script>
 
