@@ -522,10 +522,10 @@ const today=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
 const nowJST=()=>new Date();
 
 // Data contracts. Increment when settlement/cache semantics change.
-const PAYOUT_SCHEMA_VERSION=4;
+const PAYOUT_SCHEMA_VERSION=5;
 const LIVE_STATE_SCHEMA_VERSION=3;
-const BACKTEST_SCHEMA_VERSION=4;
-const HISTORY_CACHE_SCHEMA_VERSION=4;
+const BACKTEST_SCHEMA_VERSION=5;
+const HISTORY_CACHE_SCHEMA_VERSION=5;
 
 function parsePayoutValue(value){
   if(value==null)return {number:null,unit:null};
@@ -544,12 +544,30 @@ function parsePayoutValue(value){
   return {number:Number.isFinite(n)&&n>0?n:null,unit:null};
 }
 
-function payoutMultiplier(value,sourceUnit="refundYen"){
+function payoutMultiplier(value,sourceUnit="auto",expectedOdds=null){
   const p=parsePayoutValue(value);
   if(p.number==null)return null;
   if(p.unit==="multiplier")return p.number;
   if(p.unit==="refundYen")return p.number/100;
-  return sourceUnit==="multiplier" ? p.number : p.number/100;
+
+  const n=p.number;
+  if(sourceUnit==="multiplier")return n;
+  if(sourceUnit==="refundYen")return n/100;
+
+  // AUTO: distinguish decimal multiplier from "yen returned per 100 yen".
+  // For win payouts, final odds give a strong scale reference.
+  const exp=Number(expectedOdds);
+  if(Number.isFinite(exp)&&exp>=1){
+    const candidates=[n,n/100].filter(x=>Number.isFinite(x)&&x>=1);
+    if(candidates.length){
+      candidates.sort((a,b)=>Math.abs(Math.log(a/exp))-Math.abs(Math.log(b/exp)));
+      return candidates[0];
+    }
+  }
+
+  // Without a reference, Japanese refund-yen values are normally >=100.
+  // Decimal values below 100 are treated as already-multiplier.
+  return n>=100 ? n/100 : n;
 }
 const closeBeforeMin=(race,settings)=>{
   if(Number.isFinite(Number(race?.closeBeforeMin))) return Number(race.closeBeforeMin);
@@ -943,7 +961,7 @@ class SimulationEngine{
       const rbets=this.bets.filter(b=>b.raceId===race.id&&b.status==="OPEN");
       const top3=(res.top3||[res.winner]).map(Number);
       const keySorted=x=>x.split("-").map(Number).sort((a,b)=>a-b).join("-");
-      const sourceUnit=this.provider.kind==="demo"?"multiplier":"refundYen";
+      const sourceUnit=this.provider.kind==="demo"?"multiplier":"auto";
       const plan=[];
 
       // First validate every winning payout. Do not mutate balances until all are usable.
@@ -971,7 +989,7 @@ class SimulationEngine{
 
         let mult=null;
         if(hit){
-          mult=payoutValue!=null?payoutMultiplier(payoutValue,sourceUnit):fallbackMult;
+          mult=payoutValue!=null?payoutMultiplier(payoutValue,sourceUnit,b.ticket==="単勝"?b.odds:null):fallbackMult;
           if(!(Number(mult)>0)){
             throw new Error(`${b.ticket} ${b.selection} の的中払戻が未取得です。払戻確定まで再確認します`);
           }
@@ -1426,10 +1444,10 @@ function btPicks(c,race,settings){
   return hs.filter(h=>h.ev>=c.minEV).slice(0,2);
 }
 
-function btPayoutMultiplier(value){
-  // STRICT: historical result.payouts scalar values are "yen returned per ¥100 stake".
-  // Example: 320円 => 3.2x. Decimal odds fallback is handled separately and never passes here.
-  return payoutMultiplier(value,"refundYen");
+function btPayoutMultiplier(value,expectedOdds=null){
+  // Historical providers may return either refund-yen (320 => 3.2x)
+  // or an already-normalized multiplier (3.2 => 3.2x). Auto-detect safely.
+  return payoutMultiplier(value,"auto",expectedOdds);
 }
 function btRefundYen(stake,payoutValue){
   const mult=btPayoutMultiplier(payoutValue);
@@ -1455,7 +1473,7 @@ function btSettleSingle(c,race,h,ticket,stake){
     if(payoutValue==null){c.skips++;return {skipped:true,reason:"NO_PLACE_PAYOUT"}}
   }
 
-  if(mult==null)mult=btPayoutMultiplier(payoutValue);
+  if(mult==null)mult=btPayoutMultiplier(payoutValue,ticket==="単勝"?h.odds:null);
   if(mult==null){c.skips++;return {skipped:true,reason:"NO_PAYOUT"}}
 
   const ret=hit?Math.round(stake*mult):0;
@@ -1490,10 +1508,10 @@ function btValidateRace(raw){
   if(top3.length&&new Set(top3).size!==top3.length)return {ok:false,reason:"DUP_TOP3"};
 
   const rawWin=raw?.result?.payouts?.win?.[String(winner)];
-  const winMult=btPayoutMultiplier(rawWin);
-  if(winMult==null)return {ok:false,reason:"NO_WIN_PAYOUT"};
   const wh=horses.find(h=>Number(h.no)===winner);
   const finalOdds=Number(wh?.odds);
+  const winMult=btPayoutMultiplier(rawWin,finalOdds);
+  if(winMult==null)return {ok:false,reason:"NO_WIN_PAYOUT"};
   const ratio=finalOdds>0?winMult/finalOdds:NaN;
   // Final win odds and official refund multiplier should be close in scale.
   if(!Number.isFinite(ratio)||ratio<0.75||ratio>1.35){
@@ -1699,7 +1717,7 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   return {
     schemaVersion:BACKTEST_SCHEMA_VERSION,
     payoutSchemaVersion:PAYOUT_SCHEMA_VERSION,
-    payoutContract:"result.payouts = refund yen per 100 yen stake",
+    payoutContract:"result.payouts = refund-yen or multiplier; auto-normalized",
     auditComplete:true,
     characters:chars,
     races:races.length,
@@ -2136,8 +2154,16 @@ $("#runWebBacktest").onclick=async()=>{
     await new Promise(resolve=>setTimeout(resolve,0));
     renderBt(btResult);
     const ig=btResult.integrity||{};
-    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${ig.rejectedRaces?.length||0}レース / 疑わしいブロック${ig.rejectedBlocks?.length||0}件 / FINAL ODDS / STRICT実払戻 / ANTI-LEAK`;
+    const rejectedCount=ig.rejectedRaces?.length||0;
+    const rejectedBlockCount=ig.rejectedBlocks?.length||0;
+    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / 除外${rejectedCount}レース / 疑わしいブロック${rejectedBlockCount}件 / FINAL ODDS / AUTO払戻判定 / ANTI-LEAK`;
     if(ig.rejectedBlocks?.length)UI.addLog(`整合性監査: ${ig.rejectedBlocks.length}ブロックを結果リーク/異常データ疑いで除外しました`,"warn");
+    if(btResult.races===0){
+      const reasons={};
+      for(const x of (ig.rejectedRaces||[]))reasons[x.reason]=(reasons[x.reason]||0)+1;
+      const top=Object.entries(reasons).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k}:${v}`).join(" / ");
+      UI.addLog(`採用0レース。除外理由: ${top||"不明"}`,"error");
+    }
     try{
       Store.set("btResultAnomalyAuditV1",btResult);
     }catch(e){
