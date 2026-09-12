@@ -1313,7 +1313,9 @@ async function fetchHistoryDay(date,org,options={}){
     const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
     try{
       const url=`${base}/history?date=${encodeURIComponent(date)}&org=${encodeURIComponent(org)}&_=${Date.now()}_${attempt}`;
-      const r=await fetch(url,{cache:"no-store",signal:ctrl.signal,headers:{"Cache-Control":"no-cache","Pragma":"no-cache"}});
+      // Cross-origin Worker: custom Cache-Control/Pragma request headers trigger CORS preflight on Safari.
+      // Use only cache:no-store + cache-busting query so this remains a simple GET request.
+      const r=await fetch(url,{cache:"no-store",signal:ctrl.signal,mode:"cors"});
       const text=await r.text();
       let d;
       try{d=text?JSON.parse(text):{}}catch(_){throw new Error(`JSON解析失敗 HTTP ${r.status}: ${text.slice(0,120)}`)}
@@ -2715,6 +2717,10 @@ $("#legacyLoadJson").onclick=()=>$("#legacyJsonInput").click();
 $("#legacyJsonInput").onchange=e=>legacyLoadJsonFile(e.target.files?.[0]);
 
 engine.init();
+</script>
+
+<script>
+console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers removed");
 </script>
 </body>
 </html>
