@@ -170,7 +170,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   <h3>データ出力・バックテスト</h3>
   <div class="body" style="padding-bottom:0">
     <div class="controls">
-      <button id="chooseJsonFolder" class="primary">JSON保存先を選択（履歴・バックテスト共通）</button>
+      <button id="chooseJsonFolder" class="primary">JSON保存先フォルダを選択（履歴・バックテスト共通）</button>
       <button id="clearJsonFolder">保存先解除</button>
       <span id="jsonFolderStatus" class="muted">JSON保存先: 未指定</span><span class="muted">※ iPad/Safariはフォルダ直接保存非対応の場合があります</span>
     </div>
@@ -245,7 +245,9 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
       </table>
     </div>
     <div class="controls" style="margin-top:10px">
+      <button id="chooseBtJsonFolder" class="primary">バックテストJSON保存先フォルダを選択</button>
       <button id="exportBtJson">バックテストJSONを保存</button>
+      <span id="btJsonFolderStatus" class="muted">バックテストJSON保存先: 未指定</span>
       <button id="graphBtDirect" class="primary">結果を直接グラフ化</button>
       <button id="resetBt">結果リセット</button>
     </div>
@@ -2160,21 +2162,76 @@ $("#graphBtDirect").onclick=()=>{
   document.getElementById("jsonGraphStatus")?.scrollIntoView({behavior:"smooth",block:"center"});
 };
 
+// ===============================
+// BACKTEST JSON FOLDER SAVE
+// ===============================
+let btJsonDirectoryHandle = null;
+
+function updateBtJsonFolderStatus(){
+  const el=document.getElementById("btJsonFolderStatus");
+  if(!el)return;
+  if(btJsonDirectoryHandle){
+    el.textContent=`バックテストJSON保存先: ${btJsonDirectoryHandle.name}`;
+  }else{
+    el.textContent="バックテストJSON保存先: 未指定";
+  }
+}
+
+async function chooseBtJsonSaveFolder(){
+  if(!("showDirectoryPicker" in window)){
+    alert("このブラウザは事前のフォルダ選択に対応していません。iPad/iPhoneでは『バックテストJSONを保存』を押したあと、共有画面の『ファイルに保存』でフォルダを選択してください。");
+    return null;
+  }
+  try{
+    btJsonDirectoryHandle=await window.showDirectoryPicker({mode:"readwrite"});
+    updateBtJsonFolderStatus();
+    return btJsonDirectoryHandle;
+  }catch(e){
+    if(e?.name!=="AbortError")alert("フォルダ選択エラー: "+e.message);
+    return null;
+  }
+}
+
+async function writeBacktestJsonToFolder(handle,filename,obj){
+  const text=JSON.stringify(obj,null,2);
+  let perm="granted";
+  try{ perm=await handle.queryPermission({mode:"readwrite"}); }catch(e){}
+  if(perm!=="granted"){
+    try{ perm=await handle.requestPermission({mode:"readwrite"}); }catch(e){}
+  }
+  if(perm!=="granted")throw new Error("保存先フォルダへの書き込みが許可されていません");
+  const fh=await handle.getFileHandle(filename,{create:true});
+  const w=await fh.createWritable();
+  await w.write(new Blob([text],{type:"application/json"}));
+  await w.close();
+  return {saved:true,method:"folder",folder:handle.name};
+}
+
+const btFolderBtn=document.getElementById("chooseBtJsonFolder");
+if(btFolderBtn)btFolderBtn.onclick=chooseBtJsonSaveFolder;
+updateBtJsonFolderStatus();
+
 $("#exportBtJson").onclick=async()=>{
   if(!btResult)return alert("バックテスト結果がありません");
 
   const filename=`keiba_backtest_${today()}.json`;
   let r=null;
 
-  // 1) Windows/Chromium: 上部で選択したJSON保存先フォルダを共用
-  if(typeof jsonDirectoryHandle!=="undefined" && jsonDirectoryHandle){
-    r=await saveJsonToChosenFolder(filename,btResult);
+  // 対応ブラウザでは、未選択なら保存時に必ずフォルダ選択画面を出す。
+  if("showDirectoryPicker" in window){
+    if(!btJsonDirectoryHandle){
+      const h=await chooseBtJsonSaveFolder();
+      if(!h)return;
+    }
+    try{
+      r=await writeBacktestJsonToFolder(btJsonDirectoryHandle,filename,btResult);
+    }catch(e){
+      alert("バックテストJSON保存エラー: "+e.message);
+      return;
+    }
   }
-  // 2) 保存ダイアログ対応ブラウザ
-  else if("showSaveFilePicker" in window){
-    r=await saveTextFile(filename,JSON.stringify(btResult,null,2),"application/json");
-  }
-  // 3) iPad/iPhone: 共有シート→「ファイルに保存」で保存先を指定
+  // iPad/iPhone Safari: Web API上、事前にフォルダ権限を保持できないため
+  // 共有シートの「ファイルに保存」でフォルダを選ぶ。
   else{
     try{
       const file=new File([JSON.stringify(btResult,null,2)],filename,{type:"application/json"});
@@ -2192,13 +2249,11 @@ $("#exportBtJson").onclick=async()=>{
   }
 
   if(r?.cancelled)return;
-
   if(r?.method==="folder"){
-    $("#btProgress").textContent=`バックテストJSON保存完了 / 保存先: ${r.folder}`;
-  }else if(r?.method==="picker"){
-    $("#btProgress").textContent="バックテストJSONを指定した保存先へ保存しました";
+    $("#btProgress").textContent=`バックテストJSON保存完了 / フォルダ: ${r.folder}`;
+    updateBtJsonFolderStatus();
   }else if(r?.method==="share"){
-    $("#btProgress").textContent="共有画面の「ファイルに保存」で保存先を指定できます";
+    $("#btProgress").textContent="『ファイルに保存』で保存先フォルダを選択してください";
   }else{
     $("#btProgress").textContent="バックテストJSONを保存しました";
   }
