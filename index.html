@@ -5489,6 +5489,160 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 
 <script>
 /* =========================================================
+   FIXED25 — SAME-RACE DECISION FREEZE / AUDIT INTEGRITY v2.5
+   - All selections and stakes for one character in one race are fixed from
+     the bankroll BEFORE the race is settled.
+   - No winning/losing result from bet #1 can change stake of bet #2 in the
+     same race (prevents within-race future-information leakage).
+   - Race-level bankroll / investment evidence is written into audit rows.
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED25_RACE_DECISION_FREEZE__)return;
+  window.__FIXED25_RACE_DECISION_FREEZE__=true;
+
+  function rawYen25(v){
+    if(v&&typeof v==='object'){
+      const n=Number(v.refundYen??v.payoutYen??v.amount??v.value);
+      return Number.isFinite(n)?n:null;
+    }
+    const n=Number(v);return v!==''&&v!=null&&Number.isFinite(n)?n:null;
+  }
+
+  function evalSingle25(race,h,ticket,stake){
+    const payouts=race.result?.payouts||{};
+    const no=String(Number(h.no));
+    let hit=false,payoutValue=null,mult=0;
+    if(ticket==='単勝'){
+      const map=payouts.win||{};
+      if(!Object.keys(map).length)return {skipped:true,reason:'NO_WIN_PAYOUT_TABLE'};
+      const winner=Number(race.result?.winner??race.result?.top3?.[0]??0);
+      hit=Number(h.no)===winner;
+      if(hit){
+        payoutValue=map[no];
+        if(payoutValue==null)return {skipped:true,reason:'WIN_HIT_PAYOUT_MISSING'};
+        mult=btPayoutMultiplier(payoutValue,h.odds);
+        if(mult==null)return {skipped:true,reason:'BAD_WIN_PAYOUT'};
+      }
+    }else if(ticket==='複勝'){
+      const map=payouts.place||{};
+      if(!Object.keys(map).length)return {skipped:true,reason:'NO_PLACE_PAYOUT_TABLE'};
+      hit=Object.prototype.hasOwnProperty.call(map,no);
+      if(hit){
+        payoutValue=map[no];
+        mult=btPayoutMultiplier(payoutValue);
+        if(mult==null)return {skipped:true,reason:'BAD_PLACE_PAYOUT'};
+      }
+    }else return {skipped:true,reason:'UNKNOWN_SINGLE_TICKET'};
+    const y=hit?rawYen25(payoutValue):null;
+    const ret=hit?Math.round(stake*mult):0;
+    return {skipped:false,hit,ret,mult:hit?mult:0,payoutValue:hit?(y??payoutValue):null,payoutSource:'official-race-table'};
+  }
+
+  // Replace the core runner BEFORE fixed24 wraps it.
+  runBacktestOnHistory=async function(historyBlocks,onProgress){
+    const chars=freshBtCharacters();
+    const races=[]; const audit=[];
+    const integrity={version:BACKTEST_SCHEMA_VERSION,acceptedBlocks:0,rejectedBlocks:[],warningBlocks:[],warningRaces:[],rejectedRaces:[]};
+    for(const block of historyBlocks){
+      const v=btValidateBlock(block);
+      if(v.ok)integrity.acceptedBlocks++; else integrity.rejectedBlocks.push({date:block?.date||'',org:block?.org||'',reason:v.reason,stats:v.stats||null});
+      if(v.stats&&(v.stats.favRate>=0.70||v.stats.top2Rate>=0.90))integrity.warningBlocks.push({date:block?.date||'',org:block?.org||'',reason:'SUSPICIOUS_RESULT_RATE',stats:v.stats});
+      for(const w of v.warnings||[])integrity.warningRaces.push(w);
+      for(const r of v.valid||[])races.push(r);
+      for(const x of v.rejected||[])integrity.rejectedRaces.push({date:x.race?.date||block?.date||'',org:x.race?.org||block?.org||'',track:x.race?.track||'',no:x.race?.no||'',reason:x.reason});
+    }
+    races.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.startTime||'').localeCompare(b.startTime||'')||a.no-b.no);
+
+    const timeline=[{label:'開始',date:null,raceId:null,bankroll:Object.fromEntries(chars.map(c=>[c.name,c.bankroll])),profit:Object.fromEntries(chars.map(c=>[c.name,0]))}];
+    let processed=0;
+
+    for(const raw of races){
+      const hs=btProbabilities(raw.horses||[]);
+      if(hs.length&&raw.result){
+        const race={...raw,horses:hs};
+        const rawPayoutJson=JSON.stringify(raw.result?.payouts||{});
+
+        for(const c of chars){
+          if(c.bankroll<=0){c.history.push(c.bankroll);continue}
+          const openingBank=Number(c.bankroll);
+          const picks=btPicks(c,race,engine.settings);
+          if(!picks.length){c.skips++;c.history.push(c.bankroll);continue}
+
+          if(c.ticket==='wide'||c.ticket==='trio'){
+            // fixed21 is fail-closed for these until historical all-combination odds exist.
+            const rr=btSettleCombo(c,race,picks,c.ticket,engine.settings);
+            if(rr&&rr.skipped)c.skips=Math.max(1,c.skips);
+            c.history.push(c.bankroll);
+            continue;
+          }
+
+          // DECISION PHASE: calculate every stake from the SAME pre-race bankroll.
+          const decisions=[]; let reserved=0;
+          for(const h of picks){
+            const shadow={...c,bankroll:openingBank};
+            let stake=btStake(shadow,h,engine.settings);
+            const room=Math.max(0,openingBank-reserved);
+            stake=Math.min(stake,Math.floor(room/100)*100);
+            if(stake<100)continue;
+            const ticket=c.ticket==='place'?'複勝':'単勝';
+            const rr=evalSingle25(race,h,ticket,stake);
+            if(rr.skipped){c.skips++;continue}
+            decisions.push({h,ticket,stake,rr}); reserved+=stake;
+          }
+
+          if(!decisions.length){c.skips++;c.history.push(c.bankroll);continue}
+
+          // SETTLEMENT PHASE: settle the race as one batch after all decisions are frozen.
+          const totalStake=decisions.reduce((s,d)=>s+d.stake,0);
+          const totalRet=decisions.reduce((s,d)=>s+d.rr.ret,0);
+          c.invested+=totalStake; c.byOrg[race.org].inv+=totalStake; c.bets+=decisions.length;
+          c.returned+=totalRet; c.byOrg[race.org].ret+=totalRet;
+          c.wins+=decisions.reduce((s,d)=>s+(d.rr.hit?1:0),0);
+          for(const d of decisions)if(d.rr.hit)c.maxWin=Math.max(c.maxWin,d.rr.ret-d.stake);
+          c.bankroll=openingBank-totalStake+totalRet;
+          c.peak=Math.max(c.peak,c.bankroll);
+          c.maxDD=Math.max(c.maxDD,(c.peak-c.bankroll)/Math.max(1,c.peak));
+          const raceRate=openingBank>0?totalStake/openingBank:0;
+
+          for(const d of decisions){
+            audit.push({
+              date:race.date||'',track:race.track||'',no:race.no||'',character:c.name,
+              ticket:d.ticket,selection:String(d.h.no),stake:d.stake,
+              rawPayout:d.rr.payoutValue,multiplier:d.rr.mult,refund:d.rr.ret,profit:d.rr.ret-d.stake,
+              odds:d.h.odds,prob:d.h.modelProb,ev:d.h.ev,status:d.rr.hit?'的中':'不的中',rawJson:rawPayoutJson,
+              bankrollBeforeRace:openingBank,bankrollAfterRace:c.bankroll,raceStakeTotal:totalStake,
+              raceInvestmentRate:raceRate,decisionBatch:'PRE_RACE_FROZEN_V25'
+            });
+          }
+          c.history.push(c.bankroll);
+        }
+
+        const dt=raw.startTime?new Date(raw.startTime):null;
+        const label=dt&&Number.isFinite(dt.getTime())
+          ?`${dt.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})} ${dt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} ${raw.track||''}${raw.no||''}R`
+          :`${raw.date||''} ${raw.track||''}${raw.no||''}R`;
+        timeline.push({label,date:raw.startTime||raw.date||null,raceId:raw.id||null,
+          bankroll:Object.fromEntries(chars.map(c=>[c.name,c.bankroll])),profit:Object.fromEntries(chars.map(c=>[c.name,c.bankroll-c.initial]))});
+      }
+      processed++;
+      if(onProgress&&(processed%5===0||processed===races.length))onProgress(processed,races.length);
+      if(processed%10===0)await new Promise(resolve=>setTimeout(resolve,0));
+    }
+
+    return {schemaVersion:BACKTEST_SCHEMA_VERSION,payoutSchemaVersion:PAYOUT_SCHEMA_VERSION,
+      payoutContract:'official settlement; same-race decisions frozen before settlement (v2.5)',auditComplete:true,
+      characters:chars,races:races.length,blocks:historyBlocks.length,oddsTiming:'FINAL',audit,timeline,integrity,
+      decisionTimingContract:{version:25,mode:'PRE_RACE_FROZEN',note:'All selections/stakes in one race use the same opening bankroll; no same-race result can affect another stake.'}};
+  };
+
+  console.log('✅ FIXED25 same-race decision freeze loaded');
+})();
+</script>
+
+
+<script>
+/* =========================================================
    FIXED24 — MODEL VALIDATION / AUDIT SCHEMA v2.4
    - race_results + bets two-layer JSON (no payout JSON duplicated per bet)
    - race_id / bet_id / timestamps / predicted odds / final odds / payout multiplier
@@ -5501,8 +5655,8 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   if(window.__FIXED24_MODEL_VALIDATION__)return;
   window.__FIXED24_MODEL_VALIDATION__=true;
 
-  const MODEL_VERSION='BT-MODEL-v2.4';
-  const AUDIT_SCHEMA_VERSION=24;
+  const MODEL_VERSION='BT-MODEL-v2.5';
+  const AUDIT_SCHEMA_VERSION=25;
   const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
   const iso=()=>new Date().toISOString();
   const esc=v=>typeof escapeHtml==='function'?escapeHtml(String(v??'')):String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -5617,12 +5771,15 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       const resultFetchedAt=rec?.meta?.resultFetchedAt||null;
       const rawYen=rawPayoutYen24(old.rawPayout);
       const char=old.character||'';
-      const before=Number(bankByChar.get(char)??initialByChar.get(char)??100000);
-      const stake=Number(old.stake||0),profit=Number(old.profit||0),after=before+profit;
+      const fallbackBefore=Number(bankByChar.get(char)??initialByChar.get(char)??100000);
+      const hasRaceOpen=Number.isFinite(Number(old.bankrollBeforeRace));
+      const before=hasRaceOpen?Number(old.bankrollBeforeRace):fallbackBefore;
+      const stake=Number(old.stake||0),profit=Number(old.profit||0);
+      const after=Number.isFinite(Number(old.bankrollAfterRace))?Number(old.bankrollAfterRace):(before+profit);
       bankByChar.set(char,after);
       const base=`${rid}|${char}|${old.ticket||''}|${old.selection||''}`;
       const n=(seqByKey.get(base)||0)+1;seqByKey.set(base,n);
-      const betId=`${rid}::${char}::${old.ticket||''}::${old.selection||''}::${n}`;
+      const betId=`${runId}::${rid}::${char}::${old.ticket||''}::${old.selection||''}::${n}`;
       const p=Number(old.prob||0),pev=Number(old.ev||0);
       const predRec=predictionLedger24.get(`${rid}|${char}|${String(old.selection||'').split('-')[0]}`)||null;
       const kelly=fullKelly24(p,predOdds);
@@ -5631,8 +5788,15 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
         bet_id:betId,race_id:rid,run_id:runId,
         date:old.date||'',org,track:old.track||'',race_no:Number(old.no||0),
         character:char,bet_type:old.ticket||'',selection:String(old.selection||''),stake,
-        prediction_generated_at:predRec?.at||runStartedAt,
+        // Historical replay: this is when the simulation generated the prediction NOW,
+        // not a verified historical pre-race timestamp.
+        prediction_generated_at:null,
+        simulation_prediction_generated_at:predRec?.at||runStartedAt,
+        prediction_timing_status:'HISTORICAL_REPLAY_NOT_PRE_RACE_VERIFIED',
+        pre_race_timestamp_verified:false,
         odds_fetched_at:oddsFetchedAt,
+        odds_acquired_at:oddsFetchedAt,
+        odds_market_time:null,
         odds_snapshot_type:'FINAL',
         predicted_odds:Number.isFinite(predOdds)?predOdds:null,
         final_odds:Number.isFinite(finalLow)?finalLow:null,
@@ -5644,15 +5808,21 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
         probability:p,predicted_ev:pev,
         kelly_fraction:kelly,
         actual_investment_rate:actualRate,
+        race_investment_rate:Number.isFinite(Number(old.raceInvestmentRate))?Number(old.raceInvestmentRate):actualRate,
+        race_stake_total:Number.isFinite(Number(old.raceStakeTotal))?Number(old.raceStakeTotal):stake,
         bankroll_before:before,bankroll_after:after,
+        bankroll_before_race:before,bankroll_after_race:after,
+        decision_batch:old.decisionBatch||'LEGACY_SEQUENTIAL',
         model_version:MODEL_VERSION,
+        race_id_kind:/^20\d{10}$/.test(rid)?'OFFICIAL_SOURCE_ID':'CANONICAL_FALLBACK',
         result_source:resultSource,
+        result_parser_source:payoutMeta.source||null,
         result_fetched_at:resultFetchedAt,
         result_observed_at:rec?.meta?.resultObservedAt||null,
         fetch_from_cache:!!rec?.meta?.fromCache,
         outcome:old.status==='的中'?1:0,status:old.status||'',
-        timing_evidence:'historical-final-backtest',
-        anti_leak_note:'予測入力は着順・払戻を使用しない。historical WEBはFINAL oddsのためpredicted_oddsとfinal_oddsが同値になり得る。'
+        timing_evidence:'historical-final-replay',
+        anti_leak_note:'着順・払戻は選択/EV入力に使わない。同一レース内の全購入は決定・stakeを先に固定してから一括精算。historical WEBはFINAL oddsのためpre-race timestampは未検証。'
       };
       bets.push(b);
     }
@@ -5672,8 +5842,8 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 
     result.auditSchemaVersion=AUDIT_SCHEMA_VERSION;
     result.modelVersion=MODEL_VERSION;
-    result.runMeta={run_id:runId,started_at:runStartedAt,completed_at:iso(),odds_timing:'FINAL',historical:true,
-      note:'Historical FINAL-odds model validation. Timestamps are acquisition/record evidence; this is not a pre-close live snapshot.'};
+    result.runMeta={run_id:runId,started_at:runStartedAt,completed_at:iso(),odds_timing:'FINAL',historical:true,decision_timing:'PRE_RACE_FROZEN_V25',
+      note:'Historical FINAL-odds replay. simulation_prediction_generated_at is run-time evidence only; prediction_generated_at is intentionally null because no verified historical pre-race prediction timestamp exists. Same-race stakes are frozen before settlement.'};
     result.race_results=Object.fromEntries(raceResults.map(x=>[x.race_id,x]));
     result.bets=bets;
     // Compatibility audit is intentionally lightweight so payout JSON is not duplicated per bet.
@@ -5693,9 +5863,16 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     return sum;
   }
   function ruinBootstrap24(rows,name){
-    if(rows.length<30)return null;
-    const rng=prng(hash32(name+'|ruin24'));const sims=300,horizon=500;let ruined=0;
-    const xs=rows.map(r=>({f:clamp(Number(r.actual_investment_rate||0),0,.95),m:Number(r.stake)>0?Number(r.refund||0)/Number(r.stake):0}));
+    const groups=new Map();
+    for(const r of rows){const k=r.race_id||r.bet_id;if(!groups.has(k))groups.set(k,[]);groups.get(k).push(r)}
+    const raceRows=[...groups.values()];
+    if(raceRows.length<30)return null;
+    const rng=prng(hash32(name+'|ruin25'));const sims=300,horizon=500;let ruined=0;
+    const xs=raceRows.map(rs=>{
+      const stake=rs.reduce((s,r)=>s+Number(r.stake||0),0),ret=rs.reduce((s,r)=>s+Number(r.refund||0),0);
+      const base=Number(rs[0]?.bankroll_before_race??rs[0]?.bankroll_before??0);
+      return {f:base>0?clamp(stake/base,0,.95):0,m:stake>0?ret/stake:0};
+    });
     for(let s=0;s<sims;s++){
       let cap=1;
       for(let i=0;i<horizon;i++){
@@ -5705,6 +5882,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
     return ruined/sims;
   }
+
   function computeValidation24(result){
     const out={version:24,characters:{},scoreWeights:{accuracy:.30,calibration:.25,roi:.20,drawdown:.15,sample:.10}};
     const bets=result.bets||[];
@@ -5747,15 +5925,15 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     if(document.getElementById('modelValidation24'))return;
     const card=rank.closest('.card');
     const div=document.createElement('div');div.id='modelValidation24';div.className='card';div.style.marginTop='12px';
-    div.innerHTML=`<h3>📐 モデル検証ダッシュボード v2.4</h3><div class="body">
+    div.innerHTML=`<h3>📐 モデル検証ダッシュボード v2.5</h3><div class="body">
       <div class="notice"><b>総合Score:</b> 予測精度(Brier)30% + キャリブレーション(ECE)25% + ROI20% + 最大DD15% + サンプル信頼度10%。<br>
-      Historical WEBはFINAL oddsです。予想時オッズと最終オッズが同じでも、確定払戻は別レイヤー <code>race_results</code> に保存し、EV計算から分離します。</div>
+      Historical WEBはFINAL oddsです。これは「締切前に実際に取得した予想時オッズ」ではありません。予測生成の実時点は未検証として記録し、同一レース内の全stakeは結果を見る前の資金で固定してから一括精算します。</div>
       <div class="controls" style="margin:10px 0"><label>キャラクター <select id="validationCharacter24"><option value="">全購入</option></select></label><span id="validationStatus24" class="muted"></span></div>
       <div class="bottom">
         <section class="card"><h3>確率キャリブレーション</h3><div class="body scroll"><table><thead><tr><th>想定勝率</th><th>件数</th><th>平均予測</th><th>実際の的中率</th><th>差</th></tr></thead><tbody id="calibrationBody24"></tbody></table></div></section>
         <section class="card"><h3>EV帯別成績</h3><div class="body scroll"><table><thead><tr><th>EV</th><th>件数</th><th>回収率</th><th>利益</th><th>的中率</th></tr></thead><tbody id="evBandBody24"></tbody></table></div></section>
       </div>
-      <section class="card" style="margin-top:10px"><h3>資金管理能力</h3><div class="body scroll"><table><thead><tr><th>キャラクター</th><th>総購入</th><th>利益</th><th>資金増加率</th><th>最大DD</th><th>1購入最大投資率</th><th>1レース最大投資率</th><th>破産確率*</th></tr></thead><tbody id="capitalBody24"></tbody></table><div class="muted">* 30購入以上のみ。観測された購入率・払戻倍率を再標本化した500勝負×300回のブートストラップで、資金が初期の1%以下になる確率。参考指標です。</div></div></section>
+      <section class="card" style="margin-top:10px"><h3>資金管理能力</h3><div class="body scroll"><table><thead><tr><th>キャラクター</th><th>総購入</th><th>利益</th><th>資金増加率</th><th>最大DD</th><th>1購入最大投資率</th><th>1レース最大投資率</th><th>破産確率*</th></tr></thead><tbody id="capitalBody24"></tbody></table><div class="muted">* 30購入以上のみ。観測された購入率・払戻倍率を再標本化した500レース×300回のブートストラップで、資金が初期の1%以下になる確率。参考指標です。</div></div></section>
       <section class="card" style="margin-top:10px"><h3>JSON監査構造</h3><div class="body muted"><code>race_results[race_id]</code> に結果・払戻を1回だけ保存し、<code>bets[bet_id]</code> は <code>race_id</code> を参照します。1購入ごとの生払戻JSON重複を廃止しました。</div></section>
     </div>`;
     card?.insertAdjacentElement('afterend',div);
@@ -5785,9 +5963,9 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   if(typeof DetailedAudit==='object'){
     DetailedAudit.filtered=function(){let rows=auditRows24(this.result);const c=document.getElementById('auditCharacter')?.value||'',t=document.getElementById('auditTicket')?.value||'',only=document.getElementById('auditOnly')?.value||'';rows=rows.filter(r=>(!c||r.character===c)&&(!t||r.bet_type===t));if(only==='hit')rows=rows.filter(r=>r.status==='的中');if(only==='large')rows=rows.filter(r=>Number(r.profit)>=50000);return rows};
     DetailedAudit.render=function(result){this.result=result;const rows=auditRows24(result),chars=[...new Set(rows.map(r=>r.character))],tickets=[...new Set(rows.map(r=>r.bet_type))];const c=document.getElementById('auditCharacter'),t=document.getElementById('auditTicket');if(c)c.innerHTML='<option value="">全員</option>'+chars.map(x=>`<option>${esc(x)}</option>`).join('');if(t)t.innerHTML='<option value="">全券種</option>'+tickets.map(x=>`<option>${esc(x)}</option>`).join('');this.draw()};
-    DetailedAudit.draw=function(){const rows=this.filtered(),visible=rows.slice(0,120),table=document.getElementById('auditBody')?.closest('table');if(table){table.querySelector('thead tr').innerHTML='<th>race_id</th><th>bet_id</th><th>予想生成時刻</th><th>オッズ取得時刻</th><th>日時</th><th>競馬場</th><th>R</th><th>キャラクター</th><th>券種</th><th>馬/組番</th><th>購入額</th><th>予想時オッズ</th><th>最終オッズ</th><th>確定払戻円/100円</th><th>確定払戻倍率</th><th>実払戻</th><th>利益</th><th>想定確率</th><th>予想時EV</th><th>Kelly率</th><th>実投資率</th><th>モデルVersion</th><th>結果取得元</th><th>結果取得時刻</th><th>判定</th>'}
-      document.getElementById('auditBody').innerHTML=visible.map(r=>`<tr><td>${esc(r.race_id)}</td><td>${esc(r.bet_id)}</td><td>${esc(formatTs24(r.prediction_generated_at))}</td><td>${esc(formatTs24(r.odds_fetched_at))}</td><td>${esc(r.date)}</td><td>${esc(r.track)}</td><td>${r.race_no}</td><td>${esc(r.character)}</td><td>${esc(r.bet_type)}</td><td>${esc(r.selection)}</td><td>${r.stake.toLocaleString()}</td><td>${r.predicted_odds==null?'—':Number(r.predicted_odds).toFixed(3)}</td><td>${esc(finalOddsLabel24(r))}</td><td>${r.confirmed_refund_yen_per_100==null?'—':Number(r.confirmed_refund_yen_per_100).toLocaleString()}</td><td>${Number(r.confirmed_payout_multiplier||0).toFixed(3)}</td><td>${r.refund.toLocaleString()}</td><td>${r.profit.toLocaleString()}</td><td>${fmtPct(r.probability)}</td><td>${Number(r.predicted_ev||0).toFixed(3)}</td><td>${fmtPct(r.kelly_fraction)}</td><td>${fmtPct(r.actual_investment_rate)}</td><td>${esc(r.model_version)}</td><td>${esc(r.result_source||'—')}</td><td>${esc(formatTs24(r.result_fetched_at))}</td><td>${esc(r.status)}</td></tr>`).join('');document.getElementById('auditStatus').textContent=`表示 ${visible.length}件 / 条件一致${rows.length}件 / 全${auditRows24(this.result).length}件 / race_resultsとbetsの二層監査 v2.4`};
-    DetailedAudit.copy=async function(csv=false){const rows=this.filtered();if(!rows.length)return alert('監査データがありません');const head=['race_id','bet_id','予想生成時刻','オッズ取得時刻','日時','競馬場','R','キャラクター','券種','馬/組番','購入額','予想時オッズ','最終オッズ下限','最終オッズ上限','確定払戻円/100円','確定払戻倍率','実払戻','利益','想定確率','予想時EV','Kelly率','実投資率','モデルVersion','結果取得元','結果取得時刻','判定'];const body=rows.map(r=>[r.race_id,r.bet_id,r.prediction_generated_at,r.odds_fetched_at,r.date,r.track,r.race_no,r.character,r.bet_type,r.selection,r.stake,r.predicted_odds,r.final_odds_low,r.final_odds_high,r.confirmed_refund_yen_per_100,r.confirmed_payout_multiplier,r.refund,r.profit,r.probability,r.predicted_ev,r.kelly_fraction,r.actual_investment_rate,r.model_version,r.result_source,r.result_fetched_at,r.status]);const d=csv?',':'\t',q=v=>{const s=String(v??'');return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s},text=[head,...body].map(row=>row.map(q).join(d)).join('\n');try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}document.getElementById('auditStatus').textContent=`${rows.length}件をコピーしました。払戻JSONはbets側に重複保存していません。`};
+    DetailedAudit.draw=function(){const rows=this.filtered(),visible=rows.slice(0,120),table=document.getElementById('auditBody')?.closest('table');if(table){table.querySelector('thead tr').innerHTML='<th>race_id</th><th>bet_id</th><th>run_id</th><th>シミュレーション予測生成時刻</th><th>予測実時点</th><th>オッズ取得実行時刻</th><th>オッズ種別</th><th>日時</th><th>競馬場</th><th>R</th><th>キャラクター</th><th>券種</th><th>馬/組番</th><th>購入額</th><th>予想時オッズ</th><th>最終オッズ</th><th>確定払戻円/100円</th><th>確定払戻倍率</th><th>実払戻</th><th>利益</th><th>想定確率</th><th>予想時EV</th><th>Kelly率</th><th>実投資率</th><th>同一R総投資率</th><th>モデルVersion</th><th>結果取得元</th><th>結果取得時刻</th><th>判定</th>'}
+      document.getElementById('auditBody').innerHTML=visible.map(r=>`<tr><td>${esc(r.race_id)}</td><td>${esc(r.bet_id)}</td><td>${esc(r.run_id||'—')}</td><td>${esc(formatTs24(r.simulation_prediction_generated_at))}</td><td>${r.pre_race_timestamp_verified?esc(formatTs24(r.prediction_generated_at)):'未検証'}</td><td>${esc(formatTs24(r.odds_acquired_at||r.odds_fetched_at))}</td><td>${esc(r.odds_snapshot_type||'—')}</td><td>${esc(r.date)}</td><td>${esc(r.track)}</td><td>${r.race_no}</td><td>${esc(r.character)}</td><td>${esc(r.bet_type)}</td><td>${esc(r.selection)}</td><td>${r.stake.toLocaleString()}</td><td>${r.predicted_odds==null?'—':Number(r.predicted_odds).toFixed(3)}</td><td>${esc(finalOddsLabel24(r))}</td><td>${r.confirmed_refund_yen_per_100==null?'—':Number(r.confirmed_refund_yen_per_100).toLocaleString()}</td><td>${Number(r.confirmed_payout_multiplier||0).toFixed(3)}</td><td>${r.refund.toLocaleString()}</td><td>${r.profit.toLocaleString()}</td><td>${fmtPct(r.probability)}</td><td>${Number(r.predicted_ev||0).toFixed(3)}</td><td>${fmtPct(r.kelly_fraction)}</td><td>${fmtPct(r.actual_investment_rate)}</td><td>${fmtPct(r.race_investment_rate)}</td><td>${esc(r.model_version)}</td><td>${esc(r.result_source||'—')}</td><td>${esc(formatTs24(r.result_fetched_at))}</td><td>${esc(r.status)}</td></tr>`).join('');document.getElementById('auditStatus').textContent=`表示 ${visible.length}件 / 条件一致${rows.length}件 / 全${auditRows24(this.result).length}件 / race_resultsとbetsの二層監査 v2.5`};
+    DetailedAudit.copy=async function(csv=false){const rows=this.filtered();if(!rows.length)return alert('監査データがありません');const head=['race_id','bet_id','run_id','シミュレーション予測生成時刻','予測実時点','pre_race_timestamp_verified','オッズ取得実行時刻','オッズ市場時点','odds_snapshot_type','日時','競馬場','R','キャラクター','券種','馬/組番','購入額','予想時オッズ','最終オッズ下限','最終オッズ上限','確定払戻円/100円','確定払戻倍率','実払戻','利益','想定確率','予想時EV','Kelly率','実投資率','同一R総投資率','bankroll_before_race','bankroll_after_race','モデルVersion','race_id_kind','結果取得元','結果解析元','結果取得時刻','判定'];const body=rows.map(r=>[r.race_id,r.bet_id,r.run_id,r.simulation_prediction_generated_at,r.prediction_generated_at,r.pre_race_timestamp_verified,r.odds_acquired_at||r.odds_fetched_at,r.odds_market_time,r.odds_snapshot_type,r.date,r.track,r.race_no,r.character,r.bet_type,r.selection,r.stake,r.predicted_odds,r.final_odds_low,r.final_odds_high,r.confirmed_refund_yen_per_100,r.confirmed_payout_multiplier,r.refund,r.profit,r.probability,r.predicted_ev,r.kelly_fraction,r.actual_investment_rate,r.race_investment_rate,r.bankroll_before_race,r.bankroll_after_race,r.model_version,r.race_id_kind,r.result_source,r.result_parser_source,r.result_fetched_at,r.status]);const d=csv?',':'\t',q=v=>{const s=String(v??'');return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s},text=[head,...body].map(row=>row.map(q).join(d)).join('\n');try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}document.getElementById('auditStatus').textContent=`${rows.length}件をコピーしました。払戻JSONはbets側に重複保存していません。`};
   }
 
   if(typeof AnomalyAudit==='object'){
@@ -5831,7 +6009,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     const cna=document.getElementById('copyAnomaly');if(cna)cna.onclick=()=>AnomalyAudit.copy(false);
     const cnac=document.getElementById('copyAnomalyCsv');if(cnac)cnac.onclick=()=>AnomalyAudit.copy(true);
     const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
-    if(host&&!document.getElementById('modelValidationBadge24')){const e=document.createElement('div');e.id='modelValidationBadge24';e.className='muted';e.style.marginTop='4px';e.textContent='監査/モデル検証: v2.4 / race_results + bets二層 / Brier・ECE・EV帯・資金管理・総合Score';host.insertAdjacentElement('afterend',e)}
+    if(host&&!document.getElementById('modelValidationBadge24')){const e=document.createElement('div');e.id='modelValidationBadge24';e.className='muted';e.style.marginTop='4px';e.textContent='監査/モデル検証: v2.5 / race_results + bets二層 / Brier・ECE・EV帯・資金管理・総合Score';host.insertAdjacentElement('afterend',e)}
     try{if(btResult?.bets){renderRank24(btResult);ModelValidation24.render(btResult);DetailedAudit.render(btResult);AnomalyAudit.render(btResult)}}catch(_){ }
   },1300);
 
