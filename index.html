@@ -6408,5 +6408,256 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 })();
 
 </script>
+<script>
+/* =========================================================
+   FIXED27 — source IDs + parser provenance + exact Kelly audit stages
+   2026-09-12
+   - Adds source_race_id / source_race_id_kind and official result_source_key.
+   - Renames NAR result parser provenance to the actual keiba.go.jp parser,
+     while preserving the legacy compatibility token separately.
+   - Captures Portfolio Kelly stages exactly at decision time:
+       raw -> Kelly scale -> race-cap factor -> capped rate -> pre-round yen
+       -> rounded stake -> final applied rate.
+   - Does not change selections, prices, settlement, or bankroll logic.
+   ========================================================= */
+(() => {
+  'use strict';
+  if (window.__FIXED27_AUDIT_PROVENANCE__) return;
+  window.__FIXED27_AUDIT_PROVENANCE__ = true;
+
+  const MODEL_VERSION27='BT-MODEL-v2.7';
+  const AUDIT_SCHEMA_VERSION27=27;
+  const esc27=v=>typeof escapeHtml==='function'?escapeHtml(String(v??'')):String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const pct27=(v,d=3)=>Number.isFinite(Number(v))?(Number(v)*100).toFixed(d)+'%':'—';
+  const num27=(v,d=6)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
+  const norm27=s=>String(s??'').replace(/[\s　]+/g,'').trim();
+
+  const NAR_NETKEIBA_TRACK_CODE27={
+    '門別':'30','盛岡':'35','水沢':'36','浦和':'42','船橋':'43','大井':'44','川崎':'45',
+    '金沢':'46','笠松':'47','名古屋':'48','園田':'50','姫路':'51','高知':'54','佐賀':'55',
+    '帯広':'65','帯広ば':'65','帯広(ば)':'65','ばんえい':'65'
+  };
+  const NAR_BABA_CODE27={
+    '帯広':'3','帯広ば':'3','帯広(ば)':'3','ばんえい':'3','門別':'36','盛岡':'10','水沢':'11',
+    '浦和':'18','船橋':'19','大井':'20','川崎':'21','金沢':'22','笠松':'23','名古屋':'24',
+    '園田':'27','姫路':'28','高知':'31','佐賀':'32'
+  };
+
+  function trackCode27(map,track){
+    const t=norm27(track);
+    if(map[t]) return map[t];
+    const k=Object.keys(map).find(x=>t.includes(norm27(x))||norm27(x).includes(t));
+    return k?map[k]:'';
+  }
+  function extractedSourceId27(obj){
+    for(const v of [obj?.source_race_id,obj?.id,obj?.raceId,obj?.race_id,obj?.url,obj?.sourceUrl,obj?.resultUrl]){
+      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/); if(m) return m[1];
+    }
+    try{const m=JSON.stringify(obj??{}).match(/(?:race_id[^0-9]{0,8})?(20\d{10})/);if(m)return m[1]}catch(_){ }
+    return '';
+  }
+  function sourceRaceMeta27(r){
+    const extracted=extractedSourceId27(r);
+    if(extracted) return {id:extracted,kind:'EXTRACTED_SOURCE_ID'};
+    const org=String(r?.org||'').toUpperCase(),d=String(r?.date||'').replace(/\D/g,''),no=Number(r?.race_no??r?.no??0);
+    if(org==='NAR'&&/^20\d{6}$/.test(d)&&no>=1&&no<=12){
+      const code=trackCode27(NAR_NETKEIBA_TRACK_CODE27,r?.track||'');
+      if(code) return {id:`${d.slice(0,4)}${code}${d.slice(4,8)}${String(no).padStart(2,'0')}`,kind:'DERIVED_NAR_NETKEIBA_ID'};
+    }
+    return {id:null,kind:'UNAVAILABLE'};
+  }
+  function officialResultKey27(r){
+    if(String(r?.org||'').toUpperCase()!=='NAR') return null;
+    const code=trackCode27(NAR_BABA_CODE27,r?.track||''),d=String(r?.date||'').replace(/\D/g,''),no=Number(r?.race_no??r?.no??0);
+    if(!code||!/^20\d{6}$/.test(d)||!(no>=1&&no<=12)) return null;
+    return `keiba.go.jp:baba=${code},date=${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)},R=${no}`;
+  }
+  function parserLabel27(b,rr){
+    const src=String(b?.result_source||rr?.result_source||rr?.payout_meta?.officialSource||'');
+    const parser=String(rr?.payout_meta?.parser||'');
+    if(src.includes('keiba.go.jp')||parser==='v2.1-official') return 'keiba.go.jp-official-refund-parser-v2.1';
+    if(parser) return parser;
+    const legacy=String(b?.result_parser_source||rr?.payout_meta?.source||'');
+    if(legacy) return legacy;
+    return null;
+  }
+
+  function raceDecisionKey27(race,char,selection){
+    return `${String(race?.date||'')}|${norm27(race?.track||'')}|${Number(race?.no??race?.race_no??0)}|${String(char||'')}|${String(selection||'')}`;
+  }
+  const kellyLedger27=new Map();
+
+  if(typeof btPicks==='function'){
+    const prevPicks27=btPicks;
+    btPicks=function(c,race,settings){
+      const picks=prevPicks27(c,race,settings)||[];
+      if(!['kelly','quarter'].includes(c?.staking)) return picks;
+      const scale=c.staking==='kelly'?.5:.25;
+      const bankroll=Math.max(1,Number(c?.bankroll)||1);
+      const raceCapYen=Math.max(0,Number(settings?.maxRace||0));
+      const raceCapRate=Math.min(.95,raceCapYen/bankroll);
+      let sumScaled=0;
+      for(const h of picks){
+        const raw=Number(h?._portfolioKellyFull26);
+        if(Number.isFinite(raw)) sumScaled+=raw*scale;
+      }
+      const capFactor=sumScaled>raceCapRate&&sumScaled>0?raceCapRate/sumScaled:1;
+      return picks.map(h=>{
+        const raw=Number(h?._portfolioKellyFull26),scaled=Number.isFinite(raw)?raw*scale:null;
+        const capped=Number.isFinite(Number(h?._portfolioKellyApplied26))?Number(h._portfolioKellyApplied26):(Number.isFinite(scaled)?scaled*capFactor:null);
+        const key=raceDecisionKey27(race,c?.name,h?.no);
+        const stage={
+          decision_key:key,
+          portfolio_kelly_raw_fraction:Number.isFinite(raw)?raw:null,
+          kelly_scale:scale,
+          portfolio_kelly_scaled_fraction:Number.isFinite(scaled)?scaled:null,
+          race_cap_yen:raceCapYen,
+          race_cap_rate:raceCapRate,
+          race_cap_factor:Number.isFinite(scaled)&&scaled>0&&Number.isFinite(capped)?capped/scaled:capFactor,
+          portfolio_kelly_capped_fraction:Number.isFinite(capped)?capped:null,
+          portfolio_kelly_total_scaled_fraction:sumScaled,
+          portfolio_kelly_total_capped_fraction:Number(h?._portfolioKellyTotalApplied26 ?? Math.min(sumScaled,raceCapRate)),
+          portfolio_kelly_method:String(h?._portfolioKellyMethod26||'exclusive-outcomes-coordinate-concave-v1')
+        };
+        kellyLedger27.set(key,stage);
+        return {...h,_auditDecisionKey27:key};
+      });
+    };
+  }
+
+  if(typeof btStake==='function'){
+    const prevStake27=btStake;
+    btStake=function(c,h,settings){
+      const stake=prevStake27(c,h,settings);
+      if(['kelly','quarter'].includes(c?.staking)){
+        const key=h?._auditDecisionKey27;
+        if(key){
+          const stage=kellyLedger27.get(key)||{};
+          const bank=Math.max(0,Number(c?.bankroll)||0),capped=Number(stage.portfolio_kelly_capped_fraction);
+          const preRound=Number.isFinite(capped)?bank*capped:null;
+          kellyLedger27.set(key,{...stage,
+            bankroll_at_stake:bank,
+            kelly_pre_round_stake_yen:Number.isFinite(preRound)?preRound:null,
+            kelly_rounded_stake_yen:Number(stake||0),
+            kelly_rounding_delta_yen:Number.isFinite(preRound)?preRound-Number(stake||0):null,
+            kelly_final_applied_rate:bank>0?Number(stake||0)/bank:null
+          });
+        }
+      }
+      return stake;
+    };
+  }
+
+  function enrich27(result){
+    result.modelVersion=MODEL_VERSION27;
+    result.auditSchemaVersion=AUDIT_SCHEMA_VERSION27;
+    result.provenanceContract={version:27,
+      source_race_id:'External/source-side race identifier; NAR netkeiba ID is derived from date/venue/race when not embedded in fetched race JSON.',
+      result_source_key:'Official NAR keiba.go.jp locator (baba/date/R).',
+      parser_provenance:'Actual official parser label is separated from the old compatibility source token.'};
+
+    const rrMap=result.race_results||{};
+    for(const [rid,rr] of Object.entries(rrMap)){
+      const meta=sourceRaceMeta27(rr);
+      rr.source_race_id=meta.id; rr.source_race_id_kind=meta.kind;
+      rr.result_source_key=officialResultKey27(rr);
+      rr.result_parser_legacy_source=rr?.payout_meta?.source||null;
+      rr.result_parser_source=parserLabel27(null,rr);
+      if(rr.payout_meta&&typeof rr.payout_meta==='object') rr.payout_meta={...rr.payout_meta,auditParserSource:rr.result_parser_source};
+    }
+
+    for(const b of result.bets||[]){
+      b.model_version=MODEL_VERSION27;
+      const rr=rrMap[b.race_id]||{date:b.date,org:b.org,track:b.track,race_no:b.race_no};
+      const meta=sourceRaceMeta27(rr);
+      b.source_race_id=meta.id; b.source_race_id_kind=meta.kind;
+      b.result_source_key=rr.result_source_key||officialResultKey27(rr);
+      b.result_parser_legacy_source=b.result_parser_source||rr?.payout_meta?.source||null;
+      b.result_parser_source=parserLabel27(b,rr);
+
+      const key=raceDecisionKey27({date:b.date,track:b.track,no:b.race_no},b.character,String(b.selection||'').split('-')[0]);
+      const s=kellyLedger27.get(key);
+      if(s){
+        b.portfolio_kelly_raw_fraction=s.portfolio_kelly_raw_fraction;
+        b.portfolio_kelly_fraction=s.portfolio_kelly_raw_fraction;
+        b.kelly_scale=s.kelly_scale;
+        b.portfolio_kelly_scaled_fraction=s.portfolio_kelly_scaled_fraction;
+        b.race_cap_yen=s.race_cap_yen;
+        b.race_cap_rate=s.race_cap_rate;
+        b.race_cap_factor=s.race_cap_factor;
+        b.portfolio_kelly_capped_fraction=s.portfolio_kelly_capped_fraction;
+        b.portfolio_kelly_total_scaled_fraction=s.portfolio_kelly_total_scaled_fraction;
+        b.portfolio_kelly_total_capped_fraction=s.portfolio_kelly_total_capped_fraction;
+        b.kelly_pre_round_stake_yen=s.kelly_pre_round_stake_yen;
+        b.kelly_rounded_stake_yen=s.kelly_rounded_stake_yen;
+        b.kelly_rounding_delta_yen=s.kelly_rounding_delta_yen;
+        b.kelly_final_applied_rate=s.kelly_final_applied_rate;
+        b.portfolio_kelly_method=s.portfolio_kelly_method;
+        b.kelly_audit_capture='DECISION_TIME_EXACT_V27';
+      }else if(['ケリー馬券師','バランス型AI'].includes(b.character)){
+        b.kelly_audit_capture='UNAVAILABLE';
+      }else{
+        b.kelly_audit_capture='NOT_APPLICABLE';
+      }
+    }
+
+    result.runMeta={...(result.runMeta||{}),model_version:MODEL_VERSION27,audit_schema_version:27,
+      provenance_note:'source_race_id/result_source_key/parser provenance recorded separately. Kelly stages captured at decision time before settlement.'};
+    result.kellyContract={...(result.kellyContract||{}),version:27,
+      auditStages:['portfolio_kelly_raw_fraction','kelly_scale','portfolio_kelly_scaled_fraction','race_cap_factor','portfolio_kelly_capped_fraction','kelly_pre_round_stake_yen','kelly_rounded_stake_yen','kelly_final_applied_rate'],
+      capture:'decision-time exact; no post-result reconstruction'};
+    return result;
+  }
+
+  if(typeof runBacktestOnHistory==='function'){
+    const prevRun27=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      kellyLedger27.clear();
+      const result=await prevRun27(historyBlocks,onProgress);
+      return enrich27(result);
+    };
+  }
+
+  function auditHead27(){return [
+    'race_id','source_race_id','source_race_id_kind','result_source_key','bet_id','run_id','検証モード',
+    'シミュレーション予測生成時刻','予測実時点','pre_race_timestamp_verified','オッズ取得実行時刻','オッズ市場時点','market_snapshot_pre_race_verified','odds_snapshot_type',
+    '日時','競馬場','R','キャラクター','券種','馬/組番','購入額','予想時オッズ','最終オッズ下限','最終オッズ上限','確定払戻円/100円','確定払戻倍率','実払戻','利益','想定確率','予想時EV',
+    '単独Kelly率','Portfolio Kelly生率','Kelly適用倍率','Kelly倍率後率','R上限円','R上限率','R上限係数','R上限後率','Kelly丸め前円','Kelly丸め後円','Kelly丸め差円','Kelly最終適用率','同一R総投資率',
+    'bankroll_before_race','bankroll_after_race','モデルVersion','確率モデルVersion','race_id_kind','結果取得元','結果解析元','結果解析元legacy','結果取得時刻','判定'
+  ]}
+  function auditRow27(r){return [
+    r.race_id,r.source_race_id,r.source_race_id_kind,r.result_source_key,r.bet_id,r.run_id,r.validation_mode,
+    r.simulation_prediction_generated_at,r.prediction_generated_at,r.pre_race_timestamp_verified,r.odds_acquired_at||r.odds_fetched_at,r.odds_market_time,r.market_snapshot_pre_race_verified,r.odds_snapshot_type,
+    r.date,r.track,r.race_no,r.character,r.bet_type,r.selection,r.stake,r.predicted_odds,r.final_odds_low,r.final_odds_high,r.confirmed_refund_yen_per_100,r.confirmed_payout_multiplier,r.refund,r.profit,r.probability,r.predicted_ev,
+    r.individual_kelly_fraction,r.portfolio_kelly_raw_fraction,r.kelly_scale,r.portfolio_kelly_scaled_fraction,r.race_cap_yen,r.race_cap_rate,r.race_cap_factor,r.portfolio_kelly_capped_fraction,r.kelly_pre_round_stake_yen,r.kelly_rounded_stake_yen,r.kelly_rounding_delta_yen,r.kelly_final_applied_rate,r.race_investment_rate,
+    r.bankroll_before_race,r.bankroll_after_race,r.model_version,r.probability_model_version,r.race_id_kind,r.result_source,r.result_parser_source,r.result_parser_legacy_source,r.result_fetched_at,r.status
+  ]}
+
+  if(typeof DetailedAudit==='object'){
+    DetailedAudit.draw=function(){
+      const rows=this.filtered(),visible=rows.slice(0,120),table=document.getElementById('auditBody')?.closest('table');
+      if(table)table.querySelector('thead tr').innerHTML='<th>race_id</th><th>source_race_id</th><th>結果source key</th><th>bet_id</th><th>検証</th><th>日時</th><th>競馬場</th><th>R</th><th>キャラクター</th><th>券種</th><th>馬/組番</th><th>購入額</th><th>予想時odds</th><th>確定払戻</th><th>利益</th><th>確率</th><th>EV</th><th>Kelly生</th><th>倍率</th><th>倍率後</th><th>R上限係数</th><th>上限後</th><th>丸め前円</th><th>丸め後円</th><th>最終率</th><th>結果解析元</th><th>判定</th>';
+      const body=document.getElementById('auditBody');
+      if(body)body.innerHTML=visible.map(r=>`<tr><td>${esc27(r.race_id)}</td><td>${esc27(r.source_race_id||'—')}</td><td>${esc27(r.result_source_key||'—')}</td><td>${esc27(r.bet_id)}</td><td>${esc27(r.validation_mode||'—')}</td><td>${esc27(r.date)}</td><td>${esc27(r.track)}</td><td>${r.race_no}</td><td>${esc27(r.character)}</td><td>${esc27(r.bet_type)}</td><td>${esc27(r.selection)}</td><td>${Number(r.stake||0).toLocaleString()}</td><td>${num27(r.predicted_odds,3)}</td><td>${r.confirmed_refund_yen_per_100==null?'—':Number(r.confirmed_refund_yen_per_100).toLocaleString()+'円'}</td><td>${Number(r.profit||0).toLocaleString()}</td><td>${pct27(r.probability,2)}</td><td>${num27(r.predicted_ev,3)}</td><td>${pct27(r.portfolio_kelly_raw_fraction,3)}</td><td>${r.kelly_scale==null?'—':Number(r.kelly_scale).toFixed(2)}</td><td>${pct27(r.portfolio_kelly_scaled_fraction,3)}</td><td>${r.race_cap_factor==null?'—':num27(r.race_cap_factor,4)}</td><td>${pct27(r.portfolio_kelly_capped_fraction,3)}</td><td>${r.kelly_pre_round_stake_yen==null?'—':Number(r.kelly_pre_round_stake_yen).toFixed(1)}</td><td>${r.kelly_rounded_stake_yen==null?'—':Number(r.kelly_rounded_stake_yen).toLocaleString()}</td><td>${pct27(r.kelly_final_applied_rate,3)}</td><td>${esc27(r.result_parser_source||'—')}</td><td>${esc27(r.status)}</td></tr>`).join('');
+      const st=document.getElementById('auditStatus');if(st)st.textContent=`表示 ${visible.length}件 / 条件一致${rows.length}件 / 全${this.result?.bets?.length||0}件 / v2.7 source ID + parser provenance + exact Kelly stages`;
+    };
+    DetailedAudit.copy=async function(csv=false){
+      const rows=this.filtered();if(!rows.length)return alert('監査データがありません');
+      const head=auditHead27(),body=rows.map(auditRow27),d=csv?',':'\t',q=v=>{const s=String(v??'');return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s},text=[head,...body].map(row=>row.map(q).join(d)).join('\n');
+      try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
+      const st=document.getElementById('auditStatus');if(st)st.textContent=`${rows.length}件をコピーしました。v2.7 source_race_id・公式parser・Kelly全段階を含みます。`;
+    };
+  }
+
+  setTimeout(()=>{
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('fixed27Badge')){const e=document.createElement('div');e.id='fixed27Badge';e.className='muted';e.style.marginTop='4px';e.textContent='監査: v2.7 / source_race_id + keiba.go.jp result key / parser provenance / Kelly 生→倍率→R上限→100円丸め→最終率';host.insertAdjacentElement('afterend',e)}
+    try{if(typeof btResult!=='undefined'&&btResult?.bets){enrich27(btResult);DetailedAudit?.render(btResult)}}catch(_){ }
+  },1700);
+
+  console.log('✅ FIXED27 provenance + exact Kelly stage audit loaded');
+})();
+
+</script>
 </body>
 </html>
