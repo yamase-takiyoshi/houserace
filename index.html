@@ -629,8 +629,11 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
       <label style="grid-column:1/-1">LIVE API Base URL（houserace 接続済み）
         <input id="sApi" placeholder="https://houserace.nitta-katsuhiko.workers.dev">
       </label>
+      <label style="grid-column:1/-1">netkeiba Cloudflare Proxy URL（全券種オッズ用）
+        <input id="sNetkeibaProxy" placeholder="https://your-keiba-odds-proxy.workers.dev">
+      </label>
     </div>
-    <p class="muted">想定エンドポイント: /races?date=YYYY-MM-DD, /odds?raceId=...&org=JRA|NAR, /result?raceId=...&org=JRA|NAR</p>
+    <p class="muted">LIVE API: /races /odds /result。全券種オッズは別欄のCloudflare Proxyへ ?url=netkeibaURL で取得し、Worker遮断時だけ住宅IP Bridgeへフォールバックします。</p>
     <div class="controls"><button value="cancel">キャンセル</button><button id="saveSettings" class="primary" value="default">保存</button></div>
   </form>
 </dialog>
@@ -724,6 +727,7 @@ const DEFAULTS={
   mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
   initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
+  netkeibaProxyUrl:"",
   jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
 };
 const Store={
@@ -1352,7 +1356,9 @@ function openSettings(){
   $("#sJraClose").value=s.jraCloseBeforeMin??1;$("#sNarClose").value=s.narCloseBeforeMin??2;
   $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";
   $("#sAuto").value=s.auto?"1":"0";$("#sResultDelay").value=s.resultDelaySec??18;
-  $("#sApi").value=s.apiBase||"";$("#settingsDlg").showModal();
+  $("#sApi").value=s.apiBase||"";
+  $("#sNetkeibaProxy").value=s.netkeibaProxyUrl||localStorage.getItem("keibaNetkeibaProxyUrl")||"";
+  $("#settingsDlg").showModal();
 }
 $("#saveSettings").onclick=()=>{
   engine.settings={...engine.settings,mode:$("#sMode").value,betTiming:+$("#sBetTiming").value,evPositive:+$("#sEvPositive").value,evStrong:+$("#sEvStrong").value,
@@ -1360,8 +1366,10 @@ $("#saveSettings").onclick=()=>{
     jraCloseBeforeMin:+$("#sJraClose").value,narCloseBeforeMin:+$("#sNarClose").value,
     jra:$("#sJra").value==="1",nar:$("#sNar").value==="1",
     auto:$("#sAuto").value==="1",resultDelaySec:+$("#sResultDelay").value,
-    apiBase:$("#sApi").value.trim()};
+    apiBase:$("#sApi").value.trim(),
+    netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()};
   Store.set("settings",engine.settings);
+  localStorage.setItem("keibaNetkeibaProxyUrl",engine.settings.netkeibaProxyUrl||"");
   if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
 };
 $("#exportJson").onclick=async()=>{
@@ -6992,7 +7000,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
-<!-- v5.18.302 NETKEIBA DIRECT ALL TICKET ODDS / 2026-09-12 -->
+<!-- v5.18.303 NETKEIBA DIRECT ALL TICKET ODDS / 2026-09-12 -->
 <style id="allTicketOddsCssV298">
 #ticketOddsModule{margin-top:12px;border:1px solid var(--line,#2b4131);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.10)}
 #ticketOddsModule .ticket-odds-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;border-bottom:1px solid var(--line,#2b4131)}
@@ -7107,12 +7115,55 @@ function parseSinglePlace(doc,st){const combo=findHeadingTable(doc,'単勝・複
 function parseRankTable(tb,type,st,wideToo=false){if(!tb)return;let rank=0;for(const tr of tb.querySelectorAll('tr')){const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;const c=cells.map(x=>clean(x.textContent));if(/人気|組み合わせ|オッズ/.test(c.join('|'))&&c.some(x=>/人気|組み合わせ/.test(x)))continue;const r0=/^\d+$/.test(c[0])?Number(c[0]):(++rank);let comboCell=cells[1]||cells[0];let ns=[...comboCell.textContent.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>m[1]);if(type==='枠連')ns=[...comboCell.textContent.matchAll(/\b([1-8])\b/g)].map(m=>m[1]);const need=(type==='3連複'||type==='3連単')?3:2;if(ns.length<need){const joined=c.slice(1,-1).join(' ');ns=[...joined.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>m[1])}if(ns.length<need)continue;const selection=ns.slice(0,need).join('-');const oddsCandidates=c.slice(2).filter(x=>/\d/.test(x));if(!oddsCandidates.length)continue;addRow(st,type,selection,oddsCandidates[0],r0);if(wideToo&&oddsCandidates[1])addRow(st,'ワイド',selection,oddsCandidates[1],r0)} }
 function parseOverview(html,st){const doc=new DOMParser().parseFromString(html,'text/html');parseSinglePlace(doc,st);parseRankTable(findHeadingTable(doc,'馬連・ワイド'),'馬連',st,true);parseRankTable(findHeadingTable(doc,'馬単'),'馬単',st);parseRankTable(findHeadingTable(doc,'3連複'),'3連複',st);parseRankTable(findHeadingTable(doc,'3連単'),'3連単',st)}
 function parseMatrix(html,type,st){const doc=new DOMParser().parseFromString(html,'text/html');const tables=[...doc.querySelectorAll('table')];let added=0;for(const tb of tables){let colHeaders=[];for(const tr of tb.querySelectorAll('tr')){const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;const texts=cells.map(x=>clean(x.textContent));if(texts.every(x=>/^\d{1,2}$/.test(x)||x==='')){colHeaders=texts.map(x=>/^\d{1,2}$/.test(x)?Number(x):null);continue}let rowNo=/^\d{1,2}$/.test(texts[0])?Number(texts[0]):null;if(!rowNo)continue;for(let i=1;i<cells.length;i++){const tx=texts[i];const rg=range(tx);if(!rg||rg.mid<1)continue;let nums=[...tx.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>Number(m[1]));let colNo=nums.find(n=>n!==rowNo)||colHeaders[i]||null;const inp=cells[i].querySelector('input');if(!colNo&&inp){const bag=[inp.value,inp.name,inp.id,inp.dataset?.umaban,inp.dataset?.horse].filter(Boolean).join(' ');const mm=bag.match(/(?:^|\D)([1-9]|1[0-8])(?:\D|$)/g)||[];const vs=mm.map(x=>Number(x.match(/\d+/)[0])).filter(n=>n!==rowNo);colNo=vs[0]||null}if(!colNo||colNo===rowNo)continue;let selection=(type==='馬単')?`${rowNo}-${colNo}`:[rowNo,colNo].sort((a,b)=>a-b).join('-');addRow(st,type,selection,rg.text,st.rows[type].length+1);added++}}}return added}
-async function bridgeFetch(url){
-  if(typeof window.__narBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('Bridge未接続');
+function cloudflareOddsProxyUrl(){
+  try{
+    const a=String(engine?.settings?.netkeibaProxyUrl||'').trim();
+    if(a)return a.replace(/\/$/,'');
+  }catch(_){}
+  try{
+    const b=String(localStorage.getItem('keibaNetkeibaProxyUrl')||'').trim();
+    if(b)return b.replace(/\/$/,'');
+  }catch(_){}
+  return '';
+}
+async function residentialBridgeFetch(url){
+  if(typeof window.__narBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('住宅IP Bridge未接続');
   const r=await window.__narBridgeFetch(url);
   const status=Number(r?.status||0),text=String(r?.text||'');
-  if(!(status>=200&&status<400)||text.length<300)throw new Error(`HTTP ${status||0}`);
-  return {text,url:String(r?.finalUrl||url)};
+  if(!(status>=200&&status<400)||text.length<300)throw new Error(`Bridge HTTP ${status||0}`);
+  return {text,url:String(r?.finalUrl||url),via:'residential-bridge'};
+}
+async function bridgeFetch(url){
+  const proxy=cloudflareOddsProxyUrl();
+  if(proxy){
+    const endpoint=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
+    try{
+      const res=await fetch(endpoint,{method:'GET',cache:'no-store',headers:{'Accept':'text/html,application/json;q=0.9,*/*;q=0.8'}});
+      const raw=await res.text();
+      const ct=String(res.headers.get('content-type')||'').toLowerCase();
+      if(res.ok && raw.length>=300 && !ct.includes('application/json')){
+        return {text:raw,url:res.headers.get('x-thekeiba-final-url')||url,via:'cloudflare'};
+      }
+      let data=null;
+      if(ct.includes('application/json')||/^\s*\{/.test(raw))try{data=JSON.parse(raw)}catch(_){}
+      const target=data?.bridge?.candidates?.[0]?.url||url;
+      if(data?.needBridge && typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true){
+        const rr=await residentialBridgeFetch(target);
+        rr.via='cloudflare→residential-bridge';
+        return rr;
+      }
+      throw new Error(data?.error||`Cloudflare HTTP ${res.status}`);
+    }catch(e){
+      // Cloudflare Workerが未デプロイ/一時障害でも、既存Bridgeがあれば継続できる。
+      if(typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true){
+        const rr=await residentialBridgeFetch(url);
+        rr.via='cloudflare-fallback→residential-bridge';
+        return rr;
+      }
+      throw e;
+    }
+  }
+  return await residentialBridgeFetch(url);
 }
 function baseUrls(r,id,type){
   const nar=String(r?.org||'').toUpperCase()==='NAR';
@@ -7235,7 +7286,8 @@ function renderRows(){
     tbody.innerHTML=rows.slice(0,300).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(x.selection)}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('');
   }
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
-  const status=isDemo&&!rid?'DEMO計算値（実オッズではありません）':src?`netkeiba実オッズ / ${active} / ${rows.length}件 / ${at?at.toLocaleTimeString('ja-JP'):''}`:(!rid?'LIVE / race_id未解決':(typeErr||'netkeiba実オッズ未取得'));
+  const route=cloudflareOddsProxyUrl()?'Cloudflare→netkeiba実オッズ':'Bridge→netkeiba実オッズ';
+  const status=isDemo&&!rid?'DEMO計算値（実オッズではありません）':src?`${route} / ${active} / ${rows.length}件 / ${at?at.toLocaleTimeString('ja-JP'):''}`:(!rid?'LIVE / race_id未解決':(typeErr||`${route}未取得`));
   setStatus(status);
 }
 async function renderOrLoad(userAction=false,force=false){
@@ -7288,7 +7340,7 @@ function hook(){
 }
 window.__oddsBoard={onRace,render:renderOrLoad,cache,hook};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000)},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000)}
-console.log('✅ v5.18.302 NETKEIBA DIRECT ALL TICKET ODDS loaded');
+console.log('✅ v5.18.303 NETKEIBA DIRECT ALL TICKET ODDS loaded');
 })();
 </script>
 
