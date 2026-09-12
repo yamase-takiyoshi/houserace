@@ -5252,5 +5252,240 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   console.log('✅ FIXED22 audit payout formatting loaded');
 })();
 </script>
+
+<script>
+/* =========================================================
+   FIXED23 — PLACE BET EV STRICT v2.3
+   - 複勝の「想定確率」を単勝確率からHarville top2/top3確率へ修正
+   - 複勝EVは結果払戻ではなく、Bridgeで取得した最終複勝オッズ下限を使用
+   - 複勝オッズを取得できないレースは複勝専門家を見送り（fail-closed）
+   - 結果払戻は従来どおり公式払戻で精算
+   ========================================================= */
+(()=>{
+  'use strict';
+  const CACHE_KEY='btPlaceOddsCacheV23';
+  const MARK_KEY='btPlaceEvStrictV23Installed';
+  const sleep23=ms=>new Promise(r=>setTimeout(r,ms));
+  const clean23=s=>String(s??'').replace(/[\u00a0\s　]+/g,' ').trim();
+  const half23=s=>String(s??'').replace(/[０-９．，－〜]/g,c=>({
+    '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9',
+    '．':'.','，':',','－':'-','〜':'-'
+  }[c]||c));
+
+  function cacheLoad23(){
+    try{return JSON.parse(localStorage.getItem(CACHE_KEY)||'{}')||{}}catch(_){return {}}
+  }
+  function cacheSave23(x){try{localStorage.setItem(CACHE_KEY,JSON.stringify(x))}catch(_){}}
+  const placeCache23=cacheLoad23();
+
+  function bridgeReady23(){return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true}
+  async function bridgeGet23(url){
+    if(!bridgeReady23()) throw new Error('Bridge v1.7.x 未接続');
+    const r=await window.__narBridgeFetch(url);
+    const status=Number(r?.status||0), text=String(r?.text||'');
+    if(!(status>=200&&status<400)) throw new Error(`HTTP ${status||0}`);
+    if(text.length<300) throw new Error(`HTML ${text.length}字`);
+    return {text,url:String(r?.finalUrl||url)};
+  }
+
+  function horseNoFromRow23(tr){
+    const direct=tr.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"],[class*="Horse_Num"]');
+    if(direct){
+      const m=half23(clean23(direct.textContent)).match(/(?:^|\D)([1-9]|1[0-8])(?:\D|$)/);
+      if(m)return Number(m[1]);
+    }
+    const link=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+    const els=[...tr.querySelectorAll('th,td')];
+    if(link&&els.length){
+      const idx=els.findIndex(x=>x===link||x.contains(link));
+      const before=(idx>=0?els.slice(0,idx):els.slice(0,5));
+      const nums=[];
+      for(const el of before){
+        const t=half23(clean23(el.textContent));
+        if(/^([1-9]|1[0-8])$/.test(t)) nums.push(Number(t));
+      }
+      if(nums.length)return nums[nums.length-1];
+    }
+    return 0;
+  }
+
+  function parsePlaceOdds23(html){
+    const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+    const map={};
+    for(const tr of doc.querySelectorAll('tr')){
+      const no=horseNoFromRow23(tr);
+      if(!(no>=1&&no<=18))continue;
+      const text=half23(clean23(tr.textContent)).replace(/[–—―~～]/g,'-');
+      // 複勝は通常「1.1 - 1.5」のレンジ。勝単オッズの単独小数は採用しない。
+      const ranges=[...text.matchAll(/(\d{1,4}(?:\.\d+)?)\s*-\s*(\d{1,4}(?:\.\d+)?)/g)];
+      let low=0,high=0;
+      if(ranges.length){
+        const m=ranges[ranges.length-1];
+        low=Number(m[1]); high=Number(m[2]);
+      }else{
+        // type=b1 の独立「複勝」表で単値表示されるケースだけ補助採用。
+        const table=tr.closest('table');
+        const context=half23(clean23((table?.previousElementSibling?.textContent||'')+' '+(table?.textContent||'')));
+        if(/複勝/.test(context) && !/単勝・複勝/.test(context)){
+          const vals=[...text.matchAll(/(?:^|\s)(\d{1,4}\.\d+)(?:\s|$)/g)].map(m=>Number(m[1])).filter(v=>v>=1&&v<1000);
+          if(vals.length){low=high=vals[vals.length-1]}
+        }
+      }
+      if(Number.isFinite(low)&&Number.isFinite(high)&&low>=1&&high>=low&&high<1000){
+        map[no]={low:+low.toFixed(2),high:+high.toFixed(2),mid:+((low+high)/2).toFixed(2)};
+      }
+    }
+    return map;
+  }
+
+  function raceId23(r){
+    for(const v of [r?.id,r?.raceId,r?.race_id,r?.url,r?.sourceUrl,r?.resultUrl]){
+      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/); if(m)return m[1];
+    }
+    try{const m=JSON.stringify(r).match(/(?:race_id[^0-9]{0,8})?(20\d{10})/);if(m)return m[1]}catch(_){ }
+    return '';
+  }
+
+  async function fetchPlaceMap23(race){
+    const id=raceId23(race); if(!id)throw new Error('race_idなし');
+    if(placeCache23[id]&&Object.keys(placeCache23[id].map||{}).length){return placeCache23[id]}
+    const org=String(race?.org||'').toUpperCase();
+    const urls=org==='NAR' ? [
+      `https://nar.netkeiba.com/odds/?race_id=${id}&type=b0`,
+      `https://nar.netkeiba.com/odds/?race_id=${id}&type=b1`,
+      `https://nar.sp.netkeiba.com/odds/odds.html?race_id=${id}&type=b1`
+    ] : [
+      `https://race.sp.netkeiba.com/?pid=odds_view&race_id=${id}&type=b1`,
+      `https://race.netkeiba.com/odds/index.html?race_id=${id}&type=b0`,
+      `https://race.netkeiba.com/odds/index.html?race_id=${id}&type=b1`
+    ];
+    const errs=[];
+    for(const u of urls){
+      try{
+        const x=await bridgeGet23(u); const map=parsePlaceOdds23(x.text);
+        if(Object.keys(map).length>=2){
+          const rec={map,source:x.url,at:new Date().toISOString()}; placeCache23[id]=rec; return rec;
+        }
+        errs.push(`解析${Object.keys(map).length}頭`);
+      }catch(e){errs.push(String(e?.message||e))}
+    }
+    throw new Error(errs.slice(0,3).join(' / ')||'複勝オッズ取得失敗');
+  }
+
+  function applyPlaceMap23(race,rec){
+    const map=rec?.map||{};
+    for(const h of (race?.horses||[])){
+      const p=map[Number(h.no)];
+      if(p){
+        h.placeOddsLow=Number(p.low); h.placeOddsHigh=Number(p.high); h.placeOddsMid=Number(p.mid);
+        h.placeOddsSource='netkeiba-final-place-range';
+      }
+    }
+  }
+
+  async function enrichPlaceOdds23(blocks){
+    const races=[];
+    for(const b of (blocks||[])) for(const r of (b?.races||[])) if(raceId23(r)) races.push(r);
+    let cached=0,loaded=0,failed=0,done=0;
+    const pending=[];
+    for(const r of races){
+      const id=raceId23(r), rec=placeCache23[id];
+      if(rec&&Object.keys(rec.map||{}).length){applyPlaceMap23(r,rec);cached++;done++} else pending.push(r);
+    }
+    const progress=document.getElementById('btProgress');
+    const concurrency=4;
+    for(let i=0;i<pending.length;i+=concurrency){
+      const batch=pending.slice(i,i+concurrency);
+      const got=await Promise.all(batch.map(async r=>{
+        try{const rec=await fetchPlaceMap23(r);applyPlaceMap23(r,rec);loaded++;return true}
+        catch(_){failed++;return false}
+      }));
+      done+=got.length;
+      if(progress)progress.textContent=`複勝最終オッズ取得中… ${done}/${races.length} / 新規${loaded} / cache${cached} / 失敗${failed}`;
+      if((i/concurrency)%8===0)cacheSave23(placeCache23);
+      await sleep23(40);
+    }
+    cacheSave23(placeCache23);
+    return {total:races.length,loaded,cached,failed,available:loaded+cached};
+  }
+
+  function addHarvillePlaceProb23(hs){
+    const n=hs.length, slots=n>=8?3:(n>=5?2:0);
+    if(!slots){hs.forEach(h=>h.placeProb=null);return hs}
+    const p=hs.map(h=>Math.max(0,Number(h.modelProb)||0));
+    const s=p.reduce((a,b)=>a+b,0)||1; for(let i=0;i<p.length;i++)p[i]/=s;
+    for(let i=0;i<n;i++){
+      let q=p[i];
+      if(slots>=2){
+        for(let j=0;j<n;j++)if(j!==i){const d=1-p[j];if(d>1e-9)q+=p[j]*(p[i]/d)}
+      }
+      if(slots>=3){
+        for(let j=0;j<n;j++)if(j!==i){
+          const d1=1-p[j]; if(d1<=1e-9)continue;
+          for(let k=0;k<n;k++)if(k!==i&&k!==j){
+            const d2=1-p[j]-p[k]; if(d2<=1e-9)continue;
+            q+=p[j]*(p[k]/d1)*(p[i]/d2);
+          }
+        }
+      }
+      hs[i].placeProb=Math.max(0,Math.min(.999,q));
+    }
+    return hs;
+  }
+
+  if(typeof btProbabilities==='function'){
+    const oldProb23=btProbabilities;
+    btProbabilities=function(horses){return addHarvillePlaceProb23(oldProb23(horses))};
+  }
+
+  if(typeof btPicks==='function'){
+    const oldPicks23=btPicks;
+    btPicks=function(c,race,settings){
+      if(c?.name!=='複勝専門家')return oldPicks23(c,race,settings);
+      const xs=(race?.horses||[]).map(h=>{
+        const pp=Number(h.placeProb), po=Number(h.placeOddsLow);
+        if(!(pp>0&&po>=1))return null;
+        const pev=pp*po;
+        return {...h,winOdds:Number(h.odds),winModelProb:Number(h.modelProb),
+          odds:po,modelProb:pp,ev:pev,placeEV:pev,betMetric:'PLACE_EV_LOWER'};
+      }).filter(Boolean).filter(h=>h.ev>=Number(c.minEV||1));
+      xs.sort((a,b)=>b.ev-a.ev||b.modelProb-a.modelProb||a.no-b.no);
+      return xs.slice(0,1);
+    };
+  }
+
+  if(typeof runBacktestOnHistory==='function'){
+    const oldRun23=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      let d={total:0,loaded:0,cached:0,failed:0,available:0};
+      if(bridgeReady23()){
+        try{d=await enrichPlaceOdds23(historyBlocks)}catch(e){console.warn('FIXED23 place odds enrichment',e)}
+      }
+      const result=await oldRun23(historyBlocks,onProgress);
+      result.placeOddsDiagnostics=d;
+      result.placeEvContract={version:23,probability:'Harville-top2/top3',price:'final-place-odds-lower-bound',selection:'EV>=character.minEV',settlement:'official-refund',failClosed:true};
+      return result;
+    };
+  }
+
+  try{
+    if(localStorage.getItem(MARK_KEY)!=='1'){
+      localStorage.setItem(MARK_KEY,'1');
+      if(typeof Store!=='undefined')Store.del('btResultAnomalyAuditV1');
+    }
+  }catch(_){ }
+
+  setTimeout(()=>{
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('placeEvV23Badge')){
+      const el=document.createElement('div');el.id='placeEvV23Badge';el.className='muted';el.style.marginTop='4px';
+      el.textContent='複勝EV: STRICT v2.3 / Harville入着確率 × 最終複勝オッズ下限 / 払戻金は選択に不使用 / オッズ未取得は見送り';
+      host.insertAdjacentElement('afterend',el);
+    }
+  },1100);
+  console.log('✅ FIXED23 strict place EV loaded');
+})();
+</script>
+
 </body>
 </html>
