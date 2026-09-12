@@ -105,6 +105,59 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 #anomalyBody tr td:nth-child(14){font-variant-numeric:tabular-nums}
 #anomalyBody tr:hover{background:rgba(255,255,255,.04)}
 
+
+
+/* ============================================================
+   ENTERTAINMENT EVENT LAYER v1.0
+   演出専用。馬券・払戻・ROI・Kelly・監査計算には一切介入しない。
+   ============================================================ */
+.entertainment-zone{margin-top:12px;overflow:hidden;position:relative}
+.entertainment-zone::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 12% 0%,rgba(0,215,255,.09),transparent 28%),radial-gradient(circle at 92% 15%,rgba(241,199,91,.08),transparent 26%)}
+.ent-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line);position:relative}
+.ent-head h3{border:0!important;padding:0!important;margin:0!important}
+.ent-head .spacer{flex:1}
+.ent-grid{display:grid;grid-template-columns:1.1fr .9fr .9fr;gap:10px;padding:12px;position:relative}
+.ent-panel{border:1px solid var(--line);background:rgba(13,23,17,.88);border-radius:12px;min-width:0;overflow:hidden}
+.ent-panel h4{margin:0;padding:9px 11px;border-bottom:1px solid var(--line);font-size:13px}
+.ent-panel .inner{padding:10px}
+.ent-score{display:grid;grid-template-columns:repeat(4,minmax(80px,1fr));gap:7px;margin-bottom:10px}
+.ent-score>div{background:#17241b;border:1px solid #2b4434;border-radius:10px;padding:8px;text-align:center}
+.ent-score b{display:block;font-size:17px;margin-top:2px}
+.ent-bar{height:10px;background:#0a130e;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.ent-bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#55d68a,#f1c75b,#ff7f7f);transition:width .35s ease}
+.ent-feed{display:flex;flex-direction:column;gap:6px;max-height:290px;overflow:auto}
+.ent-event{border:1px solid #2a4132;background:#101a14;border-radius:10px;padding:8px 9px;animation:entIn .22s ease-out}
+.ent-event.hot{border-color:#725825;background:rgba(83,67,22,.24)}
+.ent-event.big{border-color:#0e6070;background:rgba(14,83,98,.20)}
+.ent-event .t{font-weight:850;font-size:13px}.ent-event .d{font-size:12px;color:var(--muted);margin-top:3px}.ent-event .tm{font-size:10px;color:#7e9686;margin-top:4px}
+.ent-missions{display:flex;flex-direction:column;gap:8px}
+.ent-mission{border:1px solid var(--line);border-radius:10px;padding:8px;background:#101a14}
+.ent-mission.done{border-color:#3f8152;background:rgba(23,72,42,.28)}
+.ent-mission .row{display:flex;justify-content:space-between;gap:8px;font-size:12px}.ent-mission b{font-size:12px}
+.ent-mini-bar{height:7px;margin-top:6px;background:#0a130e;border-radius:999px;overflow:hidden}.ent-mini-bar i{display:block;height:100%;background:#55d68a;width:0}
+.ent-bingo{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.ent-bingo button{min-height:54px;padding:5px;font-size:11px;line-height:1.25;background:#111c15;cursor:default}
+.ent-bingo button.marked{background:#17482a;border-color:#55d68a;box-shadow:inset 0 0 0 1px rgba(85,214,138,.25)}
+.ent-bingo button.line{outline:2px solid #f1c75b}
+.ent-achievements{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.ent-ach{padding:4px 7px;border:1px solid #3a503f;border-radius:999px;font-size:11px;background:#101a14}.ent-ach.locked{opacity:.35;filter:grayscale(1)}
+.ent-stage{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+.ent-stage .box{border:1px solid var(--line);border-radius:10px;padding:8px;background:#101a14;font-size:12px}
+.ent-stage .box b{display:block;margin-top:3px;font-size:14px}
+.ent-ticker{white-space:nowrap;overflow:hidden;border-top:1px solid var(--line);background:#0a130e;padding:7px 0;position:relative}
+.ent-ticker span{display:inline-block;padding-left:100%;animation:entTicker 22s linear infinite;font-size:12px;color:#dcecdf}
+.ent-toast{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:9999;max-width:min(92vw,620px);padding:14px 18px;border-radius:16px;border:1px solid #517a5c;background:rgba(9,17,13,.96);box-shadow:0 18px 60px rgba(0,0,0,.55);text-align:center;animation:entToast 2.3s ease forwards;pointer-events:none}
+.ent-toast strong{display:block;font-size:21px}.ent-toast span{display:block;color:#c8dbcd;margin-top:5px;font-size:13px}
+.ent-spark{position:fixed;z-index:9998;width:9px;height:9px;border-radius:2px;pointer-events:none;animation:entSpark 1.15s ease-out forwards}
+.ent-switch{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}
+.ent-switch input{accent-color:#55d68a}
+@keyframes entIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@keyframes entToast{0%{opacity:0;transform:translate(-50%,-15px) scale(.92)}12%,76%{opacity:1;transform:translate(-50%,0) scale(1)}100%{opacity:0;transform:translate(-50%,-8px) scale(.96)}}
+@keyframes entSpark{0%{opacity:1;transform:translate(0,0) rotate(0)}100%{opacity:0;transform:translate(var(--dx),var(--dy)) rotate(560deg)}}
+@keyframes entTicker{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}
+@media(max-width:1100px){.ent-grid{grid-template-columns:1fr 1fr}.ent-grid .ent-panel:first-child{grid-column:1/-1}}
+@media(max-width:760px){.ent-grid{grid-template-columns:1fr}.ent-grid .ent-panel:first-child{grid-column:auto}.ent-score{grid-template-columns:repeat(2,1fr)}.ent-toast{top:12%}.ent-stage{grid-template-columns:1fr 1fr}}
+
 </style>
 </head>
 <body>
@@ -184,6 +237,58 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   <section class="card"><h3>資金推移</h3><div class="body chartbox"><canvas id="bankrollChart"></canvas></div></section>
   <section class="card"><h3>JRA / NAR ROI比較</h3><div class="body chartbox"><canvas id="roiChart"></canvas></div></section>
 </div>
+
+
+<div id="entertainmentZone" class="card entertainment-zone">
+  <div class="ent-head">
+    <h3>🎪 KEIBA SHOWTIME — 娯楽イベントセンター</h3>
+    <span class="badge live" id="entLevelBadge">LEVEL 1</span>
+    <span class="badge cached" id="entTitleBadge">称号: ルーキー観戦者</span>
+    <div class="spacer"></div>
+    <label class="ent-switch"><input id="entEffects" type="checkbox" checked> 派手な演出</label>
+    <button id="entSurprise">🎲 サプライズイベント</button>
+    <button id="entClear">演出履歴クリア</button>
+  </div>
+  <div class="ent-grid">
+    <section class="ent-panel">
+      <h4>🎙 ライブイベント / 実況ニュース</h4>
+      <div class="inner">
+        <div class="ent-score">
+          <div><small>SHOW XP</small><b id="entXp">0</b></div>
+          <div><small>ファンPt</small><b id="entFan">0</b></div>
+          <div><small>連続盛上り</small><b id="entCombo">0</b></div>
+          <div><small>BINGO</small><b id="entLines">0</b></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:5px"><span>🔥 観客熱狂度</span><b id="entHeatText">0%</b></div>
+        <div class="ent-bar"><i id="entHeatBar"></i></div>
+        <div class="ent-stage">
+          <div class="box">🏆 現在のMVP<b id="entMvp">--</b></div>
+          <div class="box">💫 SHOWTIMEメーター<b id="entJackpot">0 / 100</b></div>
+        </div>
+        <div id="entFeed" class="ent-feed" style="margin-top:10px"></div>
+      </div>
+    </section>
+    <section class="ent-panel">
+      <h4>🎯 今日のミッション</h4>
+      <div class="inner">
+        <div id="entMissions" class="ent-missions"></div>
+        <h4 style="border:0;padding:12px 0 7px">🏅 称号・実績</h4>
+        <div id="entAchievements" class="ent-achievements"></div>
+      </div>
+    </section>
+    <section class="ent-panel">
+      <h4>🎰 レースBINGO 3×3</h4>
+      <div class="inner">
+        <div id="entBingo" class="ent-bingo"></div>
+        <div class="muted" style="margin-top:9px;font-size:11px">※BINGO・XP・ファンPt・SHOWTIMEメーターは演出専用です。資金・払戻・ROI・Kelly・監査値には影響しません。</div>
+        <h4 style="border:0;padding:12px 0 7px">🎭 次のショーイベント</h4>
+        <div id="entNextShow" class="box" style="border:1px solid var(--line);border-radius:10px;padding:9px;background:#101a14;font-size:12px">準備中…</div>
+      </div>
+    </section>
+  </div>
+  <div class="ent-ticker"><span id="entTickerText">🎪 SHOWTIME起動中 — 収支計算とは独立した娯楽演出レイヤーです</span></div>
+</div>
+
 
 <div class="card" style="margin-top:12px">
   <h3>データ出力・バックテスト</h3>
@@ -6659,5 +6764,232 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 })();
 
 </script>
+
+<script id="entertainmentEventLayerV10">
+/* ============================================================
+   KEIBA SHOWTIME / ENTERTAINMENT EVENT LAYER v1.0
+   IMPORTANT: cosmetic-only. Never mutates bets, bankroll, payouts,
+   ROI, Kelly, race results, backtest, or audit data.
+   ============================================================ */
+(() => {
+  'use strict';
+  if(window.__KEIBA_SHOWTIME_V10__) return;
+  window.__KEIBA_SHOWTIME_V10__=true;
+
+  const KEY='keibaSimClose3.entertainmentV10';
+  const bingoDefs=[
+    ['favwin','1〜3人気勝利'],['upset','6人気以下勝利'],['winhit','単勝的中'],
+    ['placehit','複勝的中'],['widehit','ワイド的中'],['triohit','三連複的中'],
+    ['manybet','5人以上参戦'],['highpay','10倍級的中'],['roi100','トップROI 100%超']
+  ];
+  const achievementDefs=[
+    ['firstHit','🎯 初的中'],['streak3','🔥 3連盛上り'],['upsetKing','🕳️ 穴党の星'],
+    ['highPay','💎 高配当ハンター'],['tenRaces','🏁 10R踏破'],['bingo','🎰 BINGO!'],
+    ['fullBingo','👑 BINGO制覇'],['allStar','🌟 オールスター参戦']
+  ];
+  const flavorShows=[
+    ['🎤 評論家バトル','本命派と穴党が真っ向勝負。どちらが上位に来るか注目！'],
+    ['📡 オッズ変動速報','締切前の人気変動を実況席が徹底マーク。'],
+    ['🧮 データサイエンス杯','EV派・Kelly派・バランスAIの数理対決！'],
+    ['🎭 キャラクター総選挙','現在の資金ランキングをファン投票風に盛り上げます。'],
+    ['🌙 ナイターSHOW','次レースは照明演出つきの特別実況モード。'],
+    ['🕳️ 穴党フェス','人気薄が上位に来れば会場ボルテージ急上昇！'],
+    ['🎯 本命王決定戦','1〜3人気の信頼度に注目するスペシャルイベント。'],
+    ['⚡ スピードチャレンジ','最短で的中イベントが出るキャラクターは誰だ？'],
+    ['🏆 MVP争奪戦','現在首位への挑戦者を実況席がピックアップ。'],
+    ['🎲 波乱ルーレット','人気薄勝利・高配当的中でSHOWTIMEメーターが大きく上昇。'],
+    ['🛡️ 守備職人デー','見送り判断と低分散キャラにもスポットライト。'],
+    ['🤖 AIオールスター','10キャラクターの個性を一斉比較する特別ステージ。']
+  ];
+  const surpriseEvents=[
+    ['🎺 ファンファーレ延長','会場の期待感が急上昇！実況テンションMAX。',7],
+    ['📣 応援団乱入','推しキャラへの声援が一気に増えました。',6],
+    ['🎁 ラッキー演出','SHOWTIME演出ポイントを獲得。実収支には影響しません。',8],
+    ['📰 号外発行','ランキング争いが面白くなってきました！',5],
+    ['🎆 花火演出','レース間にスペシャル花火。観客熱狂度UP！',10],
+    ['🎙️ 解説席ヒートアップ','評論家同士の予想論争が白熱しています。',6],
+    ['🐎 パドック人気投票','ファンの注目馬が割れて会場ざわざわ。',5],
+    ['🪄 ミラクルタイム','次の確定イベントに注目が集まっています。',9],
+    ['🏅 レジェンド紹介','過去の名勝負を振り返る特別コーナーが始まりました。',4],
+    ['🥁 ドラムロール','次レースへ向けてカウントダウン演出！',7]
+  ];
+
+  function baseState(){return {
+    xp:0,fan:0,combo:0,bestCombo:0,heat:28,meter:0,lines:0,
+    achievements:[],events:[],processed:{},locked:{},bingoMarked:{},bingoLines:[],
+    effects:true,nextShowIndex:Math.floor(Math.random()*flavorShows.length),version:1
+  }}
+  function load(){try{return {...baseState(),...JSON.parse(localStorage.getItem(KEY)||'{}')}}catch(_){return baseState()}}
+  let st=load();
+  function save(){try{localStorage.setItem(KEY,JSON.stringify(st))}catch(_){}}
+  const esc=v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  const $id=id=>document.getElementById(id);
+  const time=()=>new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
+
+  function rankTitle(){
+    const lv=level();
+    if(lv>=20)return '伝説のアリーナ支配人';
+    if(lv>=15)return 'SHOWTIMEマスター';
+    if(lv>=10)return '競馬エンタメ王';
+    if(lv>=7)return '熱狂プロデューサー';
+    if(lv>=5)return 'イベント仕掛人';
+    if(lv>=3)return '常連サポーター';
+    return 'ルーキー観戦者';
+  }
+  function level(){return 1+Math.floor(Math.max(0,st.xp)/120)}
+
+  function addEvent(title,desc,kind='normal',score=3,burst=false){
+    st.events.unshift({id:Date.now()+Math.random(),time:time(),title,desc,kind});
+    st.events=st.events.slice(0,40);
+    st.xp+=Math.max(0,score);
+    st.fan+=Math.max(0,score*2);
+    st.heat=Math.max(5,Math.min(100,st.heat+Math.ceil(score*.7)));
+    st.meter=Math.max(0,Math.min(100,st.meter+score));
+    if(st.meter>=100){
+      st.meter=0;st.xp+=50;st.fan+=100;
+      st.events.unshift({id:Date.now()+Math.random(),time:time(),title:'🌟 SUPER SHOWTIME!',desc:'SHOWTIMEメーターMAX！特別演出ボーナス +50XP / +100ファンPt（演出専用）。',kind:'big'});
+      unlock('streak3',false);
+      burst=true;
+    }
+    save();render();
+    if(st.effects && burst) showToast(title,desc,true);
+  }
+
+  function unlock(id,notify=true){
+    if(st.achievements.includes(id))return false;
+    st.achievements.push(id);st.xp+=35;st.fan+=60;
+    const d=achievementDefs.find(x=>x[0]===id);
+    if(d){st.events.unshift({id:Date.now()+Math.random(),time:time(),title:`🏅 実績解除: ${d[1]}`,desc:'+35XP / +60ファンPt（演出専用）',kind:'big'});if(notify&&st.effects)showToast('🏅 実績解除',d[1],true)}
+    save();return true;
+  }
+
+  function burst(){
+    if(!st.effects)return;
+    const palette=['#55d68a','#f1c75b','#00d7ff','#ff7f7f','#9ee37d','#ffffff'];
+    for(let i=0;i<22;i++){
+      const d=document.createElement('i');d.className='ent-spark';
+      d.style.left=(50+(Math.random()-.5)*12)+'vw';d.style.top=(20+Math.random()*7)+'vh';
+      d.style.background=palette[i%palette.length];
+      d.style.setProperty('--dx',((Math.random()-.5)*360)+'px');d.style.setProperty('--dy',(80+Math.random()*260)+'px');
+      document.body.appendChild(d);setTimeout(()=>d.remove(),1300);
+    }
+  }
+  function showToast(title,desc,big=false){
+    const old=document.querySelector('.ent-toast');if(old)old.remove();
+    const d=document.createElement('div');d.className='ent-toast';d.innerHTML=`<strong>${esc(title)}</strong><span>${esc(desc)}</span>`;document.body.appendChild(d);
+    if(big)burst();setTimeout(()=>d.remove(),2400);
+  }
+
+  function mark(id){if(st.bingoMarked[id])return;st.bingoMarked[id]=true;checkBingo()}
+  function checkBingo(){
+    const ids=bingoDefs.map(x=>x[0]);
+    const lines=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+    const newly=[];
+    lines.forEach((a,i)=>{if(a.every(n=>st.bingoMarked[ids[n]])&&!st.bingoLines.includes(i)){st.bingoLines.push(i);newly.push(i)}});
+    if(newly.length){st.lines=st.bingoLines.length;unlock('bingo',false);addEvent('🎰 BINGO成立！',`${newly.length}ライン追加。現在 ${st.lines}ライン！`,'big',20,true)}
+    if(ids.every(id=>st.bingoMarked[id]))unlock('fullBingo');
+  }
+  function bingoLineCells(){
+    const ids=bingoDefs.map(x=>x[0]),lines=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]],set=new Set();
+    st.bingoLines.forEach(i=>(lines[i]||[]).forEach(n=>set.add(ids[n])));return set;
+  }
+
+  function raceBets(engine,race){return (engine?.bets||[]).filter(b=>b.raceId===race.id)}
+  function settledRaceEvent(engine,race){
+    if(!race?.id||st.processed[race.id])return;
+    st.processed[race.id]=1;
+    const bets=raceBets(engine,race),hits=bets.filter(b=>Number(b.return)>0||/HIT|的中/.test(String(b.status||'')));
+    const winner=Number(race?.result?.winner ?? race?.result?.top3?.[0]);
+    const wh=(race.horses||[]).find(h=>Number(h.no)===winner);
+    const pop=Number(wh?.pop||0),odds=Number(wh?.odds3||wh?.odds||0);
+    const entrants=new Set(bets.map(b=>b.character)).size;
+    const maxMult=hits.reduce((m,b)=>Math.max(m,Number(b.return||0)/Math.max(1,Number(b.stake||0))),0);
+    const types=new Set(hits.map(b=>b.ticket));
+
+    if(hits.length){st.combo++;st.bestCombo=Math.max(st.bestCombo,st.combo);addEvent('🎯 的中ラッシュ',`${race.title}: ${hits.length}件的中！実況席が沸いています。`,'hot',6+Math.min(8,hits.length),hits.length>=3);unlock('firstHit',false)}
+    else {st.combo=0;st.heat=Math.max(8,st.heat-6);addEvent('🧊 静かな決着',`${race.title}: 今回は的中演出なし。次戦へ切り替え！`,'normal',1,false)}
+    if(st.combo>=3){addEvent('🔥 3レース連続盛上り',`盛上りコンボ ${st.combo}！会場熱狂度が上昇。`,'big',12,true);unlock('streak3',false)}
+    if(pop>0&&pop<=3){mark('favwin');addEvent('👑 本命サイド決着',`${pop}番人気が勝利。王道の決着です。`,'normal',3,false)}
+    if(pop>=6){mark('upset');unlock('upsetKing',false);addEvent('🌪 大波乱イベント',`${pop}番人気が勝利！穴党席が大騒ぎ。`,'big',14,true)}
+    if(types.has('単勝'))mark('winhit');if(types.has('複勝'))mark('placehit');if(types.has('ワイド'))mark('widehit');if(types.has('三連複'))mark('triohit');
+    if(entrants>=5){mark('manybet');addEvent('🎭 キャラクター乱戦',`${entrants}人の馬券師・AIが同じレースに参戦！`,'hot',7,false)}
+    if(entrants>=10)unlock('allStar',false);
+    if(maxMult>=10){mark('highpay');unlock('highPay',false);addEvent('💎 高配当ヒット',`最高払戻倍率 ${maxMult.toFixed(1)}倍級！SHOWTIME突入。`,'big',18,true)}
+    if(odds>=15) addEvent('🕳️ 人気薄勝利',`勝ち馬のオッズは約 ${odds.toFixed(1)}倍。波乱度アップ！`,'hot',8,false);
+    const top=(engine.characters||[]).slice().sort((a,b)=>(b.returned/Math.max(1,b.invested))-(a.returned/Math.max(1,a.invested)))[0];
+    if(top&&top.invested&&top.returned/top.invested>=1)mark('roi100');
+    const n=Object.keys(st.processed).length;if(n>=10)unlock('tenRaces',false);
+    save();render();
+  }
+
+  function lockedRaceEvent(engine,race){
+    if(!race?.id||st.locked[race.id])return;st.locked[race.id]=1;
+    const bets=raceBets(engine,race),entrants=new Set(bets.map(b=>b.character)).size;
+    const show=flavorShows[st.nextShowIndex%flavorShows.length];
+    addEvent(show[0],`${race.title} — ${show[1]} / 参戦 ${entrants}人`,'normal',3,false);
+    st.nextShowIndex=(st.nextShowIndex+1+Math.floor(Math.random()*3))%flavorShows.length;save();render();
+  }
+
+  function metrics(){
+    const e=(typeof engine!=="undefined"?engine:null);
+    const bets=e?.bets||[],hits=bets.filter(b=>Number(b.return)>0||/HIT|的中/.test(String(b.status||''))).length;
+    const settled=e?.races?.filter(r=>r.settled).length||Object.keys(st.processed).length;
+    const uniqueChars=new Set(bets.map(b=>b.character)).size;
+    return {settled,hits,uniqueChars};
+  }
+  function missions(){const m=metrics();return [
+    {name:'🏁 レースを5件精算',now:m.settled,max:5},
+    {name:'🎯 的中を3件記録',now:m.hits,max:3},
+    {name:'🎭 5キャラ以上が参戦',now:m.uniqueChars,max:5},
+    {name:'🔥 盛上りコンボ3',now:st.bestCombo,max:3}
+  ]}
+
+  function render(){
+    if(!$id('entertainmentZone'))return;
+    const lv=level();$id('entXp').textContent=st.xp.toLocaleString();$id('entFan').textContent=st.fan.toLocaleString();$id('entCombo').textContent=st.combo;$id('entLines').textContent=st.lines||st.bingoLines.length;
+    $id('entHeatText').textContent=Math.round(st.heat)+'%';$id('entHeatBar').style.width=Math.round(st.heat)+'%';$id('entJackpot').textContent=`${Math.round(st.meter)} / 100`;
+    $id('entLevelBadge').textContent=`LEVEL ${lv}`;$id('entTitleBadge').textContent=`称号: ${rankTitle()}`;
+    if($id('entEffects'))$id('entEffects').checked=st.effects!==false;
+    const e=(typeof engine!=="undefined"?engine:null),top=e?.characters?.slice().sort((a,b)=>b.bankroll-a.bankroll)[0];$id('entMvp').textContent=top?`${top.avatar||'🏆'} ${top.name}`:'--';
+    $id('entFeed').innerHTML=(st.events.length?st.events:[{time:'--:--',title:'🎪 SHOWTIME準備完了',desc:'レースの判定・精算に合わせて娯楽イベントが自動発生します。',kind:'normal'}]).slice(0,14).map(x=>`<div class="ent-event ${x.kind==='big'?'big':x.kind==='hot'?'hot':''}"><div class="t">${esc(x.title)}</div><div class="d">${esc(x.desc)}</div><div class="tm">${esc(x.time)}</div></div>`).join('');
+    $id('entMissions').innerHTML=missions().map(x=>{const p=Math.min(100,Math.round(x.now/x.max*100)),done=x.now>=x.max;return `<div class="ent-mission ${done?'done':''}"><div class="row"><b>${esc(x.name)}</b><span>${Math.min(x.now,x.max)}/${x.max}${done?' ✅':''}</span></div><div class="ent-mini-bar"><i style="width:${p}%"></i></div></div>`}).join('');
+    const lineCells=bingoLineCells();$id('entBingo').innerHTML=bingoDefs.map(([id,label])=>`<button class="${st.bingoMarked[id]?'marked':''} ${lineCells.has(id)?'line':''}" tabindex="-1">${st.bingoMarked[id]?'✅':'⬜'} ${esc(label)}</button>`).join('');
+    $id('entAchievements').innerHTML=achievementDefs.map(([id,label])=>`<span class="ent-ach ${st.achievements.includes(id)?'':'locked'}">${esc(label)}</span>`).join('');
+    const next=flavorShows[st.nextShowIndex%flavorShows.length];$id('entNextShow').innerHTML=`<b>${esc(next[0])}</b><div class="muted" style="margin-top:4px">${esc(next[1])}</div>`;
+    const ticker=st.events.slice(0,4).map(x=>`${x.title} — ${x.desc}`).join('　◆　')||'SHOWTIME待機中';$id('entTickerText').textContent='🎪 '+ticker;
+  }
+
+  function decay(){if(document.hidden)return;st.heat=Math.max(10,st.heat-.15);render()}
+
+  function installHooks(){
+    if(typeof SimulationEngine==='undefined')return;
+    if(!SimulationEngine.prototype.__entLockWrapped){
+      const prev=SimulationEngine.prototype.lockAndBet;
+      SimulationEngine.prototype.lockAndBet=async function(race){const r=await prev.call(this,race);try{lockedRaceEvent(this,race)}catch(e){console.warn('SHOWTIME lock event',e)}return r};
+      SimulationEngine.prototype.__entLockWrapped=true;
+    }
+    if(!SimulationEngine.prototype.__entSettleWrapped){
+      const prev=SimulationEngine.prototype.settle;
+      SimulationEngine.prototype.settle=async function(race){const was=!!race?.settled,r=await prev.call(this,race);try{if(!was&&race?.settled)settledRaceEvent(this,race)}catch(e){console.warn('SHOWTIME settle event',e)}return r};
+      SimulationEngine.prototype.__entSettleWrapped=true;
+    }
+    if(window.UI&&!UI.__entRenderWrapped){
+      const prev=UI.renderAll.bind(UI);UI.renderAll=function(e){const r=prev(e);try{render()}catch(_){}return r};UI.__entRenderWrapped=true;
+    }
+  }
+
+  function init(){
+    installHooks();
+    $id('entEffects')?.addEventListener('change',ev=>{st.effects=!!ev.target.checked;save();render()});
+    $id('entSurprise')?.addEventListener('click',()=>{const x=surpriseEvents[Math.floor(Math.random()*surpriseEvents.length)];addEvent(x[0],x[1],'hot',x[2],true)});
+    $id('entClear')?.addEventListener('click',()=>{if(!confirm('娯楽イベントのXP・BINGO・称号・履歴だけをリセットしますか？\n馬券・資金・バックテスト・監査データは消えません。'))return;const eff=st.effects;st=baseState();st.effects=eff;save();render();showToast('🎪 SHOWTIMEリセット','娯楽レイヤーだけ初期化しました。',false)});
+    render();setInterval(decay,4000);
+    setTimeout(()=>{addEvent('🎪 KEIBA SHOWTIME 起動','娯楽イベントレイヤーを開始しました。実収支・監査計算から完全分離されています。','normal',0,false)},350);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+  console.log('✅ KEIBA SHOWTIME ENTERTAINMENT EVENT LAYER v1.0 loaded');
+})();
+</script>
+
 </body>
 </html>
