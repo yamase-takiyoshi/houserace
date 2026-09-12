@@ -3883,5 +3883,153 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 })();
 
 </script>
+
+<script>
+/* ============================================================
+   iPad BACKTEST RENDER GUARD v1.5
+   2026-09-12
+   - 「描画中…」で止まる症状を回避
+   - 重い監査表をメイン描画から分離して遅延描画
+   - 詳細監査 120件 / 異常利益監査 120件に初期表示を制限
+   - 生JSONは画面上240文字まで（コピー時は全データを保持）
+   - 各描画工程をtry/catchで隔離し、一部失敗で全体停止しない
+   ============================================================ */
+(() => {
+  if (window.__IPAD_BT_RENDER_GUARD_V15__) return;
+  window.__IPAD_BT_RENDER_GUARD_V15__ = true;
+
+  const esc15 = v => escapeHtml(String(v ?? ""));
+
+  function ensureRenderDiag15(){
+    let el=document.getElementById('btRenderDiag15');
+    if(el) return el;
+    el=document.createElement('div');
+    el.id='btRenderDiag15';
+    el.className='muted';
+    el.style.marginTop='6px';
+    el.style.fontSize='12px';
+    const p=document.getElementById('btProgress');
+    if(p) p.insertAdjacentElement('afterend',el);
+    return el;
+  }
+
+  function setRenderDiag15(text,bad=false){
+    const el=ensureRenderDiag15();
+    el.textContent=text;
+    el.style.color=bad?'#ff9c9c':'#9ab0a1';
+  }
+
+  function safe15(name,fn,errors){
+    try{
+      fn();
+      return true;
+    }catch(e){
+      const msg=String(e?.message||e);
+      errors.push(`${name}: ${msg}`);
+      console.error(`[BT render v1.5] ${name}`,e);
+      return false;
+    }
+  }
+
+  // 詳細監査: iPadでは500行 + 長いJSONセルが重いため、初期120行に制限。
+  DetailedAudit.draw=function(){
+    const rows=this.filtered();
+    const limit=120;
+    const visible=rows.slice(0,limit);
+    const body=document.getElementById('auditBody');
+    if(body){
+      body.innerHTML=visible.map(r=>{
+        const raw=String(r.rawJson||'');
+        const preview=raw.length>240?raw.slice(0,240)+'…':raw;
+        return `<tr>
+          <td>${esc15(r.date)}</td><td>${esc15(r.track)}</td><td>${esc15(r.no)}</td>
+          <td>${esc15(r.character)}</td><td>${esc15(r.ticket)}</td><td>${esc15(r.selection)}</td>
+          <td>${Number(r.stake||0).toLocaleString()}</td><td>${esc15(r.rawPayout??'')}</td>
+          <td>${r.multiplier==null?'':Number(r.multiplier).toFixed(3)}</td>
+          <td>${Number(r.refund||0).toLocaleString()}</td><td>${Number(r.profit||0).toLocaleString()}</td>
+          <td>${(Number(r.prob||0)*100).toFixed(2)}%</td><td>${Number(r.ev||0).toFixed(3)}</td>
+          <td>${esc15(r.status)}</td><td style="max-width:260px;white-space:normal">${esc15(preview)}</td>
+        </tr>`;
+      }).join('');
+    }
+    const st=document.getElementById('auditStatus');
+    if(st) st.textContent=`表示 ${visible.length}件 / 条件一致${rows.length}件 / 全${this.result?.audit?.length||0}件（iPad軽量描画: 最大${limit}件。コピーは全件）`;
+  };
+
+  // 異常利益監査も初期描画を軽量化。
+  AnomalyAudit.draw=function(){
+    const rows=this.rows();
+    const threshold=Number(document.getElementById('anomalyProfitThreshold')?.value||20000);
+    const limit=120;
+    const visible=rows.slice(0,limit);
+    const body=document.getElementById('anomalyBody');
+    if(body){
+      body.innerHTML=visible.map(r=>{
+        const calc=Number(r.stake||0)*Number(r.multiplier||0);
+        const refund=Number(r.refund||0);
+        const mismatch=Math.abs(calc-refund)>1 && r.status==='的中';
+        return `<tr>
+          <td>${esc15(r.date||'')}</td><td>${esc15(r.track||'')}</td><td>${esc15(r.no??'')}</td>
+          <td>${esc15(r.character||'')}</td><td>${esc15(r.ticket||'')}</td><td>${esc15(r.selection||'')}</td>
+          <td style="text-align:right">${Number(r.stake||0).toLocaleString()}</td>
+          <td style="text-align:right">${r.odds==null?'':Number(r.odds).toFixed(3)}</td>
+          <td style="text-align:right">${(Number(r.prob||0)*100).toFixed(3)}%</td>
+          <td style="text-align:right">${Number(r.ev||0).toFixed(3)}</td>
+          <td style="text-align:right">${esc15(r.rawPayout??'')}</td>
+          <td style="text-align:right">${r.multiplier==null?'':Number(r.multiplier).toFixed(3)}</td>
+          <td style="text-align:right">${refund.toLocaleString()}</td>
+          <td style="text-align:right;font-weight:700">${Number(r.profit||0).toLocaleString()}</td>
+          <td style="text-align:right">${calc.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+          <td>${mismatch?'⚠ 計算不一致':esc15(r.status||'')}</td>
+        </tr>`;
+      }).join('');
+    }
+    let maxProfit=0;
+    for(const r of rows) maxProfit=Math.max(maxProfit,Number(r.profit||0));
+    const st=document.getElementById('anomalyStatus');
+    if(st) st.textContent=`利益 +${threshold.toLocaleString()}円以上: ${rows.length}件 / 最大利益 ${maxProfit.toLocaleString()}円 / 画面表示${visible.length}件（最大${limit}件）`;
+  };
+
+  function renderRank15(result){
+    const tbody=document.getElementById('btRankBody');
+    if(!tbody) return;
+    const sorted=(result?.characters||[]).slice().sort((a,b)=>Number(b.bankroll||0)-Number(a.bankroll||0));
+    tbody.innerHTML=sorted.map((c,i)=>{
+      const roi=c.invested?c.returned/c.invested*100:0;
+      const hit=c.bets?c.wins/c.bets*100:0;
+      const jra=c.byOrg?.JRA?.inv?c.byOrg.JRA.ret/c.byOrg.JRA.inv*100:0;
+      const nar=c.byOrg?.NAR?.inv?c.byOrg.NAR.ret/c.byOrg.NAR.inv*100:0;
+      return `<tr><td>${i+1}</td><td>${esc15(c.avatar||'')} ${esc15(c.name||'')}</td><td>${fmtY(Number(c.bankroll||0))}</td><td>${fmtY(Number(c.bankroll||0)-Number(c.initial||0))}</td><td>${roi.toFixed(1)}%</td><td>${hit.toFixed(1)}%</td><td>${(Number(c.maxDD||0)*100).toFixed(1)}%</td><td>${Number(c.bets||0)}</td><td>${jra.toFixed(1)}%</td><td>${nar.toFixed(1)}%</td></tr>`;
+    }).join('');
+  }
+
+  // renderBtを軽量化。グラフ/時系列/整合性/ランキングは即時、監査表は遅延描画。
+  renderBt=function(result){
+    const errors=[];
+    setRenderDiag15('描画: グラフ・ランキングを処理中…');
+
+    safe15('時系列グラフ',()=>TimeSeriesGraph.render(result),errors);
+    safe15('時系列表',()=>VerticalTimeSeries.render(result),errors);
+    safe15('整合性監査',()=>BacktestIntegrity.render(result),errors);
+    safe15('ランキング',()=>renderRank15(result),errors);
+
+    // 重い監査DOMはメイン処理から分離。ここでrenderBt自体は即座に戻る。
+    setTimeout(()=>{
+      safe15('詳細監査',()=>DetailedAudit.render(result),errors);
+      if(errors.length) setRenderDiag15('描画警告: '+errors.join(' / '),true);
+      else setRenderDiag15('描画: 詳細監査まで完了。異常利益監査を仕上げ中…');
+    },30);
+
+    setTimeout(()=>{
+      safe15('異常利益監査',()=>AnomalyAudit.render(result),errors);
+      if(errors.length) setRenderDiag15('描画警告: '+errors.join(' / '),true);
+      else setRenderDiag15('描画完了（iPad軽量モード）');
+    },120);
+  };
+
+  console.log('✅ iPad BACKTEST RENDER GUARD v1.5 loaded');
+})();
+</script>
+
 </body>
 </html>
