@@ -177,7 +177,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-<b>FIXED17 本日開催フォールバック対応</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED18 JRA/NAR部分取得・開催一覧復元対応</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
 
 <div class="kpis">
@@ -841,7 +841,7 @@ class DemoProvider{
 }
 
 /* ============================================================
-   FIXED17 TODAY RACE DISCOVERY / FAIL-SAFE
+   FIXED18 TODAY RACE DISCOVERY / PARTIAL-SOURCE RECOVERY
    - /races が空・失敗でも即「本日終了」にしない
    - Worker /history の正規化済みraceを第2候補として利用
    - Cloudflare odds proxy / 住宅IP Bridge 経由の netkeiba開催一覧を第3候補に利用
@@ -856,18 +856,39 @@ const LIVE_NAR_TRACK_WORDS=["帯広","門別","盛岡","水沢","浦和","船橋
 function liveExtractRaceArray(d){
   if(Array.isArray(d)) return d;
   if(!d || typeof d!=="object") return [];
-  if(Array.isArray(d.races)) return d.races;
-  if(Array.isArray(d.items)) return d.items;
-  if(Array.isArray(d.schedule)) return d.schedule;
-  if(Array.isArray(d.data)) return d.data;
-  if(Array.isArray(d.data?.races)) return d.data.races;
-  return [];
+
+  // Normal flat wrappers.
+  for(const v of [d.races,d.items,d.schedule,d.data,d.data?.races]){
+    if(Array.isArray(v)) return v;
+  }
+
+  // FIXED18: some Workers return JRA/NAR in separate buckets instead of one array.
+  // Preserve the bucket organization when each race object does not carry org itself.
+  const out=[];
+  const addBucket=(v,org)=>{
+    if(!Array.isArray(v)) return;
+    for(const r of v){
+      if(r && typeof r==="object" && !Array.isArray(r)){
+        const hasOrg=String(r.org??r.organization??r.type??"").trim();
+        out.push(hasOrg?r:{...r,org});
+      }
+    }
+  };
+  const roots=[d,d.races,d.schedule,d.data,d.data?.races].filter(x=>x&&typeof x==="object"&&!Array.isArray(x));
+  for(const root of roots){
+    addBucket(root.JRA??root.jra,"JRA");
+    addBucket(root.NAR??root.nar,"NAR");
+  }
+  return out;
 }
 function liveParseStart(value,date){
   if(value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
   const raw=String(value??"").trim();
   if(!raw) return null;
-  let m=raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+
+  // Exact HH:MM[:SS] and strings such as "9:45 発走".
+  let m=raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+      ||raw.match(/(?:^|[^0-9])(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*発走)?(?:$|[^0-9])/);
   if(m){
     const hh=Number(m[1]),mm=Number(m[2]),ss=Number(m[3]||0);
     if(hh<24&&mm<60&&ss<60) return `${date}T${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}+09:00`;
@@ -883,7 +904,7 @@ function liveNormalizeRace(r,date,forcedOrg=""){
   const id=String(r.id??r.raceId??r.race_id??"").trim();
   const org=String(forcedOrg||r.org||r.organization||r.type||"").toUpperCase()==="NAR"?"NAR":"JRA";
   const no=Number(r.no??r.raceNo??r.race_no??(id.match(/^\d{12}$/)?id.slice(10,12):0));
-  const startTime=liveParseStart(r.startTime??r.start_time??r.postTime??r.post_time??r.raceTime??r.race_time??r.time,date);
+  const startTime=liveParseStart(r.startTime??r.start_time??r.startAt??r.start_at??r.raceStartTime??r.race_start_time??r.postTime??r.post_time??r.raceTime??r.race_time??r.start??r.time,date);
   if(!startTime) return null;
   let track=String(r.track??r.venue??r.course??r.place??"").trim();
   if(!track && org==="JRA" && /^\d{12}$/.test(id)) track=LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA";
@@ -925,7 +946,8 @@ function liveInferNarTrack(text){
   return LIVE_NAR_TRACK_WORDS.find(x=>t.includes(x))||"NAR";
 }
 function liveParseNetkeibaRaceList(html,date,org){
-  const doc=new DOMParser().parseFromString(String(html||""),"text/html");
+  const raw=String(html||"");
+  const doc=new DOMParser().parseFromString(raw,"text/html");
   const map=new Map();
   const anchors=[...doc.querySelectorAll('a[href*="race_id"],a[data-race-id]')];
   for(const a of anchors){
@@ -943,6 +965,36 @@ function liveParseNetkeibaRaceList(html,date,org){
     const old=map.get(id);
     if(!old || (!old.startTime && startTime)) map.set(id,x);
   }
+
+  // FIXED18: mobile/JS-generated race lists can expose race_id only in raw HTML,
+  // so DOM anchors alone may return zero even though Bridge HTTP 200 is healthy.
+  // For JRA, race_id itself contains venue + race number, allowing safe recovery.
+  if(org==="JRA"){
+    const ids=new Set();
+    const patterns=[
+      /race_id[=:%\\u003d\\u003D&;quot'"\s]+(20\d{10})/g,
+      /data-race-id=["']?(20\d{10})/g,
+      /race_id%3D(20\d{10})/gi,
+      /(?:^|[^0-9])(20\d{10})(?:[^0-9]|$)/g
+    ];
+    for(const re of patterns){
+      let m;
+      while((m=re.exec(raw))){
+        const id=String(m[1]||"");
+        if(!/^20\d{10}$/.test(id) || id.slice(0,4)!==date.slice(0,4)) continue;
+        const venue=Number(id.slice(4,6)),no=Number(id.slice(10,12));
+        if(venue<1||venue>10||no<1||no>12) continue;
+        ids.add(id);
+      }
+    }
+    for(const id of ids){
+      if(map.has(id)) continue;
+      const no=Number(id.slice(10,12));
+      const track=LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA";
+      map.set(id,{id,date,org:"JRA",track,no,title:`${track} ${no}R`,startTime:null,status:"WAITING",horses:[],result:null,betLocked:false,settled:false,source:"netkeiba raw race_id"});
+    }
+  }
+
   return [...map.values()];
 }
 async function liveHtmlViaProxyOrBridge(url){
@@ -971,17 +1023,29 @@ async function liveHtmlViaProxyOrBridge(url){
 }
 async function liveResolveRaceDetail(r,date){
   if(r.startTime) return r;
-  const base=r.org==="NAR"?"https://nar.netkeiba.com/race/shutuba.html":"https://race.netkeiba.com/race/shutuba.html";
-  try{
-    const x=await liveHtmlViaProxyOrBridge(`${base}?race_id=${encodeURIComponent(r.id)}`);
-    const doc=new DOMParser().parseFromString(x.text,"text/html");
-    const body=String(doc.body?.textContent||"").replace(/[\u00a0　\s]+/g," ");
-    const tm=body.match(/([01]?\d|2[0-3]):([0-5]\d)\s*発走/)||body.match(/発走(?:時刻)?\s*[:：]?\s*([01]?\d|2[0-3])[:時]([0-5]\d)/);
-    if(tm) r.startTime=`${date}T${String(Number(tm[1])).padStart(2,"0")}:${tm[2]}:00+09:00`;
-    const title=String(doc.querySelector('.RaceName,h1.RaceName,.race_name,h1')?.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
-    if(title && title.length<100) r.title=title;
-    r.source=(r.source?`${r.source} + `:"")+x.via;
-  }catch(_){ }
+  const urls=r.org==="NAR" ? [
+    `https://nar.netkeiba.com/race/shutuba.html?race_id=${encodeURIComponent(r.id)}`,
+    `https://nar.sp.netkeiba.com/race/shutuba.html?race_id=${encodeURIComponent(r.id)}`
+  ] : [
+    `https://race.sp.netkeiba.com/?pid=race_shutuba&race_id=${encodeURIComponent(r.id)}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${encodeURIComponent(r.id)}`,
+    `https://race.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(r.id)}`
+  ];
+  for(const url of urls){
+    try{
+      const x=await liveHtmlViaProxyOrBridge(url);
+      const doc=new DOMParser().parseFromString(x.text,"text/html");
+      const body=String(doc.body?.innerText||doc.body?.textContent||"").replace(/[\u00a0　\s]+/g," ");
+      const tm=body.match(/([01]?\d|2[0-3]):([0-5]\d)\s*発走/)
+            ||body.match(/発走(?:時刻)?\s*[:：]?\s*([01]?\d|2[0-3])[:時]([0-5]\d)/)
+            ||body.match(/(?:^|\s)([01]?\d|2[0-3]):([0-5]\d)\s+(?:芝|ダ|障|直|右|左|外)/);
+      if(tm) r.startTime=`${date}T${String(Number(tm[1])).padStart(2,"0")}:${tm[2]}:00+09:00`;
+      const title=String(doc.querySelector('.RaceName,h1.RaceName,.race_name,h1')?.textContent||"").replace(/[\u00a0　\s]+/g," ").trim();
+      if(title && title.length<100) r.title=title;
+      r.source=(r.source?`${r.source} + `:"")+x.via;
+      if(r.startTime) return r;
+    }catch(_){ }
+  }
   return r;
 }
 async function liveFillMissingTimes(races,date){
@@ -1010,9 +1074,10 @@ async function liveJraPlanFromHistory(provider,date){
     return ids.map(id=>({id,date,org:"JRA",track:LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA",no:Number(id.slice(10,12)),title:`${LIVE_JRA_TRACKS[id.slice(4,6)]||"JRA"} ${Number(id.slice(10,12))}R`,startTime:null,status:"WAITING",horses:[],result:null,betLocked:false,settled:false,source:"Worker history meeting plan"}));
   }catch(_){return []}
 }
-async function liveDiscoverViaNetkeiba(provider,date){
+async function liveDiscoverViaNetkeiba(provider,date,onlyOrgs=null){
   const ymd=date.replace(/-/g,"");
   const out=[],errors=[];
+  const wanted=new Set((Array.isArray(onlyOrgs)&&onlyOrgs.length?onlyOrgs:["JRA","NAR"]).map(x=>String(x).toUpperCase()));
   const specs=[
     ["JRA",[
       `https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
@@ -1025,6 +1090,7 @@ async function liveDiscoverViaNetkeiba(provider,date){
     ]]
   ];
   for(const [org,urls] of specs){
+    if(!wanted.has(org)) continue;
     let found=[];
     for(const u of urls){
       try{
@@ -1042,7 +1108,7 @@ async function liveDiscoverViaNetkeiba(provider,date){
   const seen=new Set();
   const clean=out.filter(r=>{if(!r?.id||seen.has(r.id))return false;seen.add(r.id);return true});
   clean.sort((a,b)=>new Date(a.startTime)-new Date(b.startTime)||String(a.track).localeCompare(String(b.track),"ja")||a.no-b.no);
-  if(!clean.length) throw new Error(errors.slice(0,4).join(" / ")||"netkeiba開催一覧から0件");
+  if(!clean.length) throw new Error(errors.slice(0,6).join(" / ")||`${[...wanted].join("+")} 開催一覧から0件`);
   return clean;
 }
 
@@ -1057,37 +1123,85 @@ class HttpProvider{
   async getRaces(){
     const date=today();
     const errors=[];
+    const sources=new Set();
+    const raceMap=new Map();
 
-    // 1) 正規のLIVE /races。配列以外のラッパー形式も受け付ける。
+    const mergeRaces=(rows,source)=>{
+      for(const r of (Array.isArray(rows)?rows:[])){
+        if(!r?.id) continue;
+        const key=String(r.id);
+        const old=raceMap.get(key);
+        if(!old){
+          raceMap.set(key,{...r,source:r.source||source});
+          continue;
+        }
+        const merged={...old,...r};
+        if((old.horses||[]).length && !(r.horses||[]).length) merged.horses=old.horses;
+        if(old.result && !r.result) merged.result=old.result;
+        if(old.startTime && !r.startTime) merged.startTime=old.startTime;
+        if(old.title && (!r.title || /^JRA \?R$|^NAR \?R$/.test(r.title))) merged.title=old.title;
+        merged.source=[old.source,r.source||source].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(" + ");
+        raceMap.set(key,merged);
+      }
+      if(rows?.length) sources.add(source);
+    };
+    const racesNow=()=>[...raceMap.values()];
+    const countOrg=org=>racesNow().filter(r=>r.org===org).length;
+    const weekend=(()=>{
+      const d=new Date(`${date}T12:00:00+09:00`).getDay();
+      return d===0||d===6;
+    })();
+
+    // 1) Primary Worker. IMPORTANT: a non-empty partial response is not "complete".
     try{
       const d=await this.json("/races?date="+encodeURIComponent(date));
       const direct=liveNormalizeRaceList(d,date);
-      if(direct.length){this.lastRaceSource="LIVE /races";return direct}
-      errors.push("/races: 0件");
+      mergeRaces(direct,"LIVE /races");
+      if(!direct.length) errors.push("/races: 0件");
     }catch(e){errors.push("/races: "+(e?.message||e))}
 
-    // 2) /history が当日raceを返せるWorkerなら、その正規化済みraceを利用。
-    const merged=[];
-    for(const org of ["JRA","NAR"]){
+    // 2) Fill missing/suspicious organizations from /history rather than returning early.
+    // JRA cards normally contain many races; <10 on a Sat/Sun is treated as suspiciously partial.
+    const needHistory=[];
+    if(countOrg("JRA")===0 || (weekend && countOrg("JRA")<10)) needHistory.push("JRA");
+    if(countOrg("NAR")===0) needHistory.push("NAR");
+    for(const org of needHistory){
       try{
         const d=await this.json(`/history?date=${encodeURIComponent(date)}&org=${org}&_today=${Date.now()}`);
-        merged.push(...liveNormalizeRaceList(d,date,org));
+        const rows=liveNormalizeRaceList(d,date,org);
+        mergeRaces(rows,`LIVE /history ${org}`);
+        if(!rows.length) errors.push(`/history ${org}: 0件`);
       }catch(e){errors.push(`/history ${org}: ${e?.message||e}`)}
     }
-    if(merged.length){
-      const seen=new Set();
-      const races=merged.filter(r=>!seen.has(r.id)&&(seen.add(r.id),true)).sort((a,b)=>new Date(a.startTime)-new Date(b.startTime));
-      this.lastRaceSource="LIVE /history fallback";
-      return races;
+
+    // 3) Still partial: recover only the missing organization through netkeiba via
+    // Cloudflare Proxy / residential Bridge. This is the key FIXED18 path.
+    const needWeb=[];
+    if(countOrg("JRA")===0 || (weekend && countOrg("JRA")<10)) needWeb.push("JRA");
+    if(countOrg("NAR")===0) needWeb.push("NAR");
+    for(const org of needWeb){
+      try{
+        const rows=await liveDiscoverViaNetkeiba(this,date,[org]);
+        mergeRaces(rows,`netkeiba ${org} fallback`);
+      }catch(e){errors.push(`netkeiba ${org}: ${e?.message||e}`)}
     }
 
-    // 3) Workerが開催一覧を返さない時は、Cloudflare Proxy / 住宅IP Bridge でnetkeibaの実開催一覧へフォールバック。
-    try{
-      const races=await liveDiscoverViaNetkeiba(this,date);
-      if(races.length){this.lastRaceSource="netkeiba race-list fallback";return races}
-    }catch(e){errors.push("netkeiba: "+(e?.message||e))}
+    const races=racesNow().filter(r=>r.startTime&&Number.isFinite(new Date(r.startTime).getTime()))
+      .sort((a,b)=>new Date(a.startTime)-new Date(b.startTime)||String(a.track).localeCompare(String(b.track),"ja")||Number(a.no)-Number(b.no));
 
-    throw new Error("本日の開催取得に失敗: "+errors.slice(0,6).join(" / "));
+    this.lastRaceCoverage={JRA:races.filter(r=>r.org==="JRA").length,NAR:races.filter(r=>r.org==="NAR").length};
+    this.lastMissingOrgs=[];
+    if(weekend && this.lastRaceCoverage.JRA===0) this.lastMissingOrgs.push("JRA");
+    if(this.lastRaceCoverage.NAR===0 && errors.some(x=>/NAR/.test(x)&&!/: 0件$/.test(x))) this.lastMissingOrgs.push("NAR");
+    this.lastRaceWarning=this.lastMissingOrgs.length
+      ? `${this.lastMissingOrgs.join("/")} 開催一覧が未取得です。60秒ごとに再取得します。`
+      : "";
+
+    if(races.length){
+      this.lastRaceSource=[...sources].join(" + ")||"LIVE";
+      return races;
+    }
+    throw new Error("本日の開催取得に失敗: "+errors.slice(0,8).join(" / "));
   }
   async getOdds(race){
     const d=await this.json("/odds?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
@@ -1160,6 +1274,7 @@ class SimulationEngine{
     this.provider=this.settings.mode==="live"?new HttpProvider(this.settings.apiBase):new DemoProvider();
     this.timer=null;
     this.raceLoadError="";
+    this.raceLoadWarning="";
     this.lastRaceReloadAt=0;
     this._reloadingRaces=false;
   }
@@ -1179,14 +1294,17 @@ class SimulationEngine{
       this.races=Array.isArray(races)?races:[];
       this.restoreRaceState();
       this.raceLoadError="";
+      this.raceLoadWarning=String(this.provider.lastRaceWarning||"");
       this.setDataBadge(this.provider.kind==="live"?"LIVE":"DEMO");
       const now=Date.now();
       this.selected=this.races.find(r=>new Date(r.startTime).getTime()>now&&!r.settled)||this.races.find(r=>!r.settled)||this.races[0]||null;
       const src=this.provider.lastRaceSource?` / ${this.provider.lastRaceSource}`:"";
       this.log(`${manual?"再取得":"システム起動"}。本日の開催 ${this.races.length}レースを読み込みました${src}。`);
+      if(this.raceLoadWarning) this.log("開催一覧警告: "+this.raceLoadWarning,"error");
       return true;
     }catch(e){
       this.raceLoadError=String(e?.message||e);
+      this.raceLoadWarning="";
       this.log("開催取得エラー: "+this.raceLoadError,"error");
       this.setDataBadge("ERROR");
       if(this.settings.mode==="live") this.races=[];
@@ -1211,9 +1329,13 @@ class SimulationEngine{
     const now=Date.now();
     $("#clock").textContent=new Date().toLocaleString("ja-JP");
 
-    // LIVE開催取得に失敗した時は「本日終了」にせず30秒ごとに自動再取得。
-    if(this.settings.mode==="live" && !this.races.length && UI.dataStatus==="ERROR" && !this._reloadingRaces && now-this.lastRaceReloadAt>=30000){
-      UI.autoStep="開催情報を再取得中";
+    // FIXED18: 全滅だけでなく、JRA/NARの部分取得も自動回復。
+    const needRaceReload=this.settings.mode==="live" && (
+      (!this.races.length && UI.dataStatus==="ERROR") || !!this.raceLoadWarning
+    );
+    const reloadWait=this.raceLoadWarning?60000:30000;
+    if(needRaceReload && !this._reloadingRaces && now-this.lastRaceReloadAt>=reloadWait){
+      UI.autoStep=this.raceLoadWarning?"不足開催を再取得中":"開催情報を再取得中";
       await this.reloadTodayRaces(false);
     }
 
@@ -1463,7 +1585,21 @@ const UI={
         el.appendChild(d);
         const b=d.querySelector("#retryTodayRaces");if(b)b.onclick=()=>e.reloadTodayRaces(true);
       }else{
-        const d=document.createElement("div");d.className="muted";d.style.padding="12px";d.textContent="本日の開催はありません。";el.appendChild(d);
+        const d=document.createElement("div");
+        d.className="muted";
+        d.style.cssText="padding:12px;line-height:1.55";
+        if(e.filter!=="ALL" && e.races.length){
+          const coverage=e.provider?.lastRaceCoverage?.[e.filter]??0;
+          const missing=e.provider?.lastMissingOrgs?.includes?.(e.filter);
+          d.innerHTML=missing
+            ? `<b>${e.filter} 開催一覧が現在0件です。</b><br>他区分のデータは取得済みです。自動再取得を続けています。<br><button type="button" class="primary" id="retryTodayRacesPartial" style="margin-top:8px">本日の開催を再取得</button>`
+            : `<b>${e.filter} データ 0件</b><br>現在読み込めている本日データには ${e.filter} がありません。`;
+          el.appendChild(d);
+          const b=d.querySelector("#retryTodayRacesPartial");if(b)b.onclick=()=>e.reloadTodayRaces(true);
+        }else{
+          d.textContent="本日の開催はありません。";
+          el.appendChild(d);
+        }
       }
       return;
     }
