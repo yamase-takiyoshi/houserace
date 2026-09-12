@@ -1,6 +1,25 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<script id="escapeHtmlGlobalFixV16">
+/* fixed16: Safari/iPad global HTML escape helper */
+(function(){
+  if (typeof window.escapeHtml !== "function") {
+    window.escapeHtml = function(value){
+      return String(value == null ? "" : value).replace(/[&<>"']/g, function(ch){
+        return ({
+          "&":"&amp;",
+          "<":"&lt;",
+          ">":"&gt;",
+          "\"":"&quot;",
+          "'":"&#39;"
+        })[ch];
+      });
+    };
+  }
+})();
+</script>
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>競馬ライブ予想シミュレーション GAME</title>
