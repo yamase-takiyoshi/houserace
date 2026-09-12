@@ -2722,5 +2722,151 @@ engine.init();
 <script>
 console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers removed");
 </script>
+
+<script>
+/* ============================================================
+   FIXED9 RESULT WAIT / 502 BACKOFF
+   - JRA結果取得を発走直後に叩かない
+   - JRAは最低180秒、NARは最低120秒待つ
+   - HTTP 502/503/504等は一時待機として再試行
+   - 再試行間隔 15 → 30 → 45 → 60秒
+   - 1秒ごとの502連打を停止
+   ============================================================ */
+(() => {
+  if (window.__KEIBA_FIXED9_RESULT_BACKOFF__) return;
+  window.__KEIBA_FIXED9_RESULT_BACKOFF__ = true;
+
+  const TRANSIENT_RESULT_STATUS = new Set([404, 408, 409, 425, 429, 500, 502, 503, 504]);
+
+  // HttpProviderのエラー情報を詳しくする。
+  if (typeof HttpProvider !== "undefined") {
+    HttpProvider.prototype.json = async function(url) {
+      if (!this.base) throw new Error("LIVE API Base URL（houserace 接続済み）が未設定です");
+
+      let r;
+      try {
+        r = await fetch(this.base + url, { cache: "no-store" });
+      } catch (e) {
+        const err = new Error("通信失敗: " + (e?.message || e));
+        err.status = 0;
+        err.endpoint = url;
+        throw err;
+      }
+
+      let text = "";
+      try { text = await r.text(); } catch (_) {}
+
+      if (!r.ok) {
+        let detail = "";
+        if (text) {
+          try {
+            const j = JSON.parse(text);
+            detail = j?.message || j?.error || "";
+          } catch (_) {
+            detail = text.replace(/\s+/g, " ").slice(0, 120);
+          }
+        }
+        const err = new Error(`HTTP ${r.status}${detail ? " / " + detail : ""}`);
+        err.status = r.status;
+        err.endpoint = url;
+        throw err;
+      }
+
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch (_) {
+        const err = new Error("JSON解析失敗");
+        err.status = r.status;
+        err.endpoint = url;
+        throw err;
+      }
+    };
+  }
+
+  if (typeof SimulationEngine !== "undefined") {
+    const originalSettle = SimulationEngine.prototype.settle;
+
+    SimulationEngine.prototype.settle = async function(race) {
+      const now = Date.now();
+      const start = new Date(race.startTime).getTime();
+
+      // 実レースの終了・確定前に/resultを叩かない。
+      const minimumAfterStartSec = race.org === "JRA" ? 180 : 120;
+      const earliest = start + minimumAfterStartSec * 1000;
+
+      if (Number.isFinite(start) && now < earliest) {
+        const remain = Math.max(1, Math.ceil((earliest - now) / 1000));
+        race.status = "RESULT WAIT";
+        UI.autoStep = `${race.title} 結果待ち（最短確認まで ${remain}秒）`;
+        return;
+      }
+
+      // 前回失敗後のバックオフ中。
+      if (race.__resultRetryAt && now < race.__resultRetryAt) {
+        const remain = Math.max(1, Math.ceil((race.__resultRetryAt - now) / 1000));
+        race.status = "RESULT WAIT";
+        UI.autoStep = `${race.title} 結果待ち（再確認 ${remain}秒後）`;
+        return;
+      }
+
+      // 元settleは内部で例外をcatchするため、結果状態を見て成功/失敗を判定する。
+      const beforeSettled = !!race.settled;
+      await originalSettle.call(this, race);
+
+      if (race.settled && !beforeSettled) {
+        race.__resultRetryCount = 0;
+        race.__resultRetryAt = 0;
+        race.__lastResultError = "";
+        this.setDataBadge("LIVE");
+        UI.autoStep = `${race.title} 精算完了`;
+        return;
+      }
+
+      if (!race.settled && race.status === "RESULT WAIT") {
+        const count = Math.min(20, Number(race.__resultRetryCount || 0) + 1);
+        race.__resultRetryCount = count;
+
+        const delaySec = count === 1 ? 15 : count === 2 ? 30 : count === 3 ? 45 : 60;
+        race.__resultRetryAt = Date.now() + delaySec * 1000;
+        race.__lastResultError = "RESULT_PENDING";
+
+        // 結果待ちは通信障害扱いではなく黄色の待機表示にする。
+        this.setDataBadge("RESULT WAIT");
+        UI.autoStep = `${race.title} 結果待ち（${delaySec}秒後に再確認）`;
+      }
+    };
+
+    // 保存済みの18秒設定などが残っていても、画面表示を現実的な値へ更新。
+    try {
+      if (typeof engine !== "undefined" && engine?.settings) {
+        const current = Number(engine.settings.resultDelaySec || 0);
+        if (!Number.isFinite(current) || current < 120) {
+          engine.settings.resultDelaySec = 180;
+          if (typeof Store !== "undefined") Store.set("settings", engine.settings);
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 設定ダイアログの説明を明確化。
+  try {
+    const input = document.getElementById("sResultDelay");
+    if (input) {
+      input.min = "120";
+      if (Number(input.value) < 120) input.value = "180";
+      const label = input.closest("label");
+      if (label && !label.dataset.fixed9Label) {
+        label.dataset.fixed9Label = "1";
+        const txt = Array.from(label.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+        if (txt && /結果確認開始/.test(txt.textContent || "")) {
+          txt.textContent = "結果確認開始（発走後秒・最低120秒）";
+        }
+      }
+    }
+  } catch (_) {}
+
+  console.log("✅ FIXED9 RESULT WAIT / HTTP 502 BACKOFF loaded");
+})();
+</script>
 </body>
 </html>
