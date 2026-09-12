@@ -6017,5 +6017,396 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 })();
 </script>
 
+<script>
+/* =========================================================
+   FIXED26 — VALIDATION MODE / UNIQUE CALIBRATION / PORTFOLIO KELLY v2.6
+   - Explicit FINAL_RESEARCH vs PRE_RACE_VALIDATION mode
+   - PRE_RACE mode is fail-closed: only verified market snapshots at least 3m before start
+   - Calibration de-duplicates the same race/event/model forecast across characters
+   - Adds all-horse probability prediction ledger for model calibration
+   - Half/Quarter Kelly use mutually-exclusive Portfolio Kelly, with maxRace as total race cap
+   - Restores strict final place-odds enrichment in FINAL research mode (fixed25 had bypassed v2.3 wrapper)
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED26_VALIDATION__)return;
+  window.__FIXED26_VALIDATION__=true;
+
+  const MODEL_VERSION26='BT-MODEL-v2.6';
+  const PROB_MODEL_VERSION26='WIN-PROB-v2.6';
+  const MODE_FINAL='FINAL_RESEARCH';
+  const MODE_PRE='PRE_RACE_VALIDATION';
+  const PRE_RACE_CUTOFF_SEC=180;
+  const PLACE_CACHE_KEY26='btPlaceOddsCacheV23';
+  const esc26=v=>typeof escapeHtml==='function'?escapeHtml(String(v??'')):String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const clamp26=(x,a,b)=>Math.max(a,Math.min(b,x));
+  const iso26=()=>new Date().toISOString();
+  const fmtPct26=(x,d=2)=>Number.isFinite(Number(x))?(Number(x)*100).toFixed(d)+'%':'—';
+  const norm26=s=>String(s??'').replace(/[\s　]+/g,'').trim();
+
+  function raceId26(r){
+    for(const v of [r?.id,r?.raceId,r?.race_id,r?.url,r?.sourceUrl,r?.resultUrl]){
+      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);if(m)return m[1];
+    }
+    try{const m=JSON.stringify(r).match(/(?:race_id[^0-9]{0,8})?(20\d{10})/);if(m)return m[1]}catch(_){ }
+    const d=String(r?.date||'').replace(/-/g,''),org=String(r?.org||'UNK').toUpperCase(),tr=norm26(r?.track||'TRACK'),no=Number(r?.no||0);
+    return `${d||'DATE'}-${org}-${tr}-${String(no||0).padStart(2,'0')}`;
+  }
+  function betEventKey26(r){return `${r.race_id||''}|${r.bet_type||''}|${r.selection||''}|${r.probability_model_version||PROB_MODEL_VERSION26}`}
+  function dedupeEvents26(rows){const m=new Map();for(const r of rows||[]){const k=betEventKey26(r);if(!m.has(k))m.set(k,r)}return [...m.values()]}
+
+  function getMode26(){
+    const v=document.getElementById('btValidationMode26')?.value||localStorage.getItem('btValidationMode26')||MODE_FINAL;
+    return v===MODE_PRE?MODE_PRE:MODE_FINAL;
+  }
+  function modeLabel26(mode){return mode===MODE_PRE?'PRE-RACE検証（3分前以前・検証済みスナップショット限定）':'FINAL研究（最終オッズ・後知恵価格）'}
+
+  function ensureModeUI26(){
+    const org=document.getElementById('btOrg');
+    if(org&&!document.getElementById('btValidationMode26')){
+      const label=document.createElement('label');
+      label.innerHTML='検証モード <select id="btValidationMode26"><option value="FINAL_RESEARCH">FINAL研究</option><option value="PRE_RACE_VALIDATION">PRE-RACE検証</option></select>';
+      org.closest('label')?.insertAdjacentElement('afterend',label);
+      const sel=label.querySelector('select');
+      sel.value=localStorage.getItem('btValidationMode26')===MODE_PRE?MODE_PRE:MODE_FINAL;
+      sel.onchange=()=>{localStorage.setItem('btValidationMode26',sel.value);updateModeNotice26()};
+    }
+    const progress=document.getElementById('btProgress');
+    if(progress&&!document.getElementById('btModeStatus26')){
+      const d=document.createElement('div');d.id='btModeStatus26';d.className='muted';d.style.marginTop='4px';progress.insertAdjacentElement('afterend',d);
+    }
+    updateModeNotice26();
+  }
+  function updateModeNotice26(){
+    const d=document.getElementById('btModeStatus26');if(!d)return;const m=getMode26();
+    d.innerHTML=m===MODE_PRE
+      ?'<b>PRE-RACE検証:</b> 発走3分前以前と時刻検証できるオッズスナップショットだけ採用。無いレースは0件でも安全側で除外します。'
+      :'<b>FINAL研究:</b> 最終オッズでモデルの構造を研究するモード。実運用の締切前成績とは分離して評価します。';
+  }
+
+  // ---------- verified pre-race snapshot extraction ----------
+  function tsMs26(v){const t=Date.parse(String(v||''));return Number.isFinite(t)?t:NaN}
+  function snapshotHorses26(s){
+    const x=s?.horses??s?.odds??s?.entries??s?.data;
+    if(Array.isArray(x))return x;
+    if(x&&typeof x==='object')return Object.entries(x).map(([no,v])=>typeof v==='object'?{no,...v}:{no,odds:v});
+    return [];
+  }
+  function snapshotAt26(s){return s?.marketTime??s?.market_time??s?.at??s?.timestamp??s?.time??s?.fetchedAt??null}
+  function explicitVerified26(s){return s?.verified===true||s?.preRaceVerified===true||s?.pre_race_verified===true||s?.marketSnapshotVerified===true}
+  function findPreRaceSnapshot26(race){
+    const start=tsMs26(race?.startTime||race?.start_time);
+    const cutoff=Number.isFinite(start)?start-PRE_RACE_CUTOFF_SEC*1000:NaN;
+    const arr=[];
+    for(const k of ['oddsSnapshots','odds_snapshots','oddsHistory','odds_history','marketSnapshots','market_snapshots','preRaceSnapshots','pre_race_snapshots']){
+      if(Array.isArray(race?.[k]))arr.push(...race[k]);
+    }
+    for(const k of ['preRaceSnapshot','pre_race_snapshot'])if(race?.[k]&&typeof race[k]==='object')arr.push(race[k]);
+    const candidates=[];
+    for(const s of arr){
+      const at=snapshotAt26(s),t=tsMs26(at),hs=snapshotHorses26(s);
+      if(!hs.length||!Number.isFinite(t))continue;
+      const validByClock=Number.isFinite(cutoff)?t<=cutoff:explicitVerified26(s);
+      if(validByClock)candidates.push({s,at,t,hs});
+    }
+    candidates.sort((a,b)=>b.t-a.t);
+    if(candidates.length)return candidates[0];
+
+    const raceAt=race?.preRaceTimestamp||race?.pre_race_timestamp||race?.preRaceOddsAt||null;
+    const rt=tsMs26(raceAt); const valid=Number.isFinite(rt)&&(Number.isFinite(cutoff)?rt<=cutoff:true);
+    if(valid){
+      const hs=(race.horses||[]).map(h=>({no:h.no,odds:h.preRaceOdds??h.pre_race_odds,placeOddsLow:h.preRacePlaceOddsLow??h.pre_race_place_odds_low,placeOddsHigh:h.preRacePlaceOddsHigh??h.pre_race_place_odds_high}));
+      if(hs.some(h=>Number(h.odds)>1))return {s:{verified:true},at:raceAt,t:rt,hs};
+    }
+    return null;
+  }
+
+  function cloneBlocksForMode26(blocks,mode){
+    let total=0,verified=0,rejected=0;
+    const finalOddsMap=new Map();
+    const out=(blocks||[]).map(b=>{
+      const nb={...b};
+      nb.races=(b.races||[]).flatMap(r=>{
+        total++;
+        const rid=raceId26({...r,date:r.date||b.date,org:r.org||b.org});
+        const originalH=(r.horses||[]).map(h=>({...h}));
+        for(const h of originalH){
+          finalOddsMap.set(`${rid}|${Number(h.no)}`,{win:Number(h.odds),placeLow:Number(h.placeOddsLow),placeHigh:Number(h.placeOddsHigh)});
+        }
+        if(mode===MODE_PRE){
+          const snap=findPreRaceSnapshot26(r);
+          if(!snap){rejected++;return []}
+          const map=new Map(snap.hs.map(x=>[Number(x.no),x]));
+          const hs=originalH.map(h=>{
+            const s=map.get(Number(h.no));
+            const o=Number(s?.odds??s?.winOdds??s?.win_odds);
+            const pl=Number(s?.placeOddsLow??s?.place_odds_low??s?.placeLow);
+            const ph=Number(s?.placeOddsHigh??s?.place_odds_high??s?.placeHigh??pl);
+            return {...h,odds:Number.isFinite(o)&&o>1?o:NaN,
+              placeOddsLow:Number.isFinite(pl)&&pl>=1?pl:undefined,
+              placeOddsHigh:Number.isFinite(ph)&&ph>=pl?ph:undefined,
+              _raceId26:rid,_oddsSnapshotType26:'PRE_RACE_3M_OR_EARLIER',_oddsMarketTime26:snap.at,_marketSnapshotVerified26:true};
+          });
+          // Market probabilities need a complete win-odds field; fail closed if any horse is missing.
+          if(!hs.length||hs.some(h=>!(Number(h.odds)>1))){rejected++;return []}
+          verified++;
+          return [{...r,horses:hs,_raceId26:rid,_oddsSnapshotType26:'PRE_RACE_3M_OR_EARLIER',_oddsMarketTime26:snap.at,_marketSnapshotVerified26:true}];
+        }
+        const hs=originalH.map(h=>({...h,_raceId26:rid,_oddsSnapshotType26:'FINAL',_oddsMarketTime26:null,_marketSnapshotVerified26:false}));
+        verified++;
+        return [{...r,horses:hs,_raceId26:rid,_oddsSnapshotType26:'FINAL',_oddsMarketTime26:null,_marketSnapshotVerified26:false}];
+      });
+      return nb;
+    });
+    return {blocks:out,diag:{mode,total,verified,rejected,cutoffSeconds:PRE_RACE_CUTOFF_SEC},finalOddsMap};
+  }
+
+  // ---------- restore strict place-odds enrichment in FINAL mode ----------
+  const placeCache26=(()=>{try{return JSON.parse(localStorage.getItem(PLACE_CACHE_KEY26)||'{}')||{}}catch(_){return {}}})();
+  function savePlaceCache26(){try{localStorage.setItem(PLACE_CACHE_KEY26,JSON.stringify(placeCache26))}catch(_){}}
+  function clean26(s){return String(s??'').replace(/[\u00a0\s　]+/g,' ').trim()}
+  function half26(s){return String(s??'').replace(/[０-９．，－〜]/g,c=>({'０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','．':'.','，':',','－':'-','〜':'-'}[c]||c))}
+  function horseNoRow26(tr){
+    const direct=tr.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"],[class*="Horse_Num"]');
+    if(direct){const m=half26(clean26(direct.textContent)).match(/(?:^|\D)([1-9]|1[0-8])(?:\D|$)/);if(m)return Number(m[1])}
+    const link=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+    const els=[...tr.querySelectorAll('th,td')];
+    if(link&&els.length){const idx=els.findIndex(x=>x===link||x.contains(link));const before=idx>=0?els.slice(0,idx):els.slice(0,5);const nums=[];for(const el of before){const t=half26(clean26(el.textContent));if(/^([1-9]|1[0-8])$/.test(t))nums.push(Number(t))}if(nums.length)return nums[nums.length-1]}
+    return 0;
+  }
+  function parsePlaceOdds26(html){
+    const doc=new DOMParser().parseFromString(String(html||''),'text/html'),map={};
+    for(const tr of doc.querySelectorAll('tr')){
+      const no=horseNoRow26(tr);if(!(no>=1&&no<=18))continue;
+      const text=half26(clean26(tr.textContent)).replace(/[–—―~～]/g,'-');
+      const ranges=[...text.matchAll(/(\d{1,4}(?:\.\d+)?)\s*-\s*(\d{1,4}(?:\.\d+)?)/g)];let low=0,high=0;
+      if(ranges.length){const m=ranges[ranges.length-1];low=Number(m[1]);high=Number(m[2])}
+      else{
+        const table=tr.closest('table'),ctx=half26(clean26((table?.previousElementSibling?.textContent||'')+' '+(table?.textContent||'')));
+        if(/複勝/.test(ctx)&&!/単勝・複勝/.test(ctx)){const vals=[...text.matchAll(/(?:^|\s)(\d{1,4}\.\d+)(?:\s|$)/g)].map(m=>Number(m[1])).filter(v=>v>=1&&v<1000);if(vals.length)low=high=vals[vals.length-1]}
+      }
+      if(Number.isFinite(low)&&Number.isFinite(high)&&low>=1&&high>=low&&high<1000)map[no]={low:+low.toFixed(2),high:+high.toFixed(2),mid:+((low+high)/2).toFixed(2)};
+    }
+    return map;
+  }
+  async function bridgeGet26(url){
+    if(typeof window.__narBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('Bridge未接続');
+    const r=await window.__narBridgeFetch(url),status=Number(r?.status||0),text=String(r?.text||'');
+    if(!(status>=200&&status<400))throw new Error(`HTTP ${status||0}`);if(text.length<300)throw new Error(`HTML ${text.length}字`);return {text,url:String(r?.finalUrl||url)};
+  }
+  async function getPlaceMap26(race){
+    const id=raceId26(race);if(!/^20\d{10}$/.test(id))throw new Error('official race_idなし');
+    if(placeCache26[id]&&Object.keys(placeCache26[id].map||{}).length)return placeCache26[id];
+    const org=String(race?.org||'').toUpperCase();
+    const urls=org==='NAR'?[`https://nar.netkeiba.com/odds/?race_id=${id}&type=b0`,`https://nar.netkeiba.com/odds/?race_id=${id}&type=b1`,`https://nar.sp.netkeiba.com/odds/odds.html?race_id=${id}&type=b1`]:[`https://race.sp.netkeiba.com/?pid=odds_view&race_id=${id}&type=b1`,`https://race.netkeiba.com/odds/index.html?race_id=${id}&type=b0`,`https://race.netkeiba.com/odds/index.html?race_id=${id}&type=b1`];
+    for(const u of urls){try{const x=await bridgeGet26(u),map=parsePlaceOdds26(x.text);if(Object.keys(map).length>=2){return placeCache26[id]={map,source:x.url,at:iso26()}}}catch(_){}}
+    throw new Error('複勝オッズ取得失敗');
+  }
+  function applyPlace26(r,rec){for(const h of r.horses||[]){const p=rec?.map?.[Number(h.no)];if(p){h.placeOddsLow=Number(p.low);h.placeOddsHigh=Number(p.high);h.placeOddsMid=Number(p.mid);h.placeOddsSource='netkeiba-final-place-range'}}}
+  async function enrichFinalPlace26(blocks){
+    const races=[];for(const b of blocks||[])for(const r of b.races||[])if(/^20\d{10}$/.test(raceId26(r)))races.push(r);
+    let done=0,cached=0,loaded=0,failed=0;const pending=[];
+    for(const r of races){const id=raceId26(r),rec=placeCache26[id];if(rec&&Object.keys(rec.map||{}).length){applyPlace26(r,rec);cached++;done++}else pending.push(r)}
+    const p=document.getElementById('btProgress');
+    for(let i=0;i<pending.length;i+=4){const batch=pending.slice(i,i+4);const got=await Promise.all(batch.map(async r=>{try{const rec=await getPlaceMap26(r);applyPlace26(r,rec);loaded++;return true}catch(_){failed++;return false}}));done+=got.length;if(p)p.textContent=`複勝最終オッズ取得中… ${done}/${races.length} / 新規${loaded} / cache${cached} / 失敗${failed}`;if(i%32===0)savePlaceCache26();await new Promise(res=>setTimeout(res,30))}
+    savePlaceCache26();return {total:races.length,loaded,cached,failed,available:loaded+cached};
+  }
+
+  // ---------- all-horse prediction ledger ----------
+  const predictionLedger26=new Map();
+  if(typeof btProbabilities==='function'){
+    const prevProb26=btProbabilities;
+    btProbabilities=function(horses){
+      const out=prevProb26(horses);
+      for(const h of out||[]){
+        const rid=h?._raceId26;if(!rid)continue;
+        const key=`${rid}|${Number(h.no)}|${PROB_MODEL_VERSION26}`;
+        predictionLedger26.set(key,{prediction_id:key,race_id:rid,selection:String(Number(h.no)),probability:Number(h.modelProb),market_probability:Number(h.marketProb),predicted_odds:Number(h.odds),place_probability:Number(h.placeProb),probability_model_version:PROB_MODEL_VERSION26,odds_snapshot_type:h._oddsSnapshotType26||'FINAL',odds_market_time:h._oddsMarketTime26||null,market_snapshot_pre_race_verified:!!h._marketSnapshotVerified26});
+      }
+      return out;
+    };
+  }
+
+  // ---------- mutually exclusive Portfolio Kelly ----------
+  function fullKellySingle26(p,o){p=Number(p);o=Number(o);if(!(p>0&&p<1&&o>1))return 0;const b=o-1;return clamp26((b*p-(1-p))/b,0,1)}
+  function portfolioObjective26(fs,ps,os){
+    const S=fs.reduce((a,b)=>a+b,0);if(S>=.999999)return -1e99;
+    const pSel=Math.min(.999999,ps.reduce((a,b)=>a+b,0)),p0=Math.max(0,1-pSel);let z=p0*Math.log(Math.max(1e-12,1-S));
+    for(let i=0;i<fs.length;i++){const w=1-S+fs[i]*os[i];if(w<=0)return -1e99;z+=ps[i]*Math.log(w)}return z;
+  }
+  function portfolioKellyFull26(picks){
+    const ps=picks.map(h=>clamp26(Number(h.modelProb)||0,0,.999999)),os=picks.map(h=>Number(h.odds));
+    if(!picks.length||os.some(o=>!(o>1)))return picks.map(()=>0);
+    let f=picks.map((h,i)=>Math.min(.5,fullKellySingle26(ps[i],os[i])));
+    let sum=f.reduce((a,b)=>a+b,0);if(sum>.90){const q=.90/sum;f=f.map(x=>x*q)}
+    for(let outer=0;outer<10;outer++){
+      for(let i=0;i<f.length;i++){
+        const others=f.reduce((s,x,j)=>s+(j===i?0:x),0),hi=Math.max(0,.95-others);let lo=0,h=hi;
+        for(let k=0;k<24;k++){
+          const m1=lo+(h-lo)/3,m2=h-(h-lo)/3,fa=f.slice(),fb=f.slice();fa[i]=m1;fb[i]=m2;
+          if(portfolioObjective26(fa,ps,os)<portfolioObjective26(fb,ps,os))lo=m1;else h=m2;
+        }
+        f[i]=(lo+h)/2;
+      }
+    }
+    return f.map(x=>clamp26(x,0,.95));
+  }
+
+  if(typeof btPicks==='function'){
+    const prevPicks26=btPicks;
+    btPicks=function(c,race,settings){
+      const picks=prevPicks26(c,race,settings)||[];
+      if(!['kelly','quarter'].includes(c?.staking)||!picks.length)return picks;
+      const full=portfolioKellyFull26(picks),scale=c.staking==='kelly'?.5:.25;
+      let applied=full.map(x=>x*scale);
+      const bankroll=Math.max(1,Number(c.bankroll)||1),raceCap=Math.min(.95,Math.max(0,Number(settings?.maxRace||0)/bankroll));
+      const total=applied.reduce((a,b)=>a+b,0);if(total>raceCap&&total>0){const q=raceCap/total;applied=applied.map(x=>x*q)}
+      return picks.map((h,i)=>({...h,_portfolioKellyFull26:full[i],_portfolioKellyApplied26:applied[i],_portfolioKellyTotalApplied26:applied.reduce((a,b)=>a+b,0),_portfolioKellyMethod26:'exclusive-outcomes-coordinate-concave-v1'}));
+    };
+  }
+  if(typeof btStake==='function'){
+    const prevStake26=btStake;
+    btStake=function(c,h,settings){
+      if(['kelly','quarter'].includes(c?.staking)&&Number.isFinite(Number(h?._portfolioKellyApplied26))){
+        let s=(Number(c.bankroll)||0)*Number(h._portfolioKellyApplied26);s=Math.floor(s/100)*100;return Math.max(0,Math.min(s,Number(settings?.maxRace||Infinity),Number(c.bankroll)||0));
+      }
+      return prevStake26(c,h,settings);
+    };
+  }
+
+  function ece26(rows){
+    if(!rows.length)return 0;let z=0;for(let i=0;i<10;i++){const l=i/10,h=(i+1)/10,a=rows.filter(r=>Number(r.probability)>=l&&(i===9?Number(r.probability)<=h:Number(r.probability)<h));if(!a.length)continue;const p=a.reduce((s,r)=>s+Number(r.probability),0)/a.length,o=a.reduce((s,r)=>s+Number(r.outcome),0)/a.length;z+=a.length/rows.length*Math.abs(p-o)}return z;
+  }
+  function calibrationBins26(rows){
+    const bins=[{l:.10,h:.20,label:'10–20%'},{l:.20,h:.30,label:'20–30%'},{l:.30,h:.40,label:'30–40%'},{l:.40,h:.50,label:'40–50%'},{l:.50,h:1.001,label:'50%以上'}];
+    return bins.map(x=>{const a=rows.filter(r=>Number(r.probability)>=x.l&&Number(r.probability)<x.h);return {label:x.label,n:a.length,p:a.length?a.reduce((s,r)=>s+Number(r.probability),0)/a.length:null,actual:a.length?a.reduce((s,r)=>s+Number(r.outcome),0)/a.length:null}});
+  }
+  function computeValidation26(result){
+    const old=result.validation||{},out={...old,version:26,characters:{},scoreWeights:{accuracy:.30,calibration:.25,roi:.20,drawdown:.15,sample:.10}};
+    const bets=result.bets||[];
+    for(const c of result.characters||[]){
+      const rows=bets.filter(r=>r.character===c.name),unique=dedupeEvents26(rows),n=rows.length,nu=unique.length;
+      const inv=rows.reduce((s,r)=>s+Number(r.stake||0),0),ret=rows.reduce((s,r)=>s+Number(r.refund||0),0),profit=ret-inv,roi=inv?ret/inv*100:0,hit=n?rows.reduce((s,r)=>s+Number(r.outcome||0),0)/n:0;
+      const brier=nu?unique.reduce((s,r)=>s+(Number(r.probability)-Number(r.outcome))**2,0)/nu:1,ece=ece26(unique);
+      const accuracyScore=100*(1-Math.min(1,brier/.25)),calibrationScore=100*(1-Math.min(1,ece/.25)),roiScore=clamp26(50+(roi-100),0,100),dd=Number(c.maxDD||0),ddScore=100*(1-Math.min(1,dd/.50)),sampleScore=Math.min(100,Math.sqrt(nu/500)*100),composite=.30*accuracyScore+.25*calibrationScore+.20*roiScore+.15*ddScore+.10*sampleScore;
+      const prev=old.characters?.[c.name]||{};
+      out.characters[c.name]={...prev,n,uniquePredictionEvents:nu,invested:inv,returned:ret,profit,roi,hitRate:hit,brier,ece,maxDD:dd,growth:Number(c.initial)>0?(Number(c.bankroll)-Number(c.initial))/Number(c.initial):0,accuracyScore,calibrationScore,roiScore,ddScore,sampleScore,composite};
+    }
+    const preds=result.predictions||[];const pn=preds.length,pb=pn?preds.reduce((s,r)=>s+(Number(r.probability)-Number(r.outcome))**2,0)/pn:null,pe=pn?ece26(preds):null;
+    out.modelCalibration={n:pn,brier:pb,ece:pe,probability_model_version:PROB_MODEL_VERSION26};
+    return out;
+  }
+
+  function postprocess26(result,prepared,mode,diag,finalOddsMap,placeDiag){
+    result.modelVersion=MODEL_VERSION26;result.auditSchemaVersion=26;result.validationMode=mode;result.preRaceDiagnostics=diag;result.placeOddsDiagnostics=placeDiag||result.placeOddsDiagnostics||null;
+    const outcomeMap=new Map();
+    for(const b of prepared||[])for(const r of b.races||[]){const rid=raceId26(r),winner=Number(r.result?.winner??r.result?.top3?.[0]??0);outcomeMap.set(rid,{winner,race:r})}
+    result.predictions=[...predictionLedger26.values()].map(p=>({...p,outcome:outcomeMap.get(p.race_id)?.winner===Number(p.selection)?1:0}));
+
+    const chars=new Map((result.characters||[]).map(c=>[c.name,c]));
+    for(const b of result.bets||[]){
+      b.model_version=MODEL_VERSION26;b.probability_model_version=PROB_MODEL_VERSION26;b.validation_mode=mode;
+      const om=outcomeMap.get(b.race_id)?.race;
+      b.odds_snapshot_type=mode===MODE_PRE?'PRE_RACE_3M_OR_EARLIER':'FINAL';
+      b.odds_market_time=mode===MODE_PRE?(om?._oddsMarketTime26||null):null;
+      b.market_snapshot_pre_race_verified=mode===MODE_PRE&&!!om?._marketSnapshotVerified26;
+      b.pre_race_timestamp_verified=false;
+      b.prediction_timing_status=mode===MODE_PRE?'REPLAY_ON_VERIFIED_PRE_RACE_MARKET_SNAPSHOT':'HISTORICAL_FINAL_RESEARCH';
+      const no=Number(String(b.selection||'').split('-')[0]),fo=finalOddsMap.get(`${b.race_id}|${no}`);
+      if(fo){if(Number.isFinite(fo.win)){b.final_odds=fo.win;b.final_odds_low=fo.win;b.final_odds_high=fo.win}if(b.bet_type==='複勝'){if(Number.isFinite(fo.placeLow))b.final_odds_low=fo.placeLow;if(Number.isFinite(fo.placeHigh))b.final_odds_high=fo.placeHigh}}
+      b.individual_kelly_fraction=fullKellySingle26(b.probability,b.predicted_odds);
+      b.anti_leak_note=mode===MODE_PRE?'EV uses only a verified market snapshot at least 3 minutes before start. Prediction is replayed now; no claim that it was historically generated then. Result/payout used only for settlement.':'FINAL research mode: final odds are used as research price; this is not a pre-race performance claim. Result/payout used only for settlement.';
+    }
+    // Add portfolio Kelly evidence per same race/character for kelly/quarter characters.
+    const groups=new Map();for(const b of result.bets||[]){const k=`${b.race_id}|${b.character}`;if(!groups.has(k))groups.set(k,[]);groups.get(k).push(b)}
+    for(const rs of groups.values()){
+      const char=chars.get(rs[0]?.character);if(!['kelly','quarter'].includes(char?.staking))continue;
+      const full=portfolioKellyFull26(rs.map(r=>({modelProb:r.probability,odds:r.predicted_odds}))),scale=char.staking==='kelly'?.5:.25;
+      for(let i=0;i<rs.length;i++){rs[i].portfolio_kelly_fraction=full[i];rs[i].kelly_fraction=full[i];rs[i].kelly_scale=scale;rs[i].portfolio_kelly_applied_rate=Number(rs[i].actual_investment_rate||0);rs[i].portfolio_kelly_method='exclusive-outcomes-coordinate-concave-v1'}
+    }
+    result.runMeta={...(result.runMeta||{}),validation_mode:mode,odds_timing:mode===MODE_PRE?'PRE_RACE_3M_OR_EARLIER':'FINAL',model_version:MODEL_VERSION26,probability_model_version:PROB_MODEL_VERSION26,pre_race_cutoff_seconds:PRE_RACE_CUTOFF_SEC,
+      note:mode===MODE_PRE?'Fail-closed replay on verified market snapshots at least 3 minutes before start. Prediction generation itself remains replay-time, not historically verified.':'FINAL-odds research mode. Not a pre-race performance claim.'};
+    result.validation=computeValidation26(result);
+    result.calibrationContract={version:26,dedupe_key:'race_id + bet_type + selection + probability_model_version',global_model_layer:'predictions contains one all-horse forecast per race/horse/model',no_character_duplication:true};
+    result.kellyContract={version:26,method:'mutually-exclusive Portfolio Kelly via concave coordinate optimization',halfKellyScale:.5,quarterKellyScale:.25,maxRaceMeans:'total stake cap per character per race'};
+    return result;
+  }
+
+  // Wrap the current v2.5 audit runner.
+  if(typeof runBacktestOnHistory==='function'){
+    const prevRun26=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      predictionLedger26.clear();const mode=getMode26();
+      const prep=cloneBlocksForMode26(historyBlocks,mode);let placeDiag=null;
+      if(mode===MODE_FINAL){try{placeDiag=await enrichFinalPlace26(prep.blocks)}catch(e){placeDiag={error:String(e?.message||e)}}}
+      const result=await prevRun26(prep.blocks,onProgress);
+      return postprocess26(result,prep.blocks,mode,prep.diag,prep.finalOddsMap,placeDiag);
+    };
+  }
+
+  // ---------- dashboard: deduplicated calibration ----------
+  function ensureValidation26UI(){
+    const card=document.getElementById('modelValidation24');if(!card)return;
+    const h=card.querySelector(':scope > h3');if(h)h.textContent='📐 モデル検証ダッシュボード v2.6';
+    const note=card.querySelector('.notice');if(note)note.innerHTML='<b>総合Score:</b> 予測精度30% + キャリブレーション25% + ROI20% + 最大DD15% + サンプル信頼度10%。<br><b>v2.6:</b> 全体キャリブレーションは同一 race_id×券種×選択×確率モデルを重複排除。FINAL研究とPRE-RACE検証を明確に分離。Kelly/Quarterは排他的Portfolio Kellyで同一レース総投資を最適化します。';
+    const st=document.getElementById('validationStatus24');if(st&&!document.getElementById('baseModelCal26')){const x=document.createElement('div');x.id='baseModelCal26';x.className='muted';x.style.marginTop='4px';st.insertAdjacentElement('afterend',x)}
+  }
+  if(window.ModelValidation24){
+    ModelValidation24.draw=function(){
+      const r=this.result;if(!r)return;ensureValidation26UI();const char=document.getElementById('validationCharacter24')?.value||'',all=(r.bets||[]).filter(x=>!char||x.character===char),rows=dedupeEvents26(all);
+      const st=document.getElementById('validationStatus24');if(st)st.textContent=`${char||'全購入'} / ${all.length}購入 / キャリブレーション一意${rows.length}件 / ${modeLabel26(r.validationMode)} / ${r.modelVersion||MODEL_VERSION26}`;
+      const body=document.getElementById('calibrationBody24');if(body)body.innerHTML=calibrationBins26(rows).map(x=>`<tr><td>${x.label}</td><td>${x.n}</td><td>${x.p==null?'—':fmtPct26(x.p)}</td><td>${x.actual==null?'—':fmtPct26(x.actual)}</td><td>${x.p==null?'—':fmtPct26(Math.abs(x.p-x.actual))}</td></tr>`).join('');
+      // Keep EV-band and capital rendering from the existing data with a local implementation.
+      const bins=[{l:1,h:1.05,label:'1.00–1.05'},{l:1.05,h:1.10,label:'1.05–1.10'},{l:1.10,h:1.15,label:'1.10–1.15'},{l:1.15,h:1.20,label:'1.15–1.20'},{l:1.20,h:Infinity,label:'1.20以上'}];
+      const evb=document.getElementById('evBandBody24');if(evb)evb.innerHTML=bins.map(x=>{const a=all.filter(z=>Number(z.predicted_ev)>=x.l&&Number(z.predicted_ev)<x.h),inv=a.reduce((s,z)=>s+Number(z.stake||0),0),ret=a.reduce((s,z)=>s+Number(z.refund||0),0),hit=a.length?a.reduce((s,z)=>s+Number(z.outcome||0),0)/a.length:null;return `<tr><td>${x.label}</td><td>${a.length}</td><td>${inv?(ret/inv*100).toFixed(1)+'%':'—'}</td><td>${(ret-inv).toLocaleString()}円</td><td>${hit==null?'—':fmtPct26(hit)}</td></tr>`}).join('');
+      const v=r.validation?.characters||{},cap=document.getElementById('capitalBody24');if(cap)cap.innerHTML=Object.entries(v).sort((a,b)=>Number(b[1].composite)-Number(a[1].composite)).map(([name,x])=>`<tr><td>${esc26(name)}</td><td>${Number(x.invested||0).toLocaleString()}円</td><td>${Number(x.profit||0).toLocaleString()}円</td><td>${fmtPct26(x.growth)}</td><td>${fmtPct26(x.maxDD)}</td><td>${fmtPct26(x.maxBetRate)}</td><td>${fmtPct26(x.maxRaceRate)}</td><td>${x.ruinProbability500==null?'参考外':fmtPct26(x.ruinProbability500)}</td></tr>`).join('');
+      const mc=r.validation?.modelCalibration||{},bm=document.getElementById('baseModelCal26');if(bm)bm.textContent=`基礎勝率モデル（全馬・重複なし）: ${mc.n||0}予測 / Brier ${mc.brier==null?'—':Number(mc.brier).toFixed(4)} / ECE ${mc.ece==null?'—':fmtPct26(mc.ece)} / ${mc.probability_model_version||PROB_MODEL_VERSION26}`;
+    };
+  }
+
+  // ---------- audit columns for timing mode + portfolio Kelly ----------
+  if(typeof DetailedAudit==='object'){
+    DetailedAudit.draw=function(){
+      const rows=this.filtered(),visible=rows.slice(0,120),table=document.getElementById('auditBody')?.closest('table');
+      if(table)table.querySelector('thead tr').innerHTML='<th>race_id</th><th>bet_id</th><th>run_id</th><th>検証モード</th><th>シミュレーション予測生成時刻</th><th>予測実時点</th><th>オッズ取得実行時刻</th><th>オッズ市場時点</th><th>市場時点検証</th><th>オッズ種別</th><th>日時</th><th>競馬場</th><th>R</th><th>キャラクター</th><th>券種</th><th>馬/組番</th><th>購入額</th><th>予想時オッズ</th><th>最終オッズ</th><th>確定払戻円/100円</th><th>確定払戻倍率</th><th>実払戻</th><th>利益</th><th>想定確率</th><th>予想時EV</th><th>単独Kelly率</th><th>Portfolio Kelly率</th><th>実投資率</th><th>同一R総投資率</th><th>モデルVersion</th><th>判定</th>';
+      const body=document.getElementById('auditBody');if(body)body.innerHTML=visible.map(r=>`<tr><td>${esc26(r.race_id)}</td><td>${esc26(r.bet_id)}</td><td>${esc26(r.run_id||'—')}</td><td>${esc26(r.validation_mode||'—')}</td><td>${esc26(r.simulation_prediction_generated_at||'—')}</td><td>${r.pre_race_timestamp_verified?esc26(r.prediction_generated_at||'—'):'未検証'}</td><td>${esc26(r.odds_acquired_at||r.odds_fetched_at||'—')}</td><td>${esc26(r.odds_market_time||'—')}</td><td>${r.market_snapshot_pre_race_verified?'✅':'—'}</td><td>${esc26(r.odds_snapshot_type||'—')}</td><td>${esc26(r.date)}</td><td>${esc26(r.track)}</td><td>${r.race_no}</td><td>${esc26(r.character)}</td><td>${esc26(r.bet_type)}</td><td>${esc26(r.selection)}</td><td>${Number(r.stake||0).toLocaleString()}</td><td>${r.predicted_odds==null?'—':Number(r.predicted_odds).toFixed(3)}</td><td>${r.final_odds_low==null?'—':(Number(r.final_odds_high)-Number(r.final_odds_low)>.0001?`${Number(r.final_odds_low).toFixed(2)}–${Number(r.final_odds_high).toFixed(2)}`:Number(r.final_odds_low).toFixed(2))}</td><td>${r.confirmed_refund_yen_per_100==null?'—':Number(r.confirmed_refund_yen_per_100).toLocaleString()}</td><td>${Number(r.confirmed_payout_multiplier||0).toFixed(3)}</td><td>${Number(r.refund||0).toLocaleString()}</td><td>${Number(r.profit||0).toLocaleString()}</td><td>${fmtPct26(r.probability)}</td><td>${Number(r.predicted_ev||0).toFixed(3)}</td><td>${fmtPct26(r.individual_kelly_fraction)}</td><td>${r.portfolio_kelly_fraction==null?'—':fmtPct26(r.portfolio_kelly_fraction)}</td><td>${fmtPct26(r.actual_investment_rate)}</td><td>${fmtPct26(r.race_investment_rate)}</td><td>${esc26(r.model_version)}</td><td>${esc26(r.status)}</td></tr>`).join('');
+      const st=document.getElementById('auditStatus');if(st)st.textContent=`表示 ${visible.length}件 / 条件一致${rows.length}件 / 全${this.result?.bets?.length||0}件 / v2.6 timing + Portfolio Kelly監査`;
+    };
+    DetailedAudit.copy=async function(csv=false){
+      const rows=this.filtered();if(!rows.length)return alert('監査データがありません');
+      const head=['race_id','bet_id','run_id','検証モード','シミュレーション予測生成時刻','予測実時点','pre_race_timestamp_verified','オッズ取得実行時刻','オッズ市場時点','market_snapshot_pre_race_verified','odds_snapshot_type','日時','競馬場','R','キャラクター','券種','馬/組番','購入額','予想時オッズ','最終オッズ下限','最終オッズ上限','確定払戻円/100円','確定払戻倍率','実払戻','利益','想定確率','予想時EV','単独Kelly率','Portfolio Kelly率','Kelly適用倍率','実投資率','同一R総投資率','bankroll_before_race','bankroll_after_race','モデルVersion','確率モデルVersion','race_id_kind','結果取得元','結果解析元','結果取得時刻','判定'];
+      const body=rows.map(r=>[r.race_id,r.bet_id,r.run_id,r.validation_mode,r.simulation_prediction_generated_at,r.prediction_generated_at,r.pre_race_timestamp_verified,r.odds_acquired_at||r.odds_fetched_at,r.odds_market_time,r.market_snapshot_pre_race_verified,r.odds_snapshot_type,r.date,r.track,r.race_no,r.character,r.bet_type,r.selection,r.stake,r.predicted_odds,r.final_odds_low,r.final_odds_high,r.confirmed_refund_yen_per_100,r.confirmed_payout_multiplier,r.refund,r.profit,r.probability,r.predicted_ev,r.individual_kelly_fraction,r.portfolio_kelly_fraction,r.kelly_scale,r.actual_investment_rate,r.race_investment_rate,r.bankroll_before_race,r.bankroll_after_race,r.model_version,r.probability_model_version,r.race_id_kind,r.result_source,r.result_parser_source,r.result_fetched_at,r.status]);
+      const d=csv?',':'\t',q=v=>{const s=String(v??'');return csv&&/[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s},text=[head,...body].map(row=>row.map(q).join(d)).join('\n');
+      try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
+      const st=document.getElementById('auditStatus');if(st)st.textContent=`${rows.length}件をコピーしました。v2.6検証モード・Portfolio Kelly列を含みます。`;
+    };
+  }
+
+  // Completion status should no longer always say FINAL ODDS.
+  function wrapRunButton26(){
+    const btn=document.getElementById('runWebBacktest');if(!btn||btn.dataset.v26Wrapped)return;btn.dataset.v26Wrapped='1';const old=btn.onclick;
+    btn.onclick=async function(ev){
+      updateModeNotice26();try{await old?.call(this,ev)}catch(e){const p=document.getElementById('btProgress');if(p)p.textContent=`停止: ${String(e?.message||e)}`;try{UI.addLog(`BT v2.6: ${String(e?.message||e)}`,'error')}catch(_){} }
+      try{
+        if(typeof btResult!=='undefined'&&btResult){
+          const p=document.getElementById('btProgress'),m=btResult.validationMode||getMode26(),d=btResult.preRaceDiagnostics||{};
+          if(p){const base=p.textContent.replace(/\/ FINAL ODDS \/ ANTI-LEAK|\/ PRE-RACE[^/]*\/ ANTI-LEAK/g,'').trim();p.textContent=`${base} / ${m===MODE_PRE?'PRE-RACE VERIFIED':'FINAL RESEARCH'} / ANTI-LEAK v2.6`}
+          const s=document.getElementById('btModeStatus26');if(s&&m===MODE_PRE)s.innerHTML=`<b>PRE-RACE検証結果:</b> 検証可能 ${d.verified||0}/${d.total||0}レース、スナップショット無し/不完全 ${d.rejected||0}レース。発走${PRE_RACE_CUTOFF_SEC/60}分前以前のみ。`;
+        }
+      }catch(_){ }
+    };
+  }
+
+  setTimeout(()=>{
+    ensureModeUI26();ensureValidation26UI();wrapRunButton26();
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('fixed26Badge')){const e=document.createElement('div');e.id='fixed26Badge';e.className='muted';e.style.marginTop='4px';e.textContent='検証: v2.6 / FINAL研究⇄PRE-RACE検証 / キャリブレーション重複排除 / 排他的Portfolio Kelly / maxRace=同一R総額上限';host.insertAdjacentElement('afterend',e)}
+    try{if(typeof btResult!=='undefined'&&btResult?.bets){btResult.modelVersion=MODEL_VERSION26;ModelValidation24?.render(btResult);DetailedAudit?.render(btResult)}}catch(_){ }
+  },1500);
+
+  console.log('✅ FIXED26 validation modes + unique calibration + Portfolio Kelly loaded');
+})();
+
+</script>
 </body>
 </html>
