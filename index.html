@@ -3755,21 +3755,80 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       id,date,org:'JRA',track,no,
       title:p.title,startTime,oddsTiming:'FINAL',horses:p.horses,
       result:{ winner:p.top3[0], top3:p.top3, finish:p.finish, payouts:p.payouts },
-      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / SP-result mobile-parser-v1.3`,
+      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / SP-result mobile-parser-v1.4`,
       historySafe:true
     };
+  }
+
+  async function workerRacePlan13(date){
+    const base=String(engine?.settings?.apiBase||'').replace(/\/$/,'');
+    if(!base) throw new Error('Worker API未設定');
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),18000);
+    try{
+      const url=`${base}/history?date=${encodeURIComponent(date)}&org=JRA&_plan=${Date.now()}`;
+      const r=await fetch(url,{cache:'no-store',mode:'cors',signal:ctrl.signal});
+      const text=await r.text();
+      let d={};
+      try{ d=text?JSON.parse(text):{}; }catch(_){ throw new Error(`Worker JSON解析失敗 HTTP ${r.status}`); }
+      if(!r.ok) throw new Error(d?.message||d?.error||`Worker HTTP ${r.status}`);
+      const meetings=Array.isArray(d?.diagnostics?.meetings)?d.diagnostics.meetings:[];
+      const year=String(date).slice(0,4);
+      const ids=[];
+      for(const m of meetings){
+        const venue=String(m?.venueCode||'').padStart(2,'0');
+        const kai=String(Number(m?.kai||0)).padStart(2,'0');
+        const day=String(Number(m?.day||0)).padStart(2,'0');
+        const count=Math.min(12,Math.max(1,Number(m?.count||12)));
+        if(!/^\d{2}$/.test(venue)||!(Number(venue)>=1&&Number(venue)<=10)||!(Number(kai)>=1)||!(Number(day)>=1)) continue;
+        for(let no=1;no<=count;no++) ids.push(`${year}${venue}${kai}${day}${String(no).padStart(2,'0')}`);
+      }
+      // diagnostics.meetings が無い古いWorkerでは、エラー内raceIdも補助的に拾う。
+      const errs=Array.isArray(d?.diagnostics?.errors)?d.diagnostics.errors:[];
+      for(const e of errs){
+        const id=String(e?.raceId||'').replace(/\D/g,'');
+        if(/^\d{12}$/.test(id)&&id.slice(0,4)===year&&!ids.includes(id)) ids.push(id);
+      }
+      ids.sort();
+      return {ids,worker:d,meetings};
+    }finally{
+      clearTimeout(timer);
+    }
   }
 
   async function historyBridge13(date){
     if (!bridgeReady13()) throw new Error('Bridge未接続');
     const ymd = String(date).replace(/-/g,'');
-    const list = await bridgeFirst13([
-      `https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
-      `https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,
-      `https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`
-    ], html => raceIds13(html,date).length > 0);
-    const ids = raceIds13(list.text,date);
-    if (!ids.length) throw new Error('Bridge開催一覧からrace_idを取得できません');
+    let ids=[];
+    let planSource='';
+    let planError='';
+
+    // v1.4: race.netkeibaの開催一覧HTMLにはrace_idが埋め込まれない場合がある。
+    // WorkerはJRA公式カレンダーから開催回・日次までは取れているため、
+    // Worker diagnostics.meetingsを「race_id生成計画」だけに利用し、
+    // 各レース本文は住宅IP Bridgeから取得する。
+    try{
+      const plan=await workerRacePlan13(date);
+      ids=plan.ids;
+      if(ids.length){
+        planSource=`Worker公式カレンダー計画 ${plan.meetings.length}開催 / ${ids.length}R`;
+        UI?.addLog?.(`JRA ${date}: ${planSource} → Bridgeで各結果を取得`,'ok');
+      }
+    }catch(e){
+      planError=String(e?.message||e);
+      UI?.addLog?.(`JRA ${date}: Worker開催計画取得失敗 ${planError} → Bridge開催一覧を試行`,'warn');
+    }
+
+    if(!ids.length){
+      const list = await bridgeFirst13([
+        `https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,
+        `https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,
+        `https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`
+      ], html => raceIds13(html,date).length > 0);
+      ids = raceIds13(list.text,date);
+      planSource='Bridge開催一覧';
+    }
+    if (!ids.length) throw new Error(`race_id計画を取得できません${planError?` / ${planError}`:''}`);
 
     const races=[];
     const errors=[];
@@ -3791,7 +3850,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
     return {
       ok:true,date,org:'JRA',oddsTiming:'FINAL',races,count:races.length,
-      diagnostics:{meetingSource:'bridge-sp-mobile-parser-v1.3',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,errors:errors.slice(0,20)},
+      diagnostics:{meetingSource:'worker-plan+bridge-sp-mobile-parser-v1.4',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,errors:errors.slice(0,20)},
       diagnosticSummary:{meetingSource:'bridge-sp-mobile-parser-v1.3',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,firstErrors:errors.slice(0,5)},
       source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / SP-result mobile-parser-v1.3`
     };
@@ -3801,7 +3860,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   fetchHistoryDay = async function(date, org, options={}){
     const kind=String(org||'').toUpperCase();
     if(kind==='JRA' && bridgeReady13()){
-      UI?.addLog?.(`JRA ${date}: Bridge-SP mobile parser v1.3 を使用`,'ok');
+      UI?.addLog?.(`JRA ${date}: Worker開催計画 + Bridge-SP mobile parser v1.4 を使用`,'ok');
       try{
         const d=await historyBridge13(date);
         UI?.addLog?.(`JRA ${date}: Bridge取得成功 ${d.races.length}レース`,'ok');
@@ -3817,10 +3876,10 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 
   setTimeout(()=>{
     const old=document.getElementById('jraBridgeSpV12Badge');
-    if(old) old.textContent=`JRA取得: Bridge-SP mobile parser v1.3 / ${window.__narBridgeVersion||'Bridge待機'}`;
+    if(old) old.textContent=`JRA取得: Worker-plan + Bridge-SP parser v1.4 / ${window.__narBridgeVersion||'Bridge待機'}`;
   },700);
 
-  console.log('✅ JRA BRIDGE-SP MOBILE DOM PARSER FIX v1.3 loaded');
+  console.log('✅ JRA WORKER-PLAN + BRIDGE-SP FIX v1.4 loaded');
 })();
 
 </script>
