@@ -713,7 +713,7 @@ const betCloseTime=(race,settings)=>{
   const start=new Date(race.startTime).getTime();
   return start-closeBeforeMin(race,settings)*60*1000;
 };
-const decisionTime=(race,settings)=>betCloseTime(race,settings)-Number(settings.betTiming||3)*60*1000;
+const decisionTime=(race,settings)=>betCloseTime(race,settings)-Number(settings?.auto?3:(settings?.betTiming||3))*60*1000;
 const racePhase=(race,settings,now=Date.now())=>{
   const start=new Date(race.startTime).getTime();
   const close=betCloseTime(race,settings);
@@ -1758,6 +1758,7 @@ class CharacterEngine{
 class SimulationEngine{
   constructor(){
     this.settings={...DEFAULTS,...Store.get("settings",{})};
+    if(this.settings.auto)this.settings.betTiming=3;
     const ONEFILE_WORKER="https://houserace.nitta-katsuhiko.workers.dev";
     const oldWorker=/^https:\/\/(?:takuya|userace)\.nitta-katsuhiko\.workers\.dev\/?$/i;
     if(!this.settings.apiBase || oldWorker.test(String(this.settings.apiBase).trim())) this.settings.apiBase=ONEFILE_WORKER;
@@ -1769,6 +1770,7 @@ class SimulationEngine{
       Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);
     }
     this.characters=Store.get("characters",null)||CharacterEngine.create(this.settings);
+    if(this.settings.auto)this.ensureAutoPlayer();
     this.bets=Store.get("bets",[]);
     this.races=[];
     this.selected=null;this.lastOddsAt=null;this.filter="ALL";
@@ -1778,6 +1780,24 @@ class SimulationEngine{
     this.raceLoadWarning="";
     this.lastRaceReloadAt=0;
     this._reloadingRaces=false;
+  }
+  ensureAutoPlayer(){
+    let c=this.characters.find(x=>x.name==="AUTOプレイヤー");
+    if(!c){
+      c={
+        id:"auto-player",name:"AUTOプレイヤー",avatar:"🤖",
+        desc:"AUTO: 締切3分前 / EV1.10以上 / 全買い目100円",
+        ticket:"all",minEV:1.10,staking:"fixed100",risk:0,
+        bankroll:this.settings.initialBankroll,initial:this.settings.initialBankroll,
+        invested:0,returned:0,wins:0,bets:0,skips:0,
+        peak:this.settings.initialBankroll,maxDD:0,maxWin:0,dayInvested:0,
+        history:[this.settings.initialBankroll],
+        byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}}
+      };
+      this.characters.unshift(c);
+    }
+    c.desc="AUTO: 締切3分前 / EV1.10以上 / 全買い目100円";
+    return c;
   }
   save(){Store.set("settings",this.settings);Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
   async init(){
@@ -1947,32 +1967,89 @@ class SimulationEngine{
     }catch(e){this.setDataBadge("ERROR");this.log(`${race.title} オッズ取得失敗: ${e.message}`,"error")}
   }
   async lockAndBet(race){
-    try{await this.refreshOdds(race)}catch{}
-    ProbabilityEngine.model(race.horses);
-    race.horses.forEach(h=>{if(h.odds3==null)h.odds3=h.odds});
-    race.betLocked=true;race.status="BET LOCKED";
-    this.log(`${race.title} 発売締切${this.settings.betTiming}分前。最新オッズ固定・勝負判定開始！`);
-    for(const c of this.characters){
-      if(c.bankroll<=0){this.log(`${c.name} は BANKRUPT`);continue}
-      const picks=CharacterEngine.picks(c,race,this.settings);
-      if(!picks.length){c.skips++;this.log(`${c.name} は見送り`);continue}
-      let made=0;
-      if(c.ticket==="wide" && picks.length>=2){
-        const a=picks[0],b=picks[1], prob=clamp(a.modelProb*b.modelProb*3.0,.01,.45);
-        const odds=+(Math.max(1.5,(a.odds+b.odds)/2*.85)).toFixed(1);
-        const fake={...a,odds,modelProb:prob,ev:prob*odds,label:`${a.no}-${b.no}`};
-        made+=this.placeBet(c,race,fake,"ワイド");
-      }else if(c.ticket==="trio" && picks.length>=3){
-        const [a,b,d]=picks, prob=clamp(a.modelProb*b.modelProb*d.modelProb*8,.002,.18);
-        const odds=+(Math.max(5,(a.odds*b.odds*d.odds)**.58)).toFixed(1);
-        const fake={...a,odds,modelProb:prob,ev:prob*odds,label:`${a.no}-${b.no}-${d.no}`};
-        if(fake.ev>=c.minEV)made+=this.placeBet(c,race,fake,"三連複");
-      }else{
-        for(const h of picks)made+=this.placeBet(c,race,h,c.ticket==="place"?"複勝":"単勝");
+    if(race._autoBetting)return;
+    race._autoBetting=true;
+    try{
+      // AUTO DRIVE policy is fixed by request:
+      // exactly 3 minutes before betting close, buy EVERY all-ticket candidate
+      // whose decision EV is >= 1.10, 100 yen each.
+      this.settings.betTiming=3;
+
+      try{await this.refreshOdds(race)}catch{}
+      ProbabilityEngine.model(race.horses);
+      race.horses.forEach(h=>{if(h.odds3==null)h.odds3=h.odds});
+
+      const autoPlayer=this.ensureAutoPlayer();
+      let candidates=[];
+
+      if(window.__oddsBoard?.getAutoCandidates){
+        UI.autoStep=`${race.title} 全券種EV再取得`;
+        candidates=await window.__oddsBoard.getAutoCandidates(race,1.10,true);
       }
-      if(!made){c.skips++;this.log(`${c.name} は資金条件で見送り`)}
+
+      // If the all-ticket board has not initialized yet, do not fabricate odds.
+      if(!Array.isArray(candidates)){
+        candidates=[];
+      }
+
+      const qualified=candidates
+        .filter(x=>Number.isFinite(Number(x.ev))&&Number(x.ev)>=1.10)
+        .sort((a,b)=>Number(b.ev)-Number(a.ev));
+
+      race.betLocked=true;
+      race.status="BET LOCKED";
+
+      this.log(`${race.title} 発売締切3分前。全券種EV1.10以上を100円ずつ購入判定（候補 ${qualified.length}点）`);
+
+      let made=0;
+      for(const x of qualified){
+        if(autoPlayer.bankroll<100)break;
+
+        const sel=String(x.selection||"").trim();
+        if(!sel)continue;
+
+        // race/day caps are intentionally not applied here: "全部100円買う".
+        const stake=100;
+        autoPlayer.bankroll-=stake;
+        autoPlayer.invested+=stake;
+        autoPlayer.dayInvested+=stake;
+        autoPlayer.bets++;
+        autoPlayer.byOrg[race.org].inv+=stake;
+
+        const nums=sel.match(/\d+/g)?.map(Number)||[];
+        const bet={
+          id:crypto.randomUUID?.()||Math.random().toString(36),
+          date:race.date,raceId:race.id,org:race.org,track:race.track,race:race.no,
+          character:autoPlayer.name,
+          ticket:x.ticket,
+          selection:sel,
+          horseNo:(x.ticket==="単勝"||x.ticket==="複勝")?(nums[0]||null):null,
+          odds:Number(x.odds),
+          oddsLow:Number.isFinite(Number(x.oddsLow))?Number(x.oddsLow):Number(x.odds),
+          oddsHigh:Number.isFinite(Number(x.oddsHigh))?Number(x.oddsHigh):Number(x.odds),
+          modelProb:Number(x.modelProb),
+          marketProb:Number(x.marketProb||0),
+          ev:Number(x.ev),
+          stake,
+          return:0,profit:-stake,status:"OPEN",
+          autoPolicy:"EV>=1.10_ALL_100YEN",
+          autoDecisionMinutesBeforeClose:3
+        };
+        this.bets.push(bet);
+        made++;
+      }
+
+      if(!made){
+        autoPlayer.skips++;
+        this.log(`${race.title} AUTOプレイヤーはEV1.10以上なしで見送り`);
+      }else{
+        this.log(`${race.title} AUTOプレイヤー ${made}点 × 100円 = ${fmtY(made*100)}購入`);
+      }
+
+      this.save();
+    }finally{
+      race._autoBetting=false;
     }
-    this.save();
   }
   placeBet(c,race,h,ticket){
     let stake=CharacterEngine.stake(c,h,this.settings);
@@ -2000,29 +2077,53 @@ class SimulationEngine{
       // First validate every winning payout. Do not mutate balances until all are usable.
       for(const b of rbets){
         let hit=false,payoutValue=null,fallbackMult=null;
-        if(b.ticket==="単勝"){
-          hit=Number(b.horseNo)===Number(res.winner);
-          payoutValue=res.payouts?.win?.[String(b.horseNo)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
-        }else if(b.ticket==="複勝"){
-          hit=top3.includes(Number(b.horseNo));
-          payoutValue=res.payouts?.place?.[String(b.horseNo)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Math.max(1.1,Number(b.odds||0)*.35);
-        }else if(b.ticket==="ワイド"){
-          const nums=b.selection.split("-").map(Number);
-          hit=nums.every(n=>top3.includes(n));
-          payoutValue=res.payouts?.wide?.[keySorted(b.selection)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
-        }else if(b.ticket==="三連複"){
-          const nums=b.selection.split("-").map(Number).sort((a,b)=>a-b);
-          hit=nums.length===3 && nums.every(n=>top3.includes(n));
-          payoutValue=res.payouts?.trio?.[keySorted(b.selection)];
-          if(this.provider.kind==="demo" && payoutValue==null) fallbackMult=Number(b.odds)||null;
+        const ticket=String(b.ticket||"").replace(/^三連/,"3連");
+        const sel=String(b.selection||"").replace(/[－–—―→＞>]/g,"-").replace(/\s+/g,"");
+        const sorted=keySorted(sel);
+        const bucket={
+          "単勝":"win","複勝":"place","枠連":"frame","馬連":"quinella",
+          "ワイド":"wide","馬単":"exacta","3連複":"trio","3連単":"trifecta"
+        }[ticket]||"";
+        const key=(ticket==="単勝"||ticket==="複勝")
+          ? String(b.horseNo??sel)
+          : (ticket==="枠連"||ticket==="馬連"||ticket==="ワイド"||ticket==="3連複")
+            ? sorted
+            : sel;
+        payoutValue=bucket?res.payouts?.[bucket]?.[key]:null;
+        hit=payoutValue!=null;
+
+        // Demo mode may not publish all 8 payout buckets; use the locked odds only there.
+        if(this.provider.kind==="demo" && payoutValue==null){
+          if(ticket==="単勝"){
+            hit=Number(b.horseNo)===Number(res.winner);
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }else if(ticket==="複勝"){
+            hit=top3.includes(Number(b.horseNo));
+            if(hit)fallbackMult=Math.max(1.1,Number(b.odds||0)*.35);
+          }else if(ticket==="ワイド"){
+            const nums=sel.split("-").map(Number);
+            hit=nums.every(n=>top3.includes(n));
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }else if(ticket==="3連複"){
+            const nums=sel.split("-").map(Number).sort((a,b)=>a-b);
+            hit=nums.length===3&&nums.every(n=>top3.includes(n));
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }else if(ticket==="馬連"){
+            const nums=sel.split("-").map(Number).sort((a,b)=>a-b);
+            hit=nums.length===2&&nums[0]===Math.min(...top3.slice(0,2))&&nums[1]===Math.max(...top3.slice(0,2));
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }else if(ticket==="馬単"){
+            hit=sel===`${top3[0]}-${top3[1]}`;
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }else if(ticket==="3連単"){
+            hit=sel===`${top3[0]}-${top3[1]}-${top3[2]}`;
+            if(hit)fallbackMult=Number(b.odds)||null;
+          }
         }
 
         let mult=null;
         if(hit){
-          mult=payoutValue!=null?payoutMultiplier(payoutValue,sourceUnit,b.ticket==="単勝"?b.odds:null):fallbackMult;
+          mult=payoutValue!=null?payoutMultiplier(payoutValue,sourceUnit,b.odds):fallbackMult;
           if(!(Number(mult)>0)){
             throw new Error(`${b.ticket} ${b.selection} の的中払戻が未取得です。払戻確定まで再確認します`);
           }
@@ -2138,7 +2239,7 @@ const UI={
     }
     $("#raceTitle").textContent=`${r.org} ${r.title}`;
     $("#raceStatus").textContent=r.status;
-    $("#betStatus").textContent=r.betLocked?`締切${e.settings.betTiming}分前固定済`:"未判定";
+    $("#betStatus").textContent=r.betLocked?`締切${e.settings.auto?3:e.settings.betTiming}分前固定済`:"未判定";
     const closeAt=new Date(betCloseTime(r,e.settings));
     const decideAt=new Date(decisionTime(r,e.settings));
     $("#raceMeta").textContent=`発走 ${new Date(r.startTime).toLocaleTimeString("ja-JP")} / 締切 ${closeAt.toLocaleTimeString("ja-JP")} / 勝負判定 ${decideAt.toLocaleTimeString("ja-JP")} / ${r.horses?.length||0}頭`;
@@ -2280,8 +2381,12 @@ let engine=new SimulationEngine();
 
 $("#btnAuto").onclick=()=>{
   engine.settings.auto=!engine.settings.auto;
+  if(engine.settings.auto){
+    engine.settings.betTiming=3;
+    engine.ensureAutoPlayer();
+  }
   engine.save();
-  UI.autoStep=engine.settings.auto?"自動運転開始":"AUTO OFF";
+  UI.autoStep=engine.settings.auto?"AUTO: 締切3分前 / EV1.10以上 / 全て100円":"AUTO OFF";
   UI.renderAll(engine);
 };
 $("#btnSettings").onclick=()=>openSettings();
@@ -2291,7 +2396,7 @@ $("#filterJra").onclick=()=>setFilter("JRA");
 $("#filterNar").onclick=()=>setFilter("NAR");
 function setFilter(f){engine.filter=f;["filterAll","filterJra","filterNar"].forEach(id=>$("#"+id).classList.remove("active"));$("#filter"+(f==="ALL"?"All":f==="JRA"?"Jra":"Nar")).classList.add("active");UI.renderRaces(engine)}
 function openSettings(){
-  const s=engine.settings;$("#sMode").value=s.mode;$("#sBetTiming").value=s.betTiming;$("#sEvPositive").value=s.evPositive;$("#sEvStrong").value=s.evStrong;
+  const s=engine.settings;$("#sMode").value=s.mode;$("#sBetTiming").value=s.auto?3:s.betTiming;$("#sEvPositive").value=s.evPositive;$("#sEvStrong").value=s.evStrong;
   $("#sBankroll").value=s.initialBankroll;$("#sMaxRace").value=s.maxRace;$("#sMaxDay").value=s.maxDay;$("#sRefresh").value=s.refreshSec;
   $("#sJraClose").value=s.jraCloseBeforeMin??1;$("#sNarClose").value=s.narCloseBeforeMin??2;
   $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";
@@ -9111,7 +9216,61 @@ function startLiveOddsAutoV28(){
   setTimeout(()=>{refreshLiveOddsV28('startup').catch(()=>{})},1200);
 }
 
-window.__oddsBoard={onRace,render:renderOrLoad,cache,hook,refreshNow:refreshLiveOddsV28,autoMs:LIVE_ODDS_AUTO_MS_V28};
+async function getAutoCandidatesV37(r,minEv=1.10,force=true){
+  if(!r)return [];
+  currentRace=r;
+  const st=stateFor(r);
+  if(force){
+    // Snapshot all ticket types at the decision point.
+    await preloadAllNetkeiba(r,st,true);
+  }else{
+    await preloadAllNetkeiba(r,st,false);
+  }
+
+  if(!allOddsIsDemo())ensureModelFromWinRowsV26(r,st);
+  const pe=probabilityRef();
+  try{if(r?.horses?.length&&pe?.model)pe.model(r.horses)}catch(_){}
+
+  const out=[];
+  for(const type of TYPES){
+    let rows=(st.rows[type]||[]);
+    if(allOddsIsDemo()&&!raceId(r))rows=demoRows(r,type);
+    for(const x of enrich(rows,type,r)){
+      const ev=Number(x.evDecision);
+      if(!Number.isFinite(ev)||ev<Number(minEv))continue;
+      const ranged=(type==='複勝'||type==='ワイド');
+      const odds=ranged?Number(x.oddsLow):Number(x.oddsMid);
+      if(!(odds>=1))continue;
+      out.push({
+        ticket:type,
+        selection:String(x.selection||''),
+        odds,
+        oddsLow:Number(x.oddsLow),
+        oddsHigh:Number(x.oddsHigh),
+        modelProb:Number(x.prob),
+        ev,
+        rank:Number(x.rank)||0,
+        source:st.sourceByType?.[type]||st.source||''
+      });
+    }
+  }
+
+  // Unique ticket + selection, highest EV wins if duplicate rows exist.
+  const map=new Map();
+  for(const x of out){
+    const k=`${x.ticket}|${x.selection}`;
+    const prev=map.get(k);
+    if(!prev||x.ev>prev.ev)map.set(k,x);
+  }
+  return [...map.values()].sort((a,b)=>b.ev-a.ev);
+}
+
+window.__oddsBoard={
+  onRace,render:renderOrLoad,cache,hook,
+  refreshNow:refreshLiveOddsV28,
+  autoMs:LIVE_ODDS_AUTO_MS_V28,
+  getAutoCandidates:getAutoCandidatesV37
+};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
 console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
 })();
