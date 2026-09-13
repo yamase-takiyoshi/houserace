@@ -161,169 +161,211 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </style>
 </head>
 <body>
-<script>
-/* ============================================================================
-   FIXED37 ONE-FILE JRA/NAR BRIDGE PC-RESULT RECOVERY
-   - Existing application remains in this single HTML file.
-   - Every internal Bridge fetch is routed here first.
-   - JRA historical result pages prefer the residential Bridge; other traffic keeps Cloudflare-first.
-   - The native residential Bridge is retained as fallback.
-   - JRA result URLs are canonicalized to desktop result first; mobile/DB are only fallbacks.
-   ============================================================================ */
+<script id="oneFileBridge38">
+/* FIXED38: page-side client for the existing __narBridge Userscript protocol.
+   Native connection state is independent of the Worker transport. */
 (function(){
   'use strict';
-  if (window.__ONEFILE_BRIDGE35__) return;
-  window.__ONEFILE_BRIDGE35__ = true;
-
-  const DEFAULT_PROXY = 'https://houserace.nitta-katsuhiko.workers.dev';
-
-  function proxyBase35(){
-    try{
-      const x = String(localStorage.getItem('keibaNetkeibaProxyUrl') || '').trim();
-      if (x) return x.replace(/\/$/, '');
-    }catch(_){ }
-    return DEFAULT_PROXY;
-  }
-
-  function raceId35(url){
-    const s = String(url || '');
-    let m = s.match(/[?&]race_id=(20\d{10})/i);
-    if (m) return m[1];
-    m = s.match(/\/race\/(20\d{10})(?:\/|\?|$)/i);
-    return m ? m[1] : '';
-  }
-
-  function candidateUrls35(url){
-    const src = String(url || '').trim();
-    const out = [];
-    const push = u => { if (u && !out.includes(u)) out.push(u); };
-    const id = raceId35(src);
-    const lower = src.toLowerCase();
-    const isJra = /(^|\/)race(?:\.sp)?\.netkeiba\.com|db\.netkeiba\.com/.test(lower) && !/nar\./.test(lower);
-    const isResult = /race_result|\/race\/result\.html|db\.netkeiba\.com\/race\//i.test(src);
-
-    // FIXED37: for JRA historical results, canonical desktop result is always first.
-    // Do not internally fan out to every legacy endpoint here; the history loader
-    // owns the fallback order. This prevents the same bad Cloudflare response from
-    // being retried recursively for desktop/SP/DB aliases.
-    if (isJra && isResult && /^20\d{10}$/.test(id)) {
-      const pc = `https://race.netkeiba.com/race/result.html?race_id=${id}`;
-      push(pc);
-      if (src !== pc) push(src);
-      return out;
-    }
-    push(src);
-    return out;
-  }
-
-  function looksLikeBridgeWrapper35(raw, ct){
-    if (!raw) return null;
-    if (!String(ct || '').toLowerCase().includes('json') && !/^\s*\{/.test(raw)) return null;
-    try{
-      const j = JSON.parse(raw);
-      if (j && (j.needBridge || j.error || j.bridge)) return j;
-    }catch(_){ }
-    return null;
-  }
-
-  async function proxyFetch35(target){
-    const base = proxyBase35();
-    if (!base) throw new Error('Cloudflare Proxy未設定');
-    const ep = `${base}/?url=${encodeURIComponent(target)}&bridge=auto&ts=${Date.now()}`;
-    const res = await fetch(ep, {
-      method:'GET',
-      cache:'no-store',
-      headers:{'Accept':'text/html,application/json,text/plain,*/*'}
-    });
-    const text = await res.text();
-    const ct = String(res.headers.get('content-type') || '');
-    const wrap = looksLikeBridgeWrapper35(text, ct);
-
-    // Raw HTML or genuine upstream JSON is accepted. A needBridge/error envelope is not.
-    if (res.ok && text.length >= 10 && !wrap) {
-      return {
-        status: res.status,
-        text,
-        finalUrl: res.headers.get('x-thekeiba-final-url') || res.headers.get('x-upstream-url') || target,
-        charset: /charset=([^;]+)/i.exec(ct)?.[1] || '',
-        via: 'cloudflare-onefile35'
-      };
-    }
-    const detail = wrap?.message || wrap?.error || `Cloudflare HTTP ${res.status}`;
-    const e = new Error(String(detail));
-    e.wrapper = wrap;
-    throw e;
-  }
-
-  async function nativeFetch35(target){
-    const nativeFn = window.__narBridgeFetch;
-    if (typeof nativeFn !== 'function') throw new Error('住宅IP Bridge未接続');
-    const r = await nativeFn(target);
-    return {
-      status: Number(r?.status || 0),
-      text: String(r?.text || ''),
-      finalUrl: String(r?.finalUrl || target),
-      charset: String(r?.charset || ''),
-      error: r?.error || r?.message || '',
-      via: 'residential-bridge'
-    };
-  }
-
-  window.__oneFileBridgeFetch = async function(url){
-    const urls = candidateUrls35(url);
-    let last = {status:0,text:'',finalUrl:String(url||''),error:'取得失敗'};
-    const src = String(url || '');
-    const id = raceId35(src);
-    const preferResidential = /^20\d{10}$/.test(id) &&
-      /race\/result\.html|pid=race_result|db\.netkeiba\.com\/race\//i.test(src) &&
-      !/nar\./i.test(src);
-
-    async function tryNative(){
-      for (const target of urls){
-        try{
-          const r = await nativeFetch35(target);
-          if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
-          last = r;
-        }catch(e){
-          last = {status:0,text:'',finalUrl:target,error:`Bridge: ${e?.message || e}`};
-        }
-      }
-      return null;
-    }
-
-    async function tryProxy(){
-      for (const target of urls){
-        try{
-          const r = await proxyFetch35(target);
-          if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
-          last = r;
-        }catch(e){
-          last = {status:0,text:'',finalUrl:target,error:`Proxy: ${e?.message || e}`};
-        }
-      }
-      return null;
-    }
-
-    // FIXED37: historical JRA result HTML is the case where Cloudflare can return
-    // a technically-200 but unusable/blocked page. Prefer the user's residential
-    // Userscript Bridge so the parser sees the actual desktop result page.
-    if (preferResidential){
-      const n = await tryNative();
-      if (n) return n;
-      const p = await tryProxy();
-      if (p) return p;
-      return last;
-    }
-
-    // Other traffic keeps the previous Cloudflare-first behavior.
-    const p = await tryProxy();
-    if (p) return p;
-    const n = await tryNative();
-    if (n) return n;
-    return last;
+  if(window.__ONEFILE_BRIDGE38__) return;
+  window.__ONEFILE_BRIDGE38__=true;
+  const DEFAULT_PROXY='https://houserace.nitta-katsuhiko.workers.dev';
+  const pending=new Map(), inFlight=new Map(), readyWaiters=new Set();
+  const origin=location.origin==='null'?'*':location.origin;
+  const session=`hr38_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  let seq=0, probe=null, nextProbeAt=0;
+  const diag=window.__houseraceBridgeStatus={
+    connected:false,version:'',route:'',status:null,error:'',state:'checking'
   };
 
-  console.log('✅ FIXED37 ONE-FILE Bridge recovery loaded');
+  function renderStatus(){
+    const el=document.getElementById('bridgeConnection38');
+    if(!el) return;
+    const version=diag.version?` ${diag.version}`:'';
+    el.textContent=diag.connected?`Bridge接続済み${version}`:
+      diag.state==='checking'?'Bridge確認中…':'Bridge未検出';
+    el.className='badge '+(diag.connected?'live':'cached');
+    const detail=document.getElementById('bridgeDetail38');
+    if(detail) detail.textContent=diag.error || (diag.route?
+      `最終取得: ${diag.route} / HTTP ${diag.status}`:
+      diag.connected?'既存Bridgeと通信できます。':'未検出の場合は、このサイトでBridge拡張機能を有効にして「再確認」を押してください。');
+  }
+  function markReady(data={}){
+    diag.connected=true;diag.state='ready';
+    nextProbeAt=0;
+    const version=data.version||data.bridgeVersion||window.__narBridgeVersion;
+    if(version){diag.version=String(version).slice(0,80);window.__narBridgeVersion=diag.version;}
+    window.__NAR_BRIDGE_READY__=true;
+    window.__bridgeAbsent=false;
+    for(const resolve of [...readyWaiters]) resolve(true);
+    renderStatus();
+  }
+  function directClient(){
+    if(typeof window.__narBridgeDirect==='function') return window.__narBridgeDirect;
+    const fn=window.__narBridgeFetch;
+    return typeof fn==='function' && fn!==messageFetch?fn:null;
+  }
+  function nativeReady(){
+    if(directClient()) markReady();
+    return diag.connected;
+  }
+  function announce(){
+    for(const type of ['ping','hello'])
+      window.postMessage({__narBridge:type,source:'TheKeiba',ts:Date.now()},origin);
+  }
+  function waitForNative(force=false){
+    if(nativeReady()) return Promise.resolve(true);
+    if(probe) return probe;
+    if(!force && Date.now()<nextProbeAt) return Promise.resolve(false);
+    diag.state='checking';renderStatus();
+    probe=new Promise(resolve=>{
+      let done=false;
+      const finish=ready=>{
+        if(done) return;
+        done=true;clearTimeout(timer);readyWaiters.delete(finish);
+        if(!ready){nextProbeAt=Date.now()+10000;diag.state='absent';window.__bridgeAbsent=true;renderStatus();}
+        resolve(ready);
+      };
+      const timer=setTimeout(()=>finish(nativeReady()),1500);
+      readyWaiters.add(finish);
+      announce();
+    }).finally(()=>{probe=null;});
+    return probe;
+  }
+  window.addEventListener('message',ev=>{
+    if(ev.source!==window) return;
+    if(ev.origin!==location.origin && !(location.origin==='null'&&ev.origin==='null')) return;
+    const d=ev.data;
+    if(!d||typeof d!=='object') return;
+    if(['ready','pong','status'].includes(d.__narBridge)){
+      if(d.ready===false||d.ok===false) return;
+      markReady(d);return;
+    }
+    if(d.__narBridge==='response' && pending.has(d.id)){
+      markReady(d);
+      pending.get(d.id)(d);
+    }
+  });
+  function allowedTarget(value){
+    const u=new URL(String(value));
+    if(u.protocol!=='https:'||u.username||u.password||
+      !['netkeiba.com','jra.go.jp','keiba.go.jp'].some(h=>u.hostname===h||u.hostname.endsWith('.'+h)))
+      throw new Error('取得対象URLが競馬データの許可範囲外です');
+    return u.href;
+  }
+  function messageFetch(url,options={}){
+    const target=allowedTarget(url);
+    const requested=Number(options.timeout);
+    const timeout=Number.isFinite(requested)&&requested>0?Math.min(requested,30000):18000;
+    return new Promise((resolve,reject)=>{
+      const id=`${session}_${++seq}`;
+      const timer=setTimeout(()=>{
+        pending.delete(id);
+        reject(new Error('Bridge応答タイムアウト'));
+      },timeout);
+      pending.set(id,d=>{
+        clearTimeout(timer);pending.delete(id);
+        if(!Number(d.status)) reject(new Error(String(d.error||d.message||'Bridge取得エラー')));
+        else resolve(d);
+      });
+      try{window.postMessage({__narBridge:'request',id,url:target,source:'TheKeiba',ts:Date.now()},origin);}
+      catch(e){clearTimeout(timer);pending.delete(id);reject(e);}
+    });
+  }
+  if(typeof window.__narBridgeFetch!=='function') window.__narBridgeFetch=messageFetch;
+  window.__residentialBridgeReady38=nativeReady;
+  window.__theKeibaBridgeHandshake=announce;
+
+  function proxyBase(){
+    try{
+      const settings=JSON.parse(localStorage.getItem('keibaSimClose3.settings')||'{}');
+      return String(settings.netkeibaProxyUrl||localStorage.getItem('keibaNetkeibaProxyUrl')||
+        settings.apiBase||DEFAULT_PROXY).trim().replace(/\/+$/,'');
+    }catch(_){return DEFAULT_PROXY;}
+  }
+  async function bounded(task,timeout,label){
+    let timer;
+    try{return await Promise.race([
+      Promise.resolve().then(task),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label}タイムアウト`)),timeout);})
+    ]);}finally{clearTimeout(timer);}
+  }
+  function validateResponse(r){
+    if(!(r.status>=200&&r.status<300)){
+      const e=new Error(`${r.via} HTTP ${r.status||0}${r.error?`: ${r.error}`:''}`);
+      e.status=r.status;throw e;
+    }
+    if(r.error) throw new Error(`${r.via}: ${r.error}`);
+    let envelope=null;
+    if(/^\s*\{/.test(r.text)) try{envelope=JSON.parse(r.text);}catch(_){}
+    if(envelope && (envelope.needBridge||envelope.ok===false||envelope.error||String(envelope.status).toUpperCase()==='NG'))
+      throw new Error(`${r.via}: ${envelope.message||envelope.error||'Bridge取得が必要です'}`);
+    const heading=/<(?:title|h1)\b[^>]*>([\s\S]*?)<\/(?:title|h1)>/i.exec(r.text)?.[1]||'';
+    if(/access denied|forbidden|just a moment|service unavailable|アクセス.{0,8}(?:制限|拒否)|エラーページ/i.test(heading))
+      throw new Error(`${r.via}: HTTP ${r.status} / アクセス制限ページ`);
+    if(r.text.trim().length<10) throw new Error(`${r.via}: HTTP ${r.status} / 本文不足`);
+    return r;
+  }
+  async function nativeFetch(target){
+    if(!await waitForNative()) throw new Error('住宅IP Bridge未接続（拡張機能の応答なし）');
+    const fn=directClient()||messageFetch;
+    return bounded(async()=>{
+      const raw=await fn.call(window,target,{timeout:18000});
+      const text=typeof raw==='string'?raw:typeof raw?.text==='function'?await raw.text():String(raw?.text??raw?.responseText??'');
+      const r={status:typeof raw==='string'?200:Number(raw?.status||0),text,
+        finalUrl:String(raw?.finalUrl||raw?.url||target),charset:String(raw?.charset||''),
+        error:String(raw?.error||''),via:'住宅IP Bridge'};
+      return validateResponse(r);
+    },19500,'住宅IP Bridge');
+  }
+  async function proxyFetch(target){
+    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),15000);
+    try{
+      const res=await fetch(`${proxyBase()}/?url=${encodeURIComponent(target)}&bridge=auto&ts=${Date.now()}`,
+        {method:'GET',cache:'no-store',signal:ctrl.signal,headers:{Accept:'text/html,application/json,text/plain,*/*'}});
+      const ct=res.headers.get('content-type')||'';
+      return validateResponse({status:res.status,text:await res.text(),
+        finalUrl:res.headers.get('x-thekeiba-final-url')||res.headers.get('x-upstream-url')||target,
+        charset:/charset=([^;]+)/i.exec(ct)?.[1]||'',via:'Cloudflare'});
+    }catch(e){if(e?.name==='AbortError') throw new Error('Cloudflareタイムアウト');throw e;}
+    finally{clearTimeout(timer);}
+  }
+  function record(r){
+    diag.route=r.via||'';diag.status=r.status;diag.error=r.error||'';renderStatus();return r;
+  }
+  window.__residentialBridgeFetch38=async url=>{
+    try{return record(await nativeFetch(allowedTarget(url)));}
+    catch(e){diag.error=String(e?.message||e);renderStatus();throw e;}
+  };
+  window.__oneFileBridgeFetch=async url=>{
+    const target=allowedTarget(url);
+    if(inFlight.has(target)) return inFlight.get(target);
+    const task=(async()=>{
+      const u=new URL(target);
+      const historical=['race.netkeiba.com','race.sp.netkeiba.com','db.netkeiba.com'].includes(u.hostname)&&
+        (/\/race\/result\.html|\/race\/\d{12}\//.test(u.pathname)||u.searchParams.get('pid')==='race_result');
+      const attempts=historical?[nativeFetch,proxyFetch]:[proxyFetch,nativeFetch];
+      const errors=[];let lastStatus=0;
+      for(const fetcher of attempts){
+        try{return record(await fetcher(target));}
+        catch(e){errors.push(String(e?.message||e));lastStatus=Number(e?.status||0);}
+      }
+      return record({status:lastStatus>=400?lastStatus:0,text:'',finalUrl:target,via:'取得失敗',error:errors.join(' / ')});
+    })();
+    inFlight.set(target,task);
+    try{return await task;}finally{inFlight.delete(target);}
+  };
+  function initStatus(){
+    renderStatus();
+    const button=document.getElementById('bridgeRetry38');
+    if(button) button.onclick=async()=>{
+      diag.error='';diag.connected=false;window.__NAR_BRIDGE_READY__=false;
+      await waitForNative(true);renderStatus();
+    };
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',initStatus,{once:true});
+  else initStatus();
+  waitForNative().catch(e=>{diag.error=String(e?.message||e);renderStatus();});
+  [200,700,1800].forEach(ms=>setTimeout(()=>{if(!nativeReady())announce();},ms));
 })();
 </script>
 
@@ -343,9 +385,15 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-<b>FIXED37 一枚物 / JRA Desktop Result + 住宅IP Bridge</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED38 一枚物 / Bridge接続修正版</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
-<div class="notice" style="border-color:#4f8f73;background:#0c261b"><b>FIXED37 JRA RECOVERY</b> — 過去JRA結果は <code>race.netkeiba.com/race/result.html</code> を住宅IP Bridge最優先で取得し、PC結果表（「倍」表記なし）を直接解析します。SP/DBはフォールバックのみ。Bridge失敗時はWorker <code>/history</code> を再試行し、両方失敗時だけ停止します。</div>
+<div class="notice" style="border-color:#4f8f73;background:#0c261b"><b>FIXED38</b> — Bridge接続を確認し、取得先のエラーを分けて表示します。JRA結果はPC・スマートフォン・DBの順で取得を試します。
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">
+    <span id="bridgeConnection38" class="badge cached" role="status">Bridge確認中…</span>
+    <button id="bridgeRetry38" type="button">Bridge再確認</button>
+    <span id="bridgeDetail38" class="muted"></span>
+  </div>
+</div>
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
@@ -1170,28 +1218,11 @@ function liveParseNetkeibaRaceList(html,date,org){
   return [...map.values()];
 }
 async function liveHtmlViaProxyOrBridge(url){
-  const st=Store.get("settings",{});
-  const proxy=String(st.netkeibaProxyUrl||"").trim().replace(/\/$/,"");
-  const errors=[];
-  if(proxy){
-    try{
-      const ep=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
-      const r=await fetch(ep,{cache:"no-store"});
-      const text=await r.text();
-      const ct=String(r.headers.get("content-type")||"").toLowerCase();
-      if(r.ok && text.length>=300 && !ct.includes("application/json")) return {text,via:"cloudflare-proxy"};
-      errors.push(`proxy HTTP ${r.status}`);
-    }catch(e){errors.push(`proxy ${e?.message||e}`)}
-  }
-  if(typeof window.__oneFileBridgeFetch==="function" && window.__bridgeAbsent!==true){
-    try{
-      const r=await window.__oneFileBridgeFetch(url);
-      const status=Number(r?.status||0),text=String(r?.text||"");
-      if(status>=200&&status<400&&text.length>=300) return {text,via:`Bridge ${window.__narBridgeVersion||""}`.trim()};
-      errors.push(`Bridge HTTP ${status||0}`);
-    }catch(e){errors.push(`Bridge ${e?.message||e}`)}
-  }
-  throw new Error(errors.join(" / ")||"Cloudflare Proxy / 住宅IP Bridge が利用できません");
+  const r=await window.__oneFileBridgeFetch(url);
+  const text=String(r?.text||'');
+  if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
+  if(text.length<300||/^\s*[{[]/.test(text)) throw new Error(`${r.via}: HTML本文を取得できません`);
+  return {text,via:r.via};
 }
 async function liveResolveRaceDetail(r,date){
   if(r.startTime) return r;
@@ -1449,39 +1480,9 @@ function liveParseNetkeibaJsonV21(raw){
   return j;
 }
 async function liveJsonViaProxyOrBridgeV21(url){
-  const st=Store.get('settings',{});
-  const proxy=String(st.netkeibaProxyUrl||'').trim().replace(/\/$/,'');
-  const errors=[];
-  if(proxy){
-    try{
-      const ep=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
-      const r=await fetch(ep,{cache:'no-store',headers:{'Accept':'application/json,text/plain,*/*'}});
-      const text=await r.text();
-      if(r.ok){
-        try{return {json:liveParseNetkeibaJsonV21(text),text,via:'cloudflare-proxy',url};}catch(e){
-          let wrap=null; try{wrap=JSON.parse(text)}catch(_){}
-          const target=wrap?.bridge?.candidates?.[0]?.url||url;
-          if(wrap?.needBridge && typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true){
-            const rr=await window.__oneFileBridgeFetch(target);
-            const status=Number(rr?.status||0),raw=String(rr?.text||'');
-            if(status>=200&&status<400) return {json:liveParseNetkeibaJsonV21(raw),text:raw,via:'cloudflare→Bridge',url:String(rr?.finalUrl||target)};
-          }
-          errors.push(`proxy JSON: ${e?.message||e}`);
-        }
-      }else errors.push(`proxy HTTP ${r.status}`);
-    }catch(e){errors.push(`proxy ${e?.message||e}`)}
-  }
-  if(typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true){
-    try{
-      const r=await window.__oneFileBridgeFetch(url);
-      const status=Number(r?.status||0),text=String(r?.text||'');
-      if(status>=200&&status<400&&text.length>=10){
-        return {json:liveParseNetkeibaJsonV21(text),text,via:`Bridge ${window.__narBridgeVersion||''}`.trim(),url:String(r?.finalUrl||url)};
-      }
-      errors.push(`Bridge HTTP ${status||0}`);
-    }catch(e){errors.push(`Bridge ${e?.message||e}`)}
-  }
-  throw new Error(errors.join(' / ')||'netkeiba JSON APIへ接続できません');
+  const r=await window.__oneFileBridgeFetch(url);
+  if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
+  return {json:liveParseNetkeibaJsonV21(r.text),text:r.text,via:r.via,url:r.finalUrl||url};
 }
 /* ============================================================
    FIXED22 JRA HORSE NAME RECOVERY
@@ -1930,7 +1931,7 @@ class SimulationEngine{
     if(!this.settings.apiBase || oldWorker.test(String(this.settings.apiBase).trim())) this.settings.apiBase=ONEFILE_WORKER;
     if(!this.settings.netkeibaProxyUrl || oldWorker.test(String(this.settings.netkeibaProxyUrl).trim())) this.settings.netkeibaProxyUrl=ONEFILE_WORKER;
     Store.set("settings",this.settings);
-    localStorage.setItem("keibaNetkeibaProxyUrl",ONEFILE_WORKER);
+    localStorage.setItem("keibaNetkeibaProxyUrl",this.settings.netkeibaProxyUrl);
     if(Store.get("liveStateSchemaVersion",0)!==LIVE_STATE_SCHEMA_VERSION){
       ["characters","bets","runtime"].forEach(k=>Store.del(k));
       Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);
@@ -4153,7 +4154,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   };
 
   function bridgeReady(){
-    return typeof window.__oneFileBridgeFetch==="function" && window.__bridgeAbsent!==true;
+    return typeof window.__oneFileBridgeFetch==="function";
   }
 
   async function bridgeGet(url){
@@ -4447,7 +4448,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   };
 
   function bridgeReady12(){
-    return typeof window.__oneFileBridgeFetch === "function" && window.__bridgeAbsent !== true;
+    return typeof window.__oneFileBridgeFetch === "function";
   }
 
   async function bridgeGet12(url){
@@ -4741,7 +4742,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   const flat13 = s => clean13(s).replace(/[\r\n]+/g," ").replace(/\s+/g," ").trim();
 
   function bridgeReady13(){
-    return typeof window.__oneFileBridgeFetch === "function" && window.__bridgeAbsent !== true;
+    return typeof window.__oneFileBridgeFetch === "function";
   }
 
   async function bridgeGet13(url){
@@ -4753,7 +4754,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       throw new Error(`Bridge HTTP ${status || 0}${r?.error ? `: ${r.error}` : ""}`);
     }
     if (text.length < 1000) throw new Error(`本文不足 ${text.length}字`);
-    return { text, status, finalUrl:String(r?.finalUrl || url), charset:String(r?.charset || "") };
+    return { text, status, finalUrl:String(r?.finalUrl || url), charset:String(r?.charset || ""), via:r.via };
   }
 
   async function bridgeFirst13(urls, validator){
@@ -5092,7 +5093,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
         const r=await bridgeGet13(url);
         try{
           p=parseSpResult13(r.text,id,date);
-          used={url,via:r.finalUrl||url,layout:p.layout||'unknown'};
+          used={url,via:r.via||'取得経路不明',layout:p.layout||'unknown'};
           break;
         }catch(pe){
           errors.push(`${new URL(url).hostname}:解析 ${pe?.message||pe}`);
@@ -5110,7 +5111,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       id,date,org:'JRA',track,no,
       title:p.title,startTime,oddsTiming:'FINAL',horses:p.horses,
       result:{ winner:p.top3[0], top3:p.top3, finish:p.finish, payouts:p.payouts },
-      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / ${used?.layout||'result'} / desktop-first FIXED37`,
+      source:`${used?.via||'取得経路不明'} / ${used?.layout||'result'} / FIXED38`,
       historySafe:true
     };
   }
@@ -5201,7 +5202,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
     races.sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')||a.track.localeCompare(b.track)||a.no-b.no);
     if(!races.length){
-      throw new Error(`Bridge 200だが解析0件 / ${errors.slice(0,4).map(x=>x.raceId+':'+x.error).join(' / ')}`);
+      throw new Error(`JRA取得・解析0件 / ${errors.slice(0,4).map(x=>x.raceId+':'+x.error).join(' / ')}`);
     }
     return {
       ok:true,date,org:'JRA',oddsTiming:'FINAL',races,count:races.length,
@@ -5465,7 +5466,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   invalidateOldNarCache();
 
   function bridgeReady(){
-    return typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true;
+    return typeof window.__oneFileBridgeFetch==='function';
   }
 
   async function bridgeGet(url){
@@ -5937,7 +5938,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   }catch(e){console.warn(e)}
 
   function bridgeReady(){
-    return typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true;
+    return typeof window.__oneFileBridgeFetch==='function';
   }
   async function bridgeGet(url){
     if(!bridgeReady()) throw new Error('Bridge v1.7.x が未接続です');
@@ -6253,7 +6254,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
   }catch(e){console.warn(e)}
 
-  function bridgeReady(){ return typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true; }
+  function bridgeReady(){ return typeof window.__oneFileBridgeFetch==='function'; }
   async function bridgeGet(url){
     if(!bridgeReady()) throw new Error('Bridge v1.7.x 未接続');
     const r=await window.__oneFileBridgeFetch(url);
@@ -6652,7 +6653,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   function cacheSave23(x){try{localStorage.setItem(CACHE_KEY,JSON.stringify(x))}catch(_){}}
   const placeCache23=cacheLoad23();
 
-  function bridgeReady23(){return typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true}
+  function bridgeReady23(){return typeof window.__oneFileBridgeFetch==='function'}
   async function bridgeGet23(url){
     if(!bridgeReady23()) throw new Error('Bridge v1.7.x 未接続');
     const r=await window.__oneFileBridgeFetch(url);
@@ -7564,7 +7565,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     return map;
   }
   async function bridgeGet26(url){
-    if(typeof window.__oneFileBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('Bridge未接続');
+    if(typeof window.__oneFileBridgeFetch!=='function')throw new Error('Bridge未接続');
     const r=await window.__oneFileBridgeFetch(url),status=Number(r?.status||0),text=String(r?.text||'');
     if(!(status>=200&&status<400))throw new Error(`HTTP ${status||0}`);if(text.length<300)throw new Error(`HTML ${text.length}字`);return {text,url:String(r?.finalUrl||url)};
   }
@@ -8475,46 +8476,13 @@ function cloudflareOddsProxyUrl(){
   return '';
 }
 async function residentialBridgeFetch(url){
-  if(typeof window.__oneFileBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('住宅IP Bridge未接続');
-  const r=await window.__oneFileBridgeFetch(url);
-  const status=Number(r?.status||0),text=String(r?.text||'');
-  if(!(status>=200&&status<400)||text.length<10){
-    const detail=String(r?.error||r?.message||'').trim();
-    throw new Error(`Bridge HTTP ${status||0}${detail?`: ${detail}`:''}`);
-  }
-  return {text,url:String(r?.finalUrl||url),via:'residential-bridge'};
+  const r=await window.__residentialBridgeFetch38(url);
+  return {text:r.text,url:r.finalUrl||url,via:r.via};
 }
 async function bridgeFetch(url){
-  const proxy=cloudflareOddsProxyUrl();
-  if(proxy){
-    const endpoint=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
-    try{
-      const res=await fetch(endpoint,{method:'GET',cache:'no-store',headers:{'Accept':'text/html,application/json;q=0.9,*/*;q=0.8'}});
-      const raw=await res.text();
-      const ct=String(res.headers.get('content-type')||'').toLowerCase();
-      if(res.ok && raw.length>=300 && !ct.includes('application/json')){
-        return {text:raw,url:res.headers.get('x-thekeiba-final-url')||url,via:'cloudflare'};
-      }
-      let data=null;
-      if(ct.includes('application/json')||/^\s*\{/.test(raw))try{data=JSON.parse(raw)}catch(_){}
-      const target=data?.bridge?.candidates?.[0]?.url||url;
-      if(data?.needBridge && typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true){
-        const rr=await residentialBridgeFetch(target);
-        rr.via='cloudflare→residential-bridge';
-        return rr;
-      }
-      throw new Error(data?.error||`Cloudflare HTTP ${res.status}`);
-    }catch(e){
-      // Cloudflare Workerが未デプロイ/一時障害でも、既存Bridgeがあれば継続できる。
-      if(typeof window.__oneFileBridgeFetch==='function' && window.__bridgeAbsent!==true){
-        const rr=await residentialBridgeFetch(url);
-        rr.via='cloudflare-fallback→residential-bridge';
-        return rr;
-      }
-      throw e;
-    }
-  }
-  return await residentialBridgeFetch(url);
+  const r=await window.__oneFileBridgeFetch(url);
+  if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
+  return {text:r.text,url:r.finalUrl||url,via:r.via};
 }
 function baseUrls(r,id,type){
   const nar=String(r?.org||'').toUpperCase()==='NAR';
