@@ -8661,7 +8661,7 @@ async function loadOverview(r,st,force=false){
     return;
   }
   st.loading=true; st.error=''; st.errorByType['単勝']=''; st.errorByType['複勝']='';
-  setStatus('netkeiba JSON API 単勝・複勝取得中…');
+  setStatus(String(r?.org||'').toUpperCase()==='NAR'?'NAR公式 単勝・複勝取得中…':'netkeiba JSON API 単勝・複勝取得中…');
   const errs=[];
   try{
     const org=String(r?.org||'').toUpperCase();
@@ -8682,29 +8682,66 @@ async function loadOverview(r,st,force=false){
         errs.push('JSON API: 単勝・複勝0件');
       }catch(e){errs.push(`JSON API: ${e?.message||e}`)}
     }else if(org==='NAR'){
-      // FIXED32: netkeiba NAR HTMLより先に公式 keiba.go.jp を使う。
-      try{
-        const x=await fetchNarOfficial32(r,st.id,'単勝',st);
-        if(haveWin()||havePlace()){
-          st.source=`[NAR公式] ${x.url}`;st.at=new Date();st.loaded=true;
-          st.sourceByType['単勝']=st.source;st.sourceByType['複勝']=st.source;
-          st.atByType['単勝']=st.at;st.atByType['複勝']=st.at;
-          if(!havePlace())st.errorByType['複勝']='NAR公式ページから複勝レンジ未解析';
-          if(haveWin())await syncMainHorsesFromWinRowsV23(r,st);
-          return;
+      // FIXED36:
+      // 単勝と複勝は地方競馬公式SP版で別ページ。
+      // 単勝が取れただけでreturnすると複勝が永久に0件になるため、必ず個別取得する。
+      let officialWin=null, officialPlace=null;
+
+      if(!haveWin()){
+        try{
+          officialWin=await fetchNarOfficial32(r,st.id,'単勝',st);
+          if(haveWin()){
+            const at=new Date();
+            const src=`[NAR公式 単勝] ${officialWin.url}`;
+            st.source=src; st.at=at; st.loaded=true;
+            st.sourceByType['単勝']=src; st.atByType['単勝']=at;
+            st.errorByType['単勝']='';
+            await syncMainHorsesFromWinRowsV23(r,st);
+          }
+        }catch(e){
+          errs.push(`NAR公式 単勝: ${e?.message||e}`);
         }
-      }catch(e){errs.push(`NAR公式: ${e?.message||e}`)}
-      // netkeibaには単勝だけの軽量NAR JSON APIがあるため第2候補にする。
-      try{
-        const x=await fetchNarWinApi32(st.id,st);
-        if(haveWin()){
-          st.source=`[NAR JSON API] ${x.url}`;st.at=new Date();st.loaded=true;
-          st.sourceByType['単勝']=st.source;st.atByType['単勝']=st.at;
-          await syncMainHorsesFromWinRowsV23(r,st);
-          // 複勝はこのAPIだけでは保証できないため、下のHTMLへ続行する。
-          if(havePlace())return;
+      }
+
+      if(!havePlace()){
+        try{
+          officialPlace=await fetchNarOfficial32(r,st.id,'複勝',st);
+          if(havePlace()){
+            const at=new Date();
+            const src=`[NAR公式 複勝] ${officialPlace.url}`;
+            st.source=src; st.at=at; st.loaded=true;
+            st.sourceByType['複勝']=src; st.atByType['複勝']=at;
+            st.errorByType['複勝']='';
+          }
+        }catch(e){
+          errs.push(`NAR公式 複勝: ${e?.message||e}`);
         }
-      }catch(e){errs.push(`NAR JSON API: ${e?.message||e}`)}
+      }
+
+      if(haveWin()&&havePlace()){
+        return;
+      }
+
+      // 単勝だけ不足している場合のみNAR JSON APIを補助利用する。
+      if(!haveWin()){
+        try{
+          const x=await fetchNarWinApi32(st.id,st);
+          if(haveWin()){
+            const at=new Date();
+            const src=`[NAR JSON API] ${x.url}`;
+            st.source=src; st.at=at; st.loaded=true;
+            st.sourceByType['単勝']=src; st.atByType['単勝']=at;
+            st.errorByType['単勝']='';
+            await syncMainHorsesFromWinRowsV23(r,st);
+          }
+        }catch(e){
+          errs.push(`NAR JSON API: ${e?.message||e}`);
+        }
+      }
+
+      if(haveWin()&&havePlace()){
+        return;
+      }
     }
 
     // 最終フォールバック: netkeiba HTML。
