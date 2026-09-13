@@ -7932,8 +7932,8 @@ function ensureUI(){
   const div=document.createElement('div'); div.id='ticketOddsModule';
   div.innerHTML=`<div class="ticket-odds-head"><b>🎫 全券種オッズ</b><span class="ticket-odds-status" id="ticketOddsStatus">レース選択待ち</span></div>
   <div class="ticket-tabs" id="ticketOddsTabs">${TYPES.map(t=>`<button type="button" data-ticket="${t}">${t}</button>`).join('')}</div>
-  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順（下限優先）</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">複勝・ワイドはEV下限 / 代表 / 上限。判定はEV下限基準</span></div>
-  <div class="ticket-odds-scroll"><table><thead><tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV下限</th><th>EV代表</th><th>EV上限</th><th>評価</th></tr></thead><tbody id="ticketOddsBody"></tbody></table></div>`;
+  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順（下限優先）</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">複勝・ワイドのみEV下限 / 代表 / 上限。その他は単一EV。判定は複勝・ワイドのみEV下限基準</span></div>
+  <div class="ticket-odds-scroll"><table><thead id="ticketOddsHead"><tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV</th><th>評価</th></tr></thead><tbody id="ticketOddsBody"></tbody></table></div>`;
   body.appendChild(div);
   document.getElementById('ticketOddsTabs').addEventListener('click',e=>{const b=e.target.closest('button[data-ticket]');if(!b)return;active=b.dataset.ticket;updateTabs();renderOrLoad(true)});
   document.getElementById('ticketOddsSort').addEventListener('change',e=>{sortMode=e.target.value;renderRows()});
@@ -8362,11 +8362,19 @@ function renderRows(){
   else if(sortMode==='odds')rows.sort((a,b)=>(a.odds||1e9)-(b.odds||1e9));
   else rows.sort((a,b)=>(a.rank||9999)-(b.rank||9999));
   const typeErr=st.errorByType?.[active]||'';
+  const ranged=(active==='複勝'||active==='ワイド');
+  const head=document.getElementById('ticketOddsHead');
+  if(head){
+    head.innerHTML=ranged
+      ? '<tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV下限</th><th>EV代表</th><th>EV上限</th><th>評価</th></tr>'
+      : '<tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV</th><th>評価</th></tr>';
+  }
+  const evSortOption=document.querySelector('#ticketOddsSort option[value="ev"]');
+  if(evSortOption)evSortOption.textContent=ranged?'EV順（下限優先）':'EV順';
   if(!rows.length){
     const missing=(!isDemo&&!rid)?'LIVEレースの公式race_idを解決できません（架空オッズには切替えません）':`${active}オッズはまだ取得できていません`;
-    tbody.innerHTML=`<tr><td colspan="8" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="${ranged?8:6}" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
   }else{
-    const ranged=(active==='複勝'||active==='ワイド');
     tbody.innerHTML=rows.slice(0,300).map((x,i)=>{
       const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--';
       const lo=Number.isFinite(x.evLow)?x.evLow.toFixed(2):'--';
@@ -8375,7 +8383,10 @@ function renderRows(){
       const score=ranged?x.evLow:x.evMid;
       const lab=ranged?(Number.isFinite(x.evLow)||Number.isFinite(x.evHigh)?evalRangeLabel(x.evLow,x.evHigh):'--'):(Number.isFinite(x.evMid)?evalLabel(x.evMid):'--');
       const cl=Number.isFinite(score)?(score>=(ranged?1.10:1.20)?'odds-ev-strong':score>=(ranged?1.00:1.05)?'odds-ev-good':''):'';
-      return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${lo}</td><td>${mid}</td><td>${hi}</td><td>${lab}</td></tr>`;
+      if(ranged){
+        return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${lo}</td><td>${mid}</td><td>${hi}</td><td>${lab}</td></tr>`;
+      }
+      return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${mid}</td><td>${lab}</td></tr>`;
     }).join('');
   }
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
