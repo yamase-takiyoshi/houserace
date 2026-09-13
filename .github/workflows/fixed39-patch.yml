@@ -1,4 +1,4 @@
-# second push: workflow already exists on main, so this triggers the one-shot patch
+# FIXED39 one-shot source patcher
 name: Apply FIXED39 NAR bridge routing
 
 on:
@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch index.html
+      - name: Patch and verify index.html
         shell: python
         run: |
           from pathlib import Path
@@ -25,25 +25,24 @@ jobs:
           p = Path('index.html')
           s = p.read_text(encoding='utf-8')
 
-          old_bridge = r'''async function bridgeFetch(url){
+          old_bridge = '''async function bridgeFetch(url){
             const r=await window.__oneFileBridgeFetch(url);
             if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
             return {text:r.text,url:r.finalUrl||url,via:r.via};
           }'''
 
-          new_bridge = r'''function fixed39NativeFirstUrl(url){
+          new_bridge = '''function fixed39NativeFirstUrl(url){
             try{
               const u=new URL(String(url));
               const h=u.hostname.toLowerCase();
-              const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\/odds(?:\/|$)/i.test(u.pathname) && !/api_get_nar_odds\.html$/i.test(u.pathname);
-              const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\/KeibaWeb\/TodayRaceInfo\//i.test(u.pathname);
+              const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\\/odds(?:\\/|$)/i.test(u.pathname) && !/api_get_nar_odds\\.html$/i.test(u.pathname);
+              const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\\/KeibaWeb\\/TodayRaceInfo\\//i.test(u.pathname);
               return narNetkeiba||narOfficial;
             }catch(_){return false}
           }
           async function bridgeFetch(url){
             const target=String(url);
-            // FIXED39: NAR odds are fetched through the residential Bridge first.
-            // Cloudflare remains a fallback, not the first hop.
+            // FIXED39: NAR odds -> residential Bridge first; Cloudflare is fallback.
             if(fixed39NativeFirstUrl(target)){
               try{
                 const rr=await residentialBridgeFetch(target);
@@ -61,30 +60,17 @@ jobs:
               raise SystemExit('FIXED39 abort: bridgeFetch anchor not found')
           s = s.replace(old_bridge, new_bridge, 1)
 
-          old_nar = r'''  if(nar){
-            // FIXED30: nar.sp の旧 /odds/odds.html は 404 になる。
-            // 3連複/3連単は現在のモバイル「オッズ一覧」に人気順表が載るため、
-            // type=b7/b8 の旧個別URLではなく overview を最優先にする。
-            const overview=[
-              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
-              `https://nar.sp.netkeiba.com/odds/?race_id=${id}`
-            ];
-            if(code==='b7'||code==='b8') return [
-              ...overview,
-              `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-              `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
-            ];
-            return [
-              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-              `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`,
-              `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-              `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
-            ];
-          }'''
+          fn = s.find('function baseUrls(r,id,type){')
+          if fn < 0:
+              raise SystemExit('FIXED39 abort: baseUrls function not found')
+          nar_start = s.find('  if(nar){', fn)
+          jra_start = s.find('  return [\n    // FIXED20:', nar_start)
+          if nar_start < 0 or jra_start < 0 or jra_start <= nar_start:
+              raise SystemExit(f'FIXED39 abort: baseUrls boundaries invalid fn={fn} nar={nar_start} jra={jra_start}')
 
-          new_nar = r'''  if(nar){
-            // FIXED39: desktop NAR netkeiba first. Mobile overview is only a fallback.
-            // TYPE_CODE is already correct (b1/b3/b4/b5/b6/b7/b8); do not collapse ticket types.
+          new_nar = '''  if(nar){
+            // FIXED39: PC版NAR netkeibaを券種別に最優先。mobileは最後のfallback。
+            // TYPE_CODEは既存の正しい b1/b3/b4/b5/b6/b7/b8 をそのまま使う。
             const desktopTyped=[
               `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
               `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
@@ -102,30 +88,29 @@ jobs:
               ...mobileTyped
             ];
             return [...desktopTyped,...mobileTyped];
-          }'''
+          }
+'''
+          s = s[:nar_start] + new_nar + s[jra_start:]
 
-          if old_nar not in s:
-              raise SystemExit('FIXED39 abort: NAR baseUrls anchor not found')
-          s = s.replace(old_nar, new_nar, 1)
-
-          # Visible release marker only; keep the existing FIXED38 bridge protocol name intact.
           marker = '<!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->'
           if marker in s and 'FIXED39 NAR RESIDENTIAL-FIRST' not in s:
-              s = s.replace(marker, '<!-- FIXED39 NAR RESIDENTIAL-FIRST + DESKTOP NETKEIBA FIRST / 2026-09-14 -->\n' + marker, 1)
+              s = s.replace(marker, '<!-- FIXED39 NAR RESIDENTIAL-FIRST + PC NETKEIBA FIRST / 2026-09-14 -->\n' + marker, 1)
 
-          p.write_text(s, encoding='utf-8')
-
-          # Static guards: prevent accidental ticket-code regression.
           required = [
-              "'単勝':'b1'", "'複勝':'b1'", "'ワイド':'b5'", "'馬単':'b6'",
-              "'3連複':'b7'", "'3連単':'b8'", 'fixed39NativeFirstUrl',
-              'desktop NAR netkeiba first'
+              "'単勝':'b1'", "'複勝':'b1'", "'枠連':'b3'", "'馬連':'b4'",
+              "'ワイド':'b5'", "'馬単':'b6'", "'3連複':'b7'", "'3連単':'b8'",
+              'fixed39NativeFirstUrl', 'PC版NAR netkeibaを券種別に最優先',
+              'https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}'
           ]
           missing = [x for x in required if x not in s]
           if missing:
-              raise SystemExit('FIXED39 static guard failed: ' + ', '.join(missing))
+              raise SystemExit('FIXED39 guard failed: ' + ', '.join(missing))
 
-          print('FIXED39 patch OK:', len(s), 'chars')
+          if s.find('https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', s.find('function baseUrls')) > s.find('https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', s.find('function baseUrls')):
+              raise SystemExit('FIXED39 guard failed: desktop URL is not first')
+
+          p.write_text(s, encoding='utf-8')
+          print('FIXED39 patch verified:', len(s), 'chars')
 
       - name: Commit FIXED39 and remove one-shot workflow
         shell: bash
@@ -134,5 +119,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html .github/workflows/fixed39-patch.yml
-          git commit -m "FIXED39: NAR residential bridge and desktop odds first"
+          git commit -m "FIXED39: NAR residential bridge and PC odds first"
           git push origin HEAD:main
