@@ -1,0 +1,137 @@
+name: Apply FIXED39 NAR bridge routing
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fixed39-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch index.html
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+
+          old_bridge = r'''async function bridgeFetch(url){
+            const r=await window.__oneFileBridgeFetch(url);
+            if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
+            return {text:r.text,url:r.finalUrl||url,via:r.via};
+          }'''
+
+          new_bridge = r'''function fixed39NativeFirstUrl(url){
+            try{
+              const u=new URL(String(url));
+              const h=u.hostname.toLowerCase();
+              const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\/odds(?:\/|$)/i.test(u.pathname) && !/api_get_nar_odds\.html$/i.test(u.pathname);
+              const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\/KeibaWeb\/TodayRaceInfo\//i.test(u.pathname);
+              return narNetkeiba||narOfficial;
+            }catch(_){return false}
+          }
+          async function bridgeFetch(url){
+            const target=String(url);
+            // FIXED39: NAR odds are fetched through the residential Bridge first.
+            // Cloudflare remains a fallback, not the first hop.
+            if(fixed39NativeFirstUrl(target)){
+              try{
+                const rr=await residentialBridgeFetch(target);
+                if(rr?.text && String(rr.text).trim().length>=20)return rr;
+              }catch(e){
+                console.warn('[FIXED39] residential-first failed; fallback normal route',target,e);
+              }
+            }
+            const r=await window.__oneFileBridgeFetch(target);
+            if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
+            return {text:r.text,url:r.finalUrl||target,via:r.via};
+          }'''
+
+          if old_bridge not in s:
+              raise SystemExit('FIXED39 abort: bridgeFetch anchor not found')
+          s = s.replace(old_bridge, new_bridge, 1)
+
+          old_nar = r'''  if(nar){
+            // FIXED30: nar.sp の旧 /odds/odds.html は 404 になる。
+            // 3連複/3連単は現在のモバイル「オッズ一覧」に人気順表が載るため、
+            // type=b7/b8 の旧個別URLではなく overview を最優先にする。
+            const overview=[
+              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
+              `https://nar.sp.netkeiba.com/odds/?race_id=${id}`
+            ];
+            if(code==='b7'||code==='b8') return [
+              ...overview,
+              `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+              `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+            ];
+            return [
+              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+              `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`,
+              `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+              `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+            ];
+          }'''
+
+          new_nar = r'''  if(nar){
+            // FIXED39: desktop NAR netkeiba first. Mobile overview is only a fallback.
+            // TYPE_CODE is already correct (b1/b3/b4/b5/b6/b7/b8); do not collapse ticket types.
+            const desktopTyped=[
+              `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+              `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+            ];
+            const mobileTyped=[
+              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+              `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`
+            ];
+            if(code==='b7'||code==='b8') return [
+              ...desktopTyped,
+              `https://nar.netkeiba.com/odds/index.html?race_id=${id}`,
+              `https://nar.netkeiba.com/odds/?race_id=${id}`,
+              `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
+              `https://nar.sp.netkeiba.com/odds/?race_id=${id}`,
+              ...mobileTyped
+            ];
+            return [...desktopTyped,...mobileTyped];
+          }'''
+
+          if old_nar not in s:
+              raise SystemExit('FIXED39 abort: NAR baseUrls anchor not found')
+          s = s.replace(old_nar, new_nar, 1)
+
+          # Visible release marker only; keep the existing FIXED38 bridge protocol name intact.
+          marker = '<!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->'
+          if marker in s and 'FIXED39 NAR RESIDENTIAL-FIRST' not in s:
+              s = s.replace(marker, '<!-- FIXED39 NAR RESIDENTIAL-FIRST + DESKTOP NETKEIBA FIRST / 2026-09-14 -->\n' + marker, 1)
+
+          p.write_text(s, encoding='utf-8')
+
+          # Static guards: prevent accidental ticket-code regression.
+          required = [
+              "'単勝':'b1'", "'複勝':'b1'", "'ワイド':'b5'", "'馬単':'b6'",
+              "'3連複':'b7'", "'3連単':'b8'", 'fixed39NativeFirstUrl',
+              'desktop NAR netkeiba first'
+          ]
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit('FIXED39 static guard failed: ' + ', '.join(missing))
+
+          print('FIXED39 patch OK:', len(s), 'chars')
+
+      - name: Commit FIXED39 and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/fixed39-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html .github/workflows/fixed39-patch.yml
+          git commit -m "FIXED39: NAR residential bridge and desktop odds first"
+          git push origin HEAD:main
