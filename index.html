@@ -11450,5 +11450,331 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
 })();
 </script>
 
+
+<script>
+/* =========================================================
+   FIXED53 — NO-BET DIAGNOSTICS + FINAL-ODDS BLIND + EV THRESHOLD SCAN
+   2026-09-14
+   - Makes FINAL_ODDS_VIRTUAL explicit as FINAL-ODDS BLIND.
+   - Re-simulates AUTO player with the selected timing mode respected.
+   - Selection is physically result-blind; settlement reads result only after picks lock.
+   - Adds NO BET funnel/reason diagnostics and an EV-threshold sensitivity scan.
+   - Adds AUTO bets to the v2.6 audit/validation layer so AUTO is ranked consistently.
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED53_DIAG_EVSCAN__)return;
+  window.__FIXED53_DIAG_EVSCAN__=true;
+
+  const AUTO='AUTOプレイヤー';
+  const MODE_FINAL='FINAL_RESEARCH';
+  const MODE_PRE='PRE_RACE_VALIDATION';
+  const MODE_BLIND='FINAL_ODDS_VIRTUAL';
+  const CUTOFF_MS=180000;
+  const THRESHOLDS=[1.00,1.02,1.05,1.10,1.15,1.20,1.30];
+  const TYPES=[
+    {type:'単勝',bucket:'win',aliases:['win','単勝']},
+    {type:'複勝',bucket:'place',aliases:['place','複勝'],ranged:true},
+    {type:'ワイド',bucket:'wide',aliases:['wide','ワイド'],ranged:true},
+    {type:'馬連',bucket:'quinella',aliases:['quinella','馬連']},
+    {type:'馬単',bucket:'exacta',aliases:['exacta','馬単']},
+    {type:'3連複',bucket:'trio',aliases:['trio','3連複','三連複']},
+    {type:'3連単',bucket:'trifecta',aliases:['trifecta','3連単','三連単']}
+  ];
+  const n=v=>Number(v);
+  const finite=v=>Number.isFinite(Number(v));
+  const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const iso=()=>new Date().toISOString();
+
+  function raceId(r){
+    for(const v of [r?.id,r?.raceId,r?.race_id,r?.url,r?.sourceUrl,r?.resultUrl]){
+      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);if(m)return m[1];
+    }
+    const d=String(r?.date||'').replace(/-/g,''),org=String(r?.org||'UNK').toUpperCase(),tr=String(r?.track||'TRACK').replace(/[\s　]+/g,''),no=Number(r?.no||0);
+    return `${d||'DATE'}-${org}-${tr}-${String(no||0).padStart(2,'0')}`;
+  }
+  function cleanSel(type,sel){
+    const xs=String(sel??'').match(/\d+/g)?.map(Number)||[];
+    if(type==='単勝'||type==='複勝')return xs.length?String(xs[0]):'';
+    if(type==='3連複')return xs.slice(0,3).sort((a,b)=>a-b).join('-');
+    if(type==='馬連'||type==='ワイド')return xs.slice(0,2).sort((a,b)=>a-b).join('-');
+    if(type==='馬単')return xs.slice(0,2).join('-');
+    if(type==='3連単')return xs.slice(0,3).join('-');
+    return String(sel??'');
+  }
+  function normalizeRows(src,type){
+    const out=[];
+    const push=(sel,obj)=>{
+      if(obj==null)return;
+      const o=typeof obj==='object'?obj:{odds:obj};
+      const key=cleanSel(type,o.selection??o.sel??o.combo??o.key??o.number??o.no??sel);
+      const low=n(o.oddsLow??o.odds_low??o.low??o.minOdds??o.min_odds);
+      const high=n(o.oddsHigh??o.odds_high??o.high??o.maxOdds??o.max_odds);
+      const mid=n(o.odds??o.oddsMid??o.odds_mid??o.price??o.value??obj);
+      const odds=finite(low)&&low>=1?low:(finite(mid)&&mid>=1?mid:(finite(high)&&high>=1?high:NaN));
+      if(key&&odds>=1)out.push({selection:key,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
+    };
+    if(Array.isArray(src))src.forEach((x,i)=>{if(x&&typeof x==='object')push(i+1,x)});
+    else if(src&&typeof src==='object')Object.entries(src).forEach(([k,v])=>push(k,v));
+    return out;
+  }
+  function marketRows(race,meta){
+    if(meta.type==='単勝')return (race?.horses||[]).filter(h=>n(h?.odds)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.odds),oddsLow:n(h.odds),oddsHigh:n(h.odds)}));
+    if(meta.type==='複勝'){
+      const rows=(race?.horses||[]).filter(h=>n(h?.placeOddsLow)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.placeOddsLow),oddsLow:n(h.placeOddsLow),oddsHigh:n(h.placeOddsHigh??h.placeOddsLow)}));
+      if(rows.length)return rows;
+    }
+    const boxes=[race?.ticketOdds,race?.ticket_odds,race?.oddsByType,race?.odds_by_type,race?.marketOdds,race?.market_odds,race?.markets,race?.finalOddsByType,race?.final_odds_by_type];
+    for(const box of boxes){
+      if(!box||typeof box!=='object')continue;
+      for(const key of [meta.type,...meta.aliases]){const rows=normalizeRows(box[key],meta.type);if(rows.length)return rows}
+    }
+    return [];
+  }
+  function modelHorses(horses){
+    const hs=(horses||[]).filter(h=>n(h?.odds)>1).map(h=>({...h,no:Number(h.no),odds:Number(h.odds)})).filter(h=>Number.isFinite(h.no)&&h.no>0);
+    if(!hs.length)return hs;
+    const raws=hs.map(h=>1/Math.max(1.01,h.odds)),sum=raws.reduce((a,b)=>a+b,0);
+    hs.forEach((h,i)=>h.marketProb=raws[i]/sum);
+    const rank=[...hs].sort((a,b)=>a.odds-b.odds||a.no-b.no);rank.forEach((h,i)=>{h.pop=i+1});
+    const weights=hs.map(h=>{const rankBoost=Math.max(-.08,.12-(h.pop-1)*.012),det=((h.no*37)%17-8)/100;return Math.max(.0001,h.marketProb*(1+rankBoost+det*.10))});
+    const total=weights.reduce((a,b)=>a+b,0);
+    hs.forEach((h,i)=>{h.modelProb=weights[i]/total;h.fairOdds=1/h.modelProb;h.ev=h.modelProb*h.odds;h.edge=h.modelProb-h.marketProb;h.valueRatio=h.modelProb/h.marketProb;h.oddsEdge=h.odds/h.fairOdds});
+    return hs;
+  }
+  function probabilityCache(race){
+    const hs=race.horses||[],win=new Map(),place=new Map(),wide=new Map(),quinella=new Map(),exacta=new Map(),trio=new Map(),trifecta=new Map();
+    for(const h of hs){const no=Number(h.no),p=clamp(n(h.modelProb)||0,0,.999999);win.set(String(no),p);place.set(String(no),0)}
+    const add=(m,k,v)=>m.set(k,(m.get(k)||0)+v);
+    for(let i=0;i<hs.length;i++)for(let j=0;j<hs.length;j++)if(i!==j){
+      const a=hs[i],b=hs[j],pa=win.get(String(a.no))||0,pb=win.get(String(b.no))||0;
+      const p2=pa*(pb/Math.max(1e-9,1-pa));
+      add(exacta,`${a.no}-${b.no}`,p2);add(quinella,[a.no,b.no].sort((x,y)=>x-y).join('-'),p2);
+      for(let k=0;k<hs.length;k++)if(k!==i&&k!==j){
+        const c=hs[k],pc=win.get(String(c.no))||0;
+        const p3=p2*(pc/Math.max(1e-9,1-pa-pb));
+        if(!(p3>0&&Number.isFinite(p3)))continue;
+        add(trifecta,`${a.no}-${b.no}-${c.no}`,p3);
+        add(trio,[a.no,b.no,c.no].sort((x,y)=>x-y).join('-'),p3);
+        add(place,String(a.no),p3);add(place,String(b.no),p3);add(place,String(c.no),p3);
+        add(wide,[a.no,b.no].sort((x,y)=>x-y).join('-'),p3);
+        add(wide,[a.no,c.no].sort((x,y)=>x-y).join('-'),p3);
+        add(wide,[b.no,c.no].sort((x,y)=>x-y).join('-'),p3);
+      }
+    }
+    for(const m of [place,wide,trio])for(const [k,v] of m)m.set(k,Math.min(1,v));
+    return {win,place,wide,quinella,exacta,trio,trifecta};
+  }
+  function probFor(meta,sel,cache){return n(cache?.[meta.bucket]?.get(cleanSel(meta.type,sel)))}
+
+  function snapshotAt(s){return s?.marketTime??s?.market_time??s?.at??s?.timestamp??s?.time??s?.fetchedAt??null}
+  function snapshotHorses(s){
+    const x=s?.horses??s?.odds??s?.entries??s?.data;
+    if(Array.isArray(x))return x;
+    if(x&&typeof x==='object')return Object.entries(x).map(([no,v])=>typeof v==='object'?{no,...v}:{no,odds:v});
+    return [];
+  }
+  function findPreSnapshot(race){
+    const start=Date.parse(String(race?.startTime||race?.start_time||'')),cutoff=Number.isFinite(start)?start-CUTOFF_MS:NaN,arr=[];
+    for(const k of ['oddsSnapshots','odds_snapshots','oddsHistory','odds_history','marketSnapshots','market_snapshots','preRaceSnapshots','pre_race_snapshots'])if(Array.isArray(race?.[k]))arr.push(...race[k]);
+    for(const k of ['preRaceSnapshot','pre_race_snapshot'])if(race?.[k]&&typeof race[k]==='object')arr.push(race[k]);
+    const cand=[];
+    for(const s of arr){const at=snapshotAt(s),t=Date.parse(String(at||'')),hs=snapshotHorses(s);if(!hs.length||!Number.isFinite(t))continue;if(Number.isFinite(cutoff)?t<=cutoff:(s?.verified===true||s?.preRaceVerified===true||s?.pre_race_verified===true))cand.push({at,t,hs,s})}
+    cand.sort((a,b)=>b.t-a.t);if(cand[0])return cand[0];
+    const at=race?.preRaceTimestamp||race?.pre_race_timestamp||race?.preRaceOddsAt||null,t=Date.parse(String(at||''));
+    if(Number.isFinite(t)&&(Number.isFinite(cutoff)?t<=cutoff:true)){
+      const hs=(race.horses||[]).map(h=>({no:h.no,odds:h.preRaceOdds??h.pre_race_odds,placeOddsLow:h.preRacePlaceOddsLow??h.pre_race_place_odds_low,placeOddsHigh:h.preRacePlaceOddsHigh??h.pre_race_place_odds_high}));
+      if(hs.some(h=>n(h.odds)>1))return {at,t,hs,s:{verified:true}};
+    }
+    return null;
+  }
+  function preHorses(original,snap){
+    if(!snap)return null;const map=new Map((snap.hs||[]).map(x=>[Number(x.no),x]));
+    const hs=original.map(h=>{const s=map.get(Number(h.no)),o=n(s?.odds??s?.winOdds??s?.win_odds),pl=n(s?.placeOddsLow??s?.place_odds_low??s?.placeLow),ph=n(s?.placeOddsHigh??s?.place_odds_high??s?.placeHigh??pl);return {...h,odds:o>1?o:NaN,placeOddsLow:pl>=1?pl:undefined,placeOddsHigh:ph>=pl?ph:undefined}});
+    return hs.length&&!hs.some(h=>!(n(h.odds)>1))?hs:null;
+  }
+  function finalHorses(original,rid){
+    const hs=original.map(h=>({...h}));if(!hs.length||hs.some(h=>!(n(h.odds)>1)))return null;
+    try{const cache=JSON.parse(localStorage.getItem('btPlaceOddsCacheV23')||'{}')||{},rec=cache[rid];for(const h of hs){const p=rec?.map?.[Number(h.no)];if(p){h.placeOddsLow=n(p.low);h.placeOddsHigh=n(p.high??p.low)}}}catch(_){ }
+    return hs;
+  }
+  function stripFinalMarkets(r){
+    const d={...r};
+    for(const k of ['ticketOdds','ticket_odds','oddsByType','odds_by_type','marketOdds','market_odds','markets','finalOddsByType','final_odds_by_type'])delete d[k];
+    return d;
+  }
+  function currentMode(result){const v=result?.validationMode||document.getElementById('btValidationMode26')?.value||localStorage.getItem('btValidationMode26')||MODE_FINAL;return [MODE_PRE,MODE_BLIND].includes(v)?v:MODE_FINAL}
+  function prepare(blocks,mode){
+    const out=[];let total=0,rejected=0,preUsed=0,finalUsed=0;
+    for(const b of blocks||[]){
+      let valid=[];
+      try{valid=typeof btValidateBlock==='function'?(btValidateBlock(b).valid||[]):(b?.races||[])}catch(_){valid=b?.races||[]}
+      for(const rr of valid){
+        total++;const raw={...rr,date:rr.date||b.date,org:rr.org||b.org},rid=raceId(raw),orig=(raw.horses||[]).map(h=>({...h}));
+        let hs=null,source='',marketTime=null,allowFinalMarkets=false;
+        if(mode===MODE_PRE){const s=findPreSnapshot(raw);hs=preHorses(orig,s);if(hs){source='PRE_RACE_3M_OR_EARLIER';marketTime=s.at;preUsed++}}
+        else if(mode===MODE_BLIND){const s=findPreSnapshot(raw);hs=preHorses(orig,s);if(hs){source='PRE_RACE_3M_OR_EARLIER';marketTime=s.at;preUsed++}else{hs=finalHorses(orig,rid);if(hs){source='FINAL_ODDS_RESULT_BLIND';allowFinalMarkets=true;finalUsed++}}}
+        else{hs=finalHorses(orig,rid);if(hs){source='FINAL_RESEARCH';allowFinalMarkets=true;finalUsed++}}
+        if(!hs){rejected++;continue}
+        let decision=allowFinalMarkets?{...raw}:{...stripFinalMarkets(raw)};
+        decision.horses=hs;decision.result=null;decision._source53=source;decision._marketTime53=marketTime;decision._rid53=rid;
+        out.push({raw,decision,rid,source,marketTime,allowFinalMarkets});
+      }
+    }
+    out.sort((a,b)=>(a.raw.date||'').localeCompare(b.raw.date||'')||(a.raw.startTime||'').localeCompare(b.raw.startTime||'')||Number(a.raw.no||0)-Number(b.raw.no||0));
+    return {races:out,diag:{total,eligible:out.length,rejected,preUsed,finalUsed,mode}};
+  }
+
+  function analyze(prep){
+    const byType=Object.fromEntries(TYPES.map(t=>[t.type,{marketRaces:0,marketRows:0,probabilityRows:0,ev110Rows:0,locked110:0,scored110:0}]));
+    const races=[];let candidates=0,probRows=0,ev110=0,locked=0,scored=0,noBet=0,noMarket=0,noProbability=0,below=0,unsettled=0;
+    for(const item of prep.races){
+      const hs=modelHorses(item.decision.horses),decision={...item.decision,horses:hs,result:null},cache=probabilityCache(decision),best=[];
+      let raceMarkets=0,raceProb=0,raceEv110=0;
+      for(const meta of TYPES){
+        const rows=marketRows(decision,meta);if(rows.length){byType[meta.type].marketRaces++;raceMarkets+=rows.length;byType[meta.type].marketRows+=rows.length}
+        const vals=[];
+        for(const row of rows){const p=probFor(meta,row.selection,cache),ev=p*n(row.odds);if(!(p>0&&Number.isFinite(p)&&Number.isFinite(ev)))continue;const x={...row,p,ev,meta};vals.push(x);candidates++;probRows++;raceProb++;byType[meta.type].probabilityRows++;if(ev>=1.10){ev110++;raceEv110++;byType[meta.type].ev110Rows++}}
+        vals.sort((a,b)=>b.ev-a.ev||b.p-a.p||a.odds-b.odds||String(a.selection).localeCompare(String(b.selection)));
+        if(vals[0])best.push(vals[0]);
+      }
+      const picks110=best.filter(x=>x.ev>=1.10);locked+=picks110.length;picks110.forEach(x=>byType[x.meta.type].locked110++);
+      if(!picks110.length){noBet++;if(!raceMarkets)noMarket++;else if(!raceProb)noProbability++;else below++}
+      const settled110=[];
+      for(const p of picks110){const s=settlePreview(item.raw,p);if(s.scored){settled110.push({p,s});scored++;byType[p.meta.type].scored110++}else unsettled++}
+      races.push({...item,decision,best,picks110,settled110,counts:{market:raceMarkets,prob:raceProb,ev110:raceEv110}});
+    }
+    return {prep,races,summary:{races:prep.races.length,candidates,probRows,ev110,locked,scored,noBet,noMarket,noProbability,below,unsettled},byType};
+  }
+  function settlePreview(raw,pick){
+    const bucket=raw?.result?.payouts?.[pick.meta.bucket];
+    if(!bucket||typeof bucket!=='object'||!Object.keys(bucket).length)return {scored:false,reason:'NO_SETTLEMENT_BUCKET'};
+    const key=cleanSel(pick.meta.type,pick.selection),rawPayout=bucket[key],hit=rawPayout!=null;
+    let mult=0;
+    if(hit){try{mult=typeof btPayoutMultiplier==='function'?Number(btPayoutMultiplier(rawPayout)):Number(rawPayout)}catch(_){mult=Number(rawPayout)}if(!Number.isFinite(mult)||mult<0)return {scored:false,reason:'BAD_SETTLEMENT'}}
+    const refund=hit?Math.round(100*mult):0;
+    return {scored:true,key,hit,rawPayout,mult,refund,profit:refund-100};
+  }
+  function rawYen(x,mult){
+    if(x&&typeof x==='object')for(const k of ['refundYen','refund_yen','payoutYen','payout_yen','yen','amount'])if(Number.isFinite(Number(x[k])))return Number(x[k]);
+    return Number.isFinite(Number(mult))?Math.round(Number(mult)*100):null;
+  }
+  function simulate(analysis,threshold,makeAudit=false){
+    const initial=Math.max(100,Number(window.engine?.settings?.initialBankroll||100000));let bank=initial,peak=initial,maxDD=0,invested=0,returned=0,hits=0,bets=0,decisions=0,unsettled=0,noBetRaces=0,maxWin=0;
+    const byOrg={JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}},audit=[],history=[initial],raceStates=[];
+    for(const r of analysis.races){
+      const picks=r.best.filter(x=>x.ev>=threshold);decisions+=picks.length;if(!picks.length)noBetRaces++;
+      const before=bank,scored=[];
+      for(const p of picks){const s=settlePreview(r.raw,p);if(s.scored)scored.push({p,s});else unsettled++}
+      const raceStake=scored.length*100,raceRet=scored.reduce((z,x)=>z+x.s.refund,0);bank=bank-raceStake+raceRet;invested+=raceStake;returned+=raceRet;bets+=scored.length;hits+=scored.filter(x=>x.s.hit).length;
+      const org=String(r.raw?.org||'').toUpperCase();if(byOrg[org]){byOrg[org].inv+=raceStake;byOrg[org].ret+=raceRet}
+      peak=Math.max(peak,bank);maxDD=Math.max(maxDD,(peak-bank)/Math.max(1,peak));history.push(bank);raceStates.push({rid:r.rid,bankroll:bank,profit:bank-initial});
+      if(makeAudit&&scored.length){
+        const after=bank,rate=before>0?raceStake/before:0;
+        for(const {p,s} of scored){
+          maxWin=Math.max(maxWin,s.profit);
+          audit.push({rid:r.rid,raw:r.raw,source:r.source,marketTime:r.marketTime,p,s,before,after,raceStake,rate,threshold});
+        }
+      }
+    }
+    return {threshold,initial,bankroll:bank,profit:bank-initial,invested,returned,roi:invested?returned/invested*100:0,hits,bets,hitRate:bets?hits/bets:0,decisions,unsettled,noBetRaces,maxDD,maxWin,byOrg,history,raceStates,audit};
+  }
+  function ece(rows){if(!rows.length)return 0;let z=0;for(let i=0;i<10;i++){const lo=i/10,hi=(i+1)/10,a=rows.filter(r=>r.probability>=lo&&(i===9?r.probability<=hi:r.probability<hi));if(!a.length)continue;const p=a.reduce((s,r)=>s+r.probability,0)/a.length,o=a.reduce((s,r)=>s+r.outcome,0)/a.length;z+=a.length/rows.length*Math.abs(p-o)}return z}
+  function autoValidation(sim,bets53){
+    const cnt=bets53.length,inv=sim.invested,ret=sim.returned,profit=ret-inv,roi=inv?ret/inv*100:0,hit=cnt?bets53.reduce((s,r)=>s+r.outcome,0)/cnt:0,brier=cnt?bets53.reduce((s,r)=>s+(r.probability-r.outcome)**2,0)/cnt:1,ec=ece(bets53);
+    const accuracyScore=100*(1-Math.min(1,brier/.25)),calibrationScore=100*(1-Math.min(1,ec/.25)),roiScore=clamp(50+(roi-100),0,100),ddScore=100*(1-Math.min(1,sim.maxDD/.50)),sampleScore=Math.min(100,Math.sqrt(cnt/500)*100),composite=.30*accuracyScore+.25*calibrationScore+.20*roiScore+.15*ddScore+.10*sampleScore;
+    return {n:cnt,uniquePredictionEvents:cnt,invested:inv,returned:ret,profit,roi,hitRate:hit,brier,ece:ec,maxDD:sim.maxDD,growth:(sim.bankroll-sim.initial)/sim.initial,maxBetRate:bets53.reduce((m,r)=>Math.max(m,n(r.actual_investment_rate)||0),0),maxRaceRate:bets53.reduce((m,r)=>Math.max(m,n(r.race_investment_rate)||0),0),ruinProbability500:null,accuracyScore,calibrationScore,roiScore,ddScore,sampleScore,composite};
+  }
+  function autoBets(sim,result,mode){
+    const runId=result?.runMeta?.run_id||`fixed53-${Date.now()}`,probVersion=result?.validation?.modelCalibration?.probability_model_version||'WIN-PROB-v2.6';
+    return sim.audit.map((a,i)=>{
+      const {raw,p,s}=a,org=String(raw?.org||'').toUpperCase(),finalDecision=a.source!=='PRE_RACE_3M_OR_EARLIER',pmeta=raw?.result?.payoutMeta||{};
+      return {
+        bet_id:`${runId}::${a.rid}::AUTO::${p.meta.type}::${p.selection}::${i+1}`,race_id:a.rid,run_id:runId,
+        date:raw?.date||'',org,track:raw?.track||'',race_no:Number(raw?.no||0),character:AUTO,bet_type:p.meta.type,selection:p.selection,stake:100,
+        prediction_generated_at:null,simulation_prediction_generated_at:iso(),prediction_timing_status:a.source==='PRE_RACE_3M_OR_EARLIER'?'REPLAY_ON_VERIFIED_PRE_RACE_MARKET_SNAPSHOT':'FINAL_ODDS_RESULT_BLIND_DECISION',pre_race_timestamp_verified:a.source==='PRE_RACE_3M_OR_EARLIER',
+        odds_fetched_at:null,odds_acquired_at:null,odds_market_time:a.marketTime||null,market_snapshot_pre_race_verified:a.source==='PRE_RACE_3M_OR_EARLIER',odds_snapshot_type:a.source,
+        predicted_odds:p.odds,final_odds:finalDecision?p.odds:null,final_odds_low:finalDecision?p.odds:null,final_odds_high:finalDecision?(p.oddsHigh||p.odds):null,
+        confirmed_refund_yen_per_100:s.hit?rawYen(s.rawPayout,s.mult):0,confirmed_payout_multiplier:s.mult,refund:s.refund,profit:s.profit,
+        probability:p.p,predicted_ev:p.ev,kelly_fraction:0,individual_kelly_fraction:0,portfolio_kelly_fraction:0,kelly_scale:0,
+        actual_investment_rate:a.before>0?100/a.before:0,race_investment_rate:a.rate,race_stake_total:a.raceStake,bankroll_before:a.before,bankroll_after:a.after,bankroll_before_race:a.before,bankroll_after_race:a.after,
+        decision_batch:'FIXED53_AUTO_FROZEN_BEFORE_SETTLEMENT',model_version:result?.modelVersion||'BT-MODEL-v2.6',probability_model_version:probVersion,race_id_kind:/^20\d{10}$/.test(a.rid)?'OFFICIAL_SOURCE_ID':'CANONICAL_FALLBACK',
+        result_source:pmeta.officialSource||pmeta.source||raw?.source||null,result_parser_source:pmeta.source||null,result_fetched_at:null,outcome:s.hit?1:0,status:s.hit?'的中':'不的中',validation_mode:mode,
+        selection_locked_before_result:true,final_odds_used_for_selection:finalDecision,result_used_for_selection:false,payout_used_for_selection:false,settlement_odds_type:'OFFICIAL_RESULT_PAYOUT_AFTER_DECISION',
+        decision_information_boundary:finalDecision?'FINAL_ODDS_ONLY__RESULT_BLOCKED':'PRE_RACE_MARKET_ONLY',anti_leak_note:'FIXED53: candidate/EV/selection are completed on a result=null decision object; official result/payout is read only after picks are locked.'
+      };
+    });
+  }
+  function integrateAuto(result,analysis,sim,scan,mode){
+    const old=(result.characters||[]).find(c=>String(c?.name||'')===AUTO)||{},auto={...old,id:old.id||'auto-player-period',name:AUTO,avatar:'🤖',ticket:'auto',minEV:1.10,staking:'fixed100',initial:sim.initial,bankroll:sim.bankroll,invested:sim.invested,returned:sim.returned,wins:sim.hits,bets:sim.bets,skips:analysis.summary.noBet+sim.unsettled,peak:Math.max(sim.initial,...sim.history),maxDD:sim.maxDD,maxWin:sim.maxWin,history:sim.history,byOrg:sim.byOrg,periodAuto53:true};
+    result.characters=(result.characters||[]).filter(c=>String(c?.name||'')!==AUTO);result.characters.unshift(auto);
+    const bets53=autoBets(sim,result,mode);result.bets=[...(result.bets||[]).filter(b=>String(b?.character||'')!==AUTO),...bets53];
+    result.audit=[...(result.audit||[]).filter(b=>String(b?.character||'')!==AUTO),...bets53.map(b=>({bet_id:b.bet_id,character:AUTO,profit:b.profit,status:b.status,race_id:b.race_id,bet_type:b.bet_type,selection:b.selection,stake:b.stake,predicted_ev:b.predicted_ev}))];
+    result.validation=result.validation||{characters:{}};result.validation.characters=result.validation.characters||{};result.validation.characters[AUTO]=autoValidation(sim,bets53);
+    if(Array.isArray(result.timeline)&&result.timeline.length){
+      result.timeline[0].bankroll={...(result.timeline[0].bankroll||{}),[AUTO]:sim.initial};result.timeline[0].profit={...(result.timeline[0].profit||{}),[AUTO]:0};
+      let last={bankroll:sim.initial,profit:0};for(let i=1;i<result.timeline.length;i++){last=sim.raceStates[i-1]||last;result.timeline[i].bankroll={...(result.timeline[i].bankroll||{}),[AUTO]:last.bankroll};result.timeline[i].profit={...(result.timeline[i].profit||{}),[AUTO]:last.profit}}
+    }
+    result.autoNoBetDiagnostics53={...analysis.summary,mode,modeEligible:analysis.prep.diag,byType:analysis.byType,actualAutoBets:sim.bets,actualAutoDecisions:sim.decisions};
+    result.evThresholdScan53=scan;result.autoPlayerContract53={version:53,minEV:1.10,stake:100,rule:'highest EV exactly once per available ticket type',resultBlind:true,modeAware:true,preRaceMarketFailClosed:true,finalFallbackAllowedOnlyInFinalOddsVirtual:true,missingMarketOdds:'skip',tickets:TYPES.map(x=>x.type)};
+    return result;
+  }
+
+  function fmtMode(m){return m===MODE_PRE?'PRE-RACE VERIFIED':m===MODE_BLIND?'FINAL-ODDS BLIND':'FINAL RESEARCH'}
+  function fmtPct(v,d=1){return Number.isFinite(Number(v))?Number(v).toFixed(d)+'%':'—'}
+  function ensureUI(){
+    const progress=document.getElementById('btProgress');if(!progress)return;
+    const sel=document.getElementById('btValidationMode26');if(sel){const o=[...sel.options].find(x=>x.value===MODE_BLIND);if(o)o.textContent='FINAL-ODDS BLIND（3分前優先→確定Fallback）'}
+    if(!document.getElementById('fixed53Lab')){
+      const panel=document.createElement('div');panel.id='fixed53Lab';panel.className='notice';panel.style.marginTop='10px';
+      panel.innerHTML=`<div style="font-weight:800;margin-bottom:7px">🧪 FIXED53 診断ラボ</div>
+        <div class="controls" style="margin-bottom:8px"><button id="setBlind53" class="primary">🏁 FINAL-ODDS BLIND</button><button id="showNoBet53">🔍 NO BET診断</button><button id="showScan53">📊 EV閾値スキャン</button></div>
+        <div id="diagStatus53" class="muted">期間仮想対戦を実行すると、結果を選択処理から遮断したまま診断します。</div>
+        <div id="noBet53" style="margin-top:8px"></div>
+        <div id="scan53" style="margin-top:8px"></div>`;
+      const anchor=document.getElementById('btModeStatus26')||progress;anchor.insertAdjacentElement('afterend',panel);
+      document.getElementById('setBlind53').onclick=()=>{const s=document.getElementById('btValidationMode26');if(!s)return alert('検証モード欄を読み込み中です');s.value=MODE_BLIND;localStorage.setItem('btValidationMode26',MODE_BLIND);s.dispatchEvent(new Event('change',{bubbles:true}));const st=document.getElementById('diagStatus53');if(st)st.innerHTML='<b>FINAL-ODDS BLIND</b> を選択しました。3分前スナップショットを優先し、無い場合だけ確定オッズを意思決定価格として使います。';};
+      document.getElementById('showNoBet53').onclick=()=>renderDiag(window.btResult||((typeof btResult!=='undefined')?btResult:null),false);
+      document.getElementById('showScan53').onclick=()=>renderDiag(window.btResult||((typeof btResult!=='undefined')?btResult:null),true);
+    }
+    const host=document.getElementById('btFetchDiag')||progress;if(host&&!document.getElementById('fixed53Badge')){const e=document.createElement('div');e.id='fixed53Badge';e.className='muted';e.style.marginTop='4px';e.innerHTML='<b>FIXED53:</b> NO BET診断 / FINAL-ODDS BLIND / EV閾値スキャン / AUTOは選択完了後にのみ公式結果で精算';host.insertAdjacentElement('afterend',e)}
+  }
+  function renderDiag(result,scrollScan=false){
+    ensureUI();const d=result?.autoNoBetDiagnostics53,scan=result?.evThresholdScan53;if(!d){const st=document.getElementById('diagStatus53');if(st)st.textContent='まだ診断データがありません。期間仮想対戦 START を実行してください。';return}
+    const st=document.getElementById('diagStatus53');if(st)st.innerHTML=`<b>${fmtMode(d.mode)}</b> / 対象 ${d.modeEligible?.eligible||0}/${d.modeEligible?.total||0}R / PRE ${d.modeEligible?.preUsed||0}R / FINAL ${d.modeEligible?.finalUsed||0}R / 結果は選択関数から遮断`;
+    const nbox=document.getElementById('noBet53');if(nbox){
+      const types=Object.entries(d.byType||{}).map(([k,x])=>`<tr><td>${esc(k)}</td><td>${x.marketRaces}</td><td>${x.marketRows}</td><td>${x.probabilityRows}</td><td>${x.ev110Rows}</td><td>${x.locked110}</td><td>${x.scored110}</td></tr>`).join('');
+      nbox.innerHTML=`<div><b>🔍 NO BET診断（AUTO / EV≥1.10）</b>　候補市場 ${d.candidates}件 → 確率計算可 ${d.probRows}件 → EV110%以上 ${d.ev110}件 → 最高EVロック ${d.locked}件 → 精算 ${d.scored}件</div>
+        <div class="muted" style="margin-top:4px">見送り ${d.noBet}R（市場オッズなし ${d.noMarket}R / 確率計算不可 ${d.noProbability}R / 最高EVが1.10未満 ${d.below}R） / ロック後に精算不能 ${d.unsettled}件。AUTO実勝負数 ${d.actualAutoBets}件。</div>
+        <div class="scroll" style="margin-top:6px"><table><thead><tr><th>券種</th><th>市場ありR</th><th>候補</th><th>確率可</th><th>EV≥1.10</th><th>ロック</th><th>精算</th></tr></thead><tbody>${types}</tbody></table></div>`;
+    }
+    const sbox=document.getElementById('scan53');if(sbox&&Array.isArray(scan)){
+      sbox.innerHTML=`<div><b>📊 EV閾値スキャン（AUTO・各券種最高EV1点×100円）</b></div><div class="muted">同じ意思決定用オッズ・同じ想定確率を固定し、閾値だけを横並び比較。結果・払戻は買い目ロック後の精算にのみ使用します。</div><div class="scroll" style="margin-top:6px"><table><thead><tr><th>EV閾値</th><th>ロック</th><th>精算</th><th>未精算</th><th>投資</th><th>利益</th><th>ROI</th><th>的中率</th><th>最大DD</th><th>NO BET R</th></tr></thead><tbody>${scan.map(x=>`<tr${Math.abs(x.threshold-1.10)<1e-9?' style="font-weight:800"':''}><td>${x.threshold.toFixed(2)}</td><td>${x.decisions}</td><td>${x.bets}</td><td>${x.unsettled}</td><td>${x.invested.toLocaleString()}円</td><td>${x.profit.toLocaleString()}円</td><td>${fmtPct(x.roi)}</td><td>${fmtPct(x.hitRate*100)}</td><td>${fmtPct(x.maxDD*100)}</td><td>${x.noBetRaces}</td></tr>`).join('')}</tbody></table></div>`;
+      if(scrollScan)sbox.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+  }
+
+  if(typeof runBacktestOnHistory==='function'){
+    const prevRun=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      const result=await prevRun(historyBlocks,onProgress);
+      try{
+        const mode=currentMode(result),prep=prepare(historyBlocks,mode),analysis=analyze(prep),main=simulate(analysis,1.10,true),scan=THRESHOLDS.map(t=>simulate(analysis,t,false));
+        integrateAuto(result,analysis,main,scan,mode);
+        setTimeout(()=>{try{renderDiag(result,false)}catch(_){ }},0);
+        try{window.UI?.addLog?.(`FIXED53 AUTO診断: ${fmtMode(mode)} / ${prep.races.length}R / ロック${main.decisions} / 精算${main.bets} / NO BET ${main.noBetRaces}R / ROI ${main.roi.toFixed(1)}%`,'ok')}catch(_){ }
+      }catch(e){console.error('FIXED53',e);try{window.UI?.addLog?.('FIXED53診断エラー: '+String(e?.message||e),'error')}catch(_){ }}
+      return result;
+    };
+    try{window.runBacktestOnHistory=runBacktestOnHistory}catch(_){ }
+  }
+
+  function boot(){ensureUI();try{if(typeof btResult!=='undefined'&&btResult?.autoNoBetDiagnostics53)renderDiag(btResult,false)}catch(_){ }}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot,1800);setTimeout(boot,4200)},{once:true});else{setTimeout(boot,1800);setTimeout(boot,4200)}
+  console.log('✅ FIXED53 NO-BET diagnostics + FINAL-ODDS BLIND + EV threshold scan loaded');
+})();
+
+</script>
 </body>
 </html>
