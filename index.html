@@ -634,8 +634,8 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
       <label style="grid-column:1/-1">LIVE API Base URL（houserace 接続済み）
         <input id="sApi" placeholder="https://houserace.nitta-katsuhiko.workers.dev">
       </label>
-      <label style="grid-column:1/-1">netkeiba Cloudflare Proxy URL（全券種オッズ用）
-        <input id="sNetkeibaProxy" placeholder="https://your-keiba-odds-proxy.workers.dev">
+      <label style="grid-column:1/-1">netkeiba Cloudflare Proxy URL（全券種オッズ専用）
+        <input id="sNetkeibaProxy" placeholder="https://keiba-odds.nitta-katsuhiko.workers.dev">
       </label>
     </div>
     <p class="muted">LIVE API: /races /odds /result。全券種オッズは別欄のCloudflare Proxyへ ?url=netkeibaURL で取得し、Worker遮断時だけ住宅IP Bridgeへフォールバックします。</p>
@@ -732,7 +732,7 @@ const DEFAULTS={
   mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
   initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
-  netkeibaProxyUrl:"https://houserace.nitta-katsuhiko.workers.dev",
+  netkeibaProxyUrl:"https://keiba-odds.nitta-katsuhiko.workers.dev",
   jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
 };
 const Store={
@@ -1507,7 +1507,7 @@ async function liveJraOfficialWinOddsV34(race){
   const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||'';
   if(!/^\d{12}$/.test(rid))throw new Error('JRA公式単勝: race_id不正');
   const st=Store.get("settings",{});
-  const base=String(st.netkeibaProxyUrl||st.apiBase||"https://houserace.nitta-katsuhiko.workers.dev").trim().replace(/\/$/,'');
+  const base=String(st.apiBase||"https://houserace.nitta-katsuhiko.workers.dev").trim().replace(/\/$/,'');
   if(!base)throw new Error('JRA公式単勝: Worker URL未設定');
   const date=liveRaceDateYmdV34(race);
   const ep=`${base}/?source=jra&jra=official&kind=JRA&type=odds&race_id=${encodeURIComponent(rid)}&date=${encodeURIComponent(date)}&timeout=25000&_=${Date.now()}`;
@@ -1759,12 +1759,14 @@ class SimulationEngine{
   constructor(){
     this.settings={...DEFAULTS,...Store.get("settings",{})};
     if(this.settings.auto)this.settings.betTiming=3;
-    const ONEFILE_WORKER="https://houserace.nitta-katsuhiko.workers.dev";
-    const oldWorker=/^https:\/\/(?:takuya|userace)\.nitta-katsuhiko\.workers\.dev\/?$/i;
-    if(!this.settings.apiBase || oldWorker.test(String(this.settings.apiBase).trim())) this.settings.apiBase=ONEFILE_WORKER;
-    if(!this.settings.netkeibaProxyUrl || oldWorker.test(String(this.settings.netkeibaProxyUrl).trim())) this.settings.netkeibaProxyUrl=ONEFILE_WORKER;
+    const LIVE_WORKER="https://houserace.nitta-katsuhiko.workers.dev";
+    const ODDS_WORKER="https://keiba-odds.nitta-katsuhiko.workers.dev";
+    const oldApiWorker=/^https:\/\/(?:takuya|userace)\.nitta-katsuhiko\.workers\.dev\/?$/i;
+    const oldOddsWorker=/^https:\/\/(?:takuya|userace|houserace)\.nitta-katsuhiko\.workers\.dev\/?$/i;
+    if(!this.settings.apiBase || oldApiWorker.test(String(this.settings.apiBase).trim())) this.settings.apiBase=LIVE_WORKER;
+    if(!this.settings.netkeibaProxyUrl || oldOddsWorker.test(String(this.settings.netkeibaProxyUrl).trim())) this.settings.netkeibaProxyUrl=ODDS_WORKER;
     Store.set("settings",this.settings);
-    localStorage.setItem("keibaNetkeibaProxyUrl",ONEFILE_WORKER);
+    localStorage.setItem("keibaNetkeibaProxyUrl",ODDS_WORKER);
     if(Store.get("liveStateSchemaVersion",0)!==LIVE_STATE_SCHEMA_VERSION){
       ["characters","bets","runtime"].forEach(k=>Store.del(k));
       Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);
@@ -2402,7 +2404,7 @@ function openSettings(){
   $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";
   $("#sAuto").value=s.auto?"1":"0";$("#sResultDelay").value=s.resultDelaySec??18;
   $("#sApi").value=s.apiBase||"";
-  $("#sNetkeibaProxy").value=s.netkeibaProxyUrl||localStorage.getItem("keibaNetkeibaProxyUrl")||"https://houserace.nitta-katsuhiko.workers.dev";
+  $("#sNetkeibaProxy").value=s.netkeibaProxyUrl||localStorage.getItem("keibaNetkeibaProxyUrl")||"https://keiba-odds.nitta-katsuhiko.workers.dev";
   $("#settingsDlg").showModal();
 }
 $("#saveSettings").onclick=()=>{
@@ -2412,7 +2414,7 @@ $("#saveSettings").onclick=()=>{
     jra:$("#sJra").value==="1",nar:$("#sNar").value==="1",
     auto:$("#sAuto").value==="1",resultDelaySec:+$("#sResultDelay").value,
     apiBase:$("#sApi").value.trim()||"https://houserace.nitta-katsuhiko.workers.dev",
-    netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()||"https://houserace.nitta-katsuhiko.workers.dev"};
+    netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()||"https://keiba-odds.nitta-katsuhiko.workers.dev"};
   Store.set("settings",engine.settings);
   localStorage.setItem("keibaNetkeibaProxyUrl",engine.settings.netkeibaProxyUrl||"");
   if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
@@ -9850,6 +9852,11 @@ console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',badge39,{once:true});else badge39();
   console.log('✅ FIXED39 NAR OFFICIAL RESULT + TEXT ODDS FALLBACK loaded');
 })();
+</script>
+
+
+<script>
+console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhiko.workers.dev / ODDS=https://keiba-odds.nitta-katsuhiko.workers.dev");
 </script>
 
 </body>
