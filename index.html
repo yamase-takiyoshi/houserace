@@ -3919,7 +3919,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
    - JRA結果取得を発走直後に叩かない
    - JRAは最低180秒、NARは最低120秒待つ
    - HTTP 502/503/504等は一時待機として再試行
-   - 再試行間隔 15 → 30 → 45 → 60秒
+   - FIXED38: 最初の5分は10秒、その後30秒で再確認
    - 1秒ごとの502連打を停止
    ============================================================ */
 (() => {
@@ -4013,10 +4013,10 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       }
 
       if (!race.settled && race.status === "RESULT WAIT") {
-        const count = Math.min(20, Number(race.__resultRetryCount || 0) + 1);
+        const count = Math.min(999, Number(race.__resultRetryCount || 0) + 1);
         race.__resultRetryCount = count;
 
-        const delaySec = count === 1 ? 15 : count === 2 ? 30 : count === 3 ? 45 : 60;
+        const delaySec = count <= 30 ? 10 : 30; // FIXED38: 最初の約5分は10秒、その後30秒
         race.__resultRetryAt = Date.now() + delaySec * 1000;
         race.__lastResultError = "RESULT_PENDING";
 
@@ -4055,7 +4055,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
   } catch (_) {}
 
-  console.log("✅ FIXED9 RESULT WAIT / HTTP 502 BACKOFF loaded");
+  console.log("✅ FIXED9/38 RESULT WAIT / HTTP 502 BACKOFF loaded");
 })();
 </script>
 
@@ -9274,6 +9274,337 @@ window.__oddsBoard={
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
 console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
 })();
+</script>
+
+<script id="resultLiveFallbackV38">
+/* ============================================================
+   FIXED38 LIVE RESULT MULTI-SOURCE FAILOVER
+   - Worker /result が 502 / parse not ready でも停止しない
+   - JRA/NAR netkeiba結果HTMLを Cloudflare→住宅IP Bridge の順で直接解析
+   - OPEN馬券で必要な払戻券種が揃うまで fail-closed（誤精算しない）
+   - 結果待ちは最初の5分を10秒間隔、その後30秒間隔
+   ============================================================ */
+(() => {
+  'use strict';
+  if (window.__KEIBA_FIXED38_RESULT_FAILOVER__) return;
+  window.__KEIBA_FIXED38_RESULT_FAILOVER__ = true;
+
+  const SOURCE = 'netkeiba-live-result-v38';
+  const clean = s => String(s ?? '').replace(/[\u00a0\s　]+/g, ' ').trim();
+  const half = s => String(s ?? '').replace(/[０-９，．－ー―〜～＞]/g, c => ({
+    '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9',
+    '，':',','．':'.','－':'-','ー':'-','―':'-','〜':'-','～':'-','＞':'>'
+  }[c] || c));
+
+  function raceIdOf(race){
+    for (const v of [race?.raceId, race?.race_id, race?.officialRaceId, race?.official_race_id,
+                     race?.netkeibaRaceId, race?.sourceRaceId, race?.id, race?.url, race?.resultUrl]) {
+      const m = String(v ?? '').match(/(20\d{10})/);
+      if (m) return m[1];
+    }
+    try {
+      const m = JSON.stringify(race || {}).match(/(20\d{10})/);
+      if (m) return m[1];
+    } catch (_) {}
+    return '';
+  }
+
+  function taggedRefund(yen, url){
+    return {
+      refundYen: Number(yen), unit: 'yen_per_100', source: SOURCE,
+      trusted: true, strict: true, parser: 'v3.8-live', url: String(url || '')
+    };
+  }
+
+  function amountList(text){
+    const out = [];
+    const t = half(String(text || ''));
+    for (const m of t.matchAll(/([0-9][0-9,]*)\s*円/g)) {
+      const n = Number(m[1].replace(/,/g, ''));
+      if (Number.isFinite(n) && n >= 100 && n <= 99999990) out.push(n);
+    }
+    return out;
+  }
+
+  function singleNums(text, max=18){
+    return (half(String(text || '')).match(/\d+/g) || [])
+      .map(Number).filter(n => n >= 1 && n <= max);
+  }
+
+  function pairList(text, max=18){
+    const out = [];
+    const t = half(String(text || '')).replace(/[→>]/g, '-');
+    for (const m of t.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)) {
+      const a = Number(m[1]), b = Number(m[2]);
+      if (a >= 1 && a <= max && b >= 1 && b <= max) out.push([a,b]);
+    }
+    return out;
+  }
+
+  function tripleList(text){
+    const out = [];
+    const t = half(String(text || '')).replace(/[→>]/g, '-');
+    for (const m of t.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)) {
+      const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]);
+      if ([a,b,c].every(n => n >= 1 && n <= 18)) out.push([a,b,c]);
+    }
+    return out;
+  }
+
+  function labelInfo(text){
+    const t = clean(half(text));
+    if (/3連単|三連単/.test(t)) return {bucket:'trifecta', ordered:true, arity:3, label:/3連単|三連単/};
+    if (/3連複|三連複/.test(t)) return {bucket:'trio', ordered:false, arity:3, label:/3連複|三連複/};
+    if (/馬単/.test(t)) return {bucket:'exacta', ordered:true, arity:2, label:/馬単/};
+    if (/馬連/.test(t)) return {bucket:'quinella', ordered:false, arity:2, label:/馬連/};
+    if (/ワイド|拡大馬番連勝複式/.test(t)) return {bucket:'wide', ordered:false, arity:2, label:/ワイド|拡大馬番連勝複式/};
+    if (/枠連/.test(t)) return {bucket:'frame', ordered:false, arity:2, label:/枠連/};
+    if (/複勝/.test(t)) return {bucket:'place', ordered:false, arity:1, label:/複勝/};
+    if (/単勝/.test(t)) return {bucket:'win', ordered:false, arity:1, label:/単勝/};
+    return null;
+  }
+
+  function parseFinish(doc){
+    const finish = [];
+    const seenHorse = new Set();
+    for (const tr of doc.querySelectorAll('tr')) {
+      const horseLink = tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+      if (!horseLink) continue;
+      const els = [...tr.querySelectorAll('th,td')];
+      if (!els.length) continue;
+      const texts = els.map(el => half(clean(el.textContent)));
+      const linkIndex = els.findIndex(el => el === horseLink || el.contains(horseLink));
+      const before = (linkIndex >= 0 ? texts.slice(0, linkIndex) : texts.slice(0, 5));
+
+      let rank = 0;
+      const rankEl = tr.querySelector('.Rank,.Result_Num,td.Result_Num,[class*="Rank"],[class*="rank"]');
+      const rm = half(clean(rankEl?.textContent || '')).match(/^(\d{1,2})(?:着)?$/);
+      if (rm) rank = Number(rm[1]);
+      if (!rank) {
+        for (const s of before.slice(0, 2)) {
+          const m = s.match(/^(\d{1,2})(?:着)?$/);
+          if (m) { rank = Number(m[1]); break; }
+        }
+      }
+
+      let no = 0;
+      const noEl = tr.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"],[class*="Horse_Num"]');
+      const nm = half(clean(noEl?.textContent || '')).match(/(?:^|[^0-9])([1-9]|1[0-8])(?:[^0-9]|$)/);
+      if (nm) no = Number(nm[1]);
+      if (!no) {
+        const nums = [];
+        for (const s of before) {
+          const m = s.match(/^([1-9]|1[0-8])$/);
+          if (m) nums.push(Number(m[1]));
+        }
+        if (nums.length) no = nums[nums.length - 1];
+      }
+      if (!(rank >= 1 && rank <= 50 && no >= 1 && no <= 18) || seenHorse.has(no)) continue;
+      seenHorse.add(no);
+      finish.push({rank, no, name: clean(horseLink.textContent || '')});
+    }
+    finish.sort((a,b) => a.rank - b.rank);
+    return finish;
+  }
+
+  function parsePayouts(doc, url){
+    const payouts = {win:{}, place:{}, frame:{}, quinella:{}, wide:{}, exacta:{}, trio:{}, trifecta:{}};
+
+    for (const tr of doc.querySelectorAll('tr')) {
+      const cells = [...tr.querySelectorAll('th,td')];
+      if (!cells.length) continue;
+      const cellTexts = cells.map(c => half(clean(c.textContent || '')));
+      const rowText = cellTexts.join(' ');
+      const info = labelInfo(rowText);
+      if (!info) continue;
+
+      const ys = amountList(rowText);
+      if (!ys.length) continue;
+
+      let labelIndex = cellTexts.findIndex(x => info.label.test(x));
+      if (labelIndex < 0) labelIndex = 0;
+      const selectionCells = cellTexts.filter((x,i) =>
+        i !== labelIndex && !/円/.test(x) && !/人気/.test(x) && !/票/.test(x) && !info.label.test(x)
+      );
+      let selectionText = selectionCells.join(' ').replace(/[→>]/g, '-');
+      if (!selectionText) selectionText = rowText.replace(info.label, ' ').replace(/([0-9][0-9,]*)\s*円/g, ' ').replace(/\d+\s*人気/g, ' ');
+
+      if (info.arity === 1) {
+        let ns = singleNums(selectionText, info.bucket === 'frame' ? 8 : 18);
+        if (ns.length > ys.length) ns = ns.slice(0, ys.length);
+        for (let i=0; i<Math.min(ns.length, ys.length); i++) {
+          payouts[info.bucket][String(ns[i])] = taggedRefund(ys[i], url);
+        }
+      } else if (info.arity === 2) {
+        let combos = pairList(selectionText, info.bucket === 'frame' ? 8 : 18);
+        if (combos.length < ys.length) {
+          const ns = singleNums(selectionText, info.bucket === 'frame' ? 8 : 18);
+          const grouped = [];
+          for (let i=0; i+1<ns.length; i+=2) grouped.push([ns[i], ns[i+1]]);
+          if (grouped.length > combos.length) combos = grouped;
+        }
+        for (let i=0; i<Math.min(combos.length, ys.length); i++) {
+          const a = combos[i].slice();
+          const key = info.ordered ? a.join('-') : a.sort((x,y)=>x-y).join('-');
+          payouts[info.bucket][key] = taggedRefund(ys[i], url);
+        }
+      } else {
+        let combos = tripleList(selectionText);
+        if (combos.length < ys.length) {
+          const ns = singleNums(selectionText, 18);
+          const grouped = [];
+          for (let i=0; i+2<ns.length; i+=3) grouped.push([ns[i], ns[i+1], ns[i+2]]);
+          if (grouped.length > combos.length) combos = grouped;
+        }
+        for (let i=0; i<Math.min(combos.length, ys.length); i++) {
+          const a = combos[i].slice();
+          const key = info.ordered ? a.join('-') : a.sort((x,y)=>x-y).join('-');
+          payouts[info.bucket][key] = taggedRefund(ys[i], url);
+        }
+      }
+    }
+    return payouts;
+  }
+
+  function parseNetkeibaResult(html, race, url){
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    const body = half(clean(doc.body?.innerText || doc.body?.textContent || ''));
+    if (!body || body.length < 300) throw new Error('結果HTMLが空または短すぎます');
+    if (/レース結果はまだありません|結果はまだありません|結果未確定|レース結果待ち/.test(body)) {
+      throw new Error('結果ページ未確定');
+    }
+
+    const finish = parseFinish(doc);
+    const top3 = finish.slice(0, 3).map(x => Number(x.no));
+    if (top3.length < 3) throw new Error(`着順解析待ち Top3=${top3.length}`);
+    const payouts = parsePayouts(doc, url);
+    if (Object.keys(payouts.win).length < 1) throw new Error('払戻表未確定 win=0');
+
+    return {
+      winner: top3[0], top3, finish, payouts,
+      payoutMeta: {trusted:true, strict:true, source:SOURCE, parser:'v3.8-live', url:String(url || '')},
+      source: SOURCE, at: new Date().toISOString()
+    };
+  }
+
+  const TICKET_BUCKET = {
+    '単勝':'win','複勝':'place','枠連':'frame','馬連':'quinella','ワイド':'wide','馬単':'exacta',
+    '3連複':'trio','三連複':'trio','3連単':'trifecta','三連単':'trifecta'
+  };
+
+  function requiredBuckets(race){
+    const out = new Set(['win']);
+    try {
+      const bets = (typeof engine !== 'undefined' && Array.isArray(engine?.bets)) ? engine.bets : [];
+      for (const b of bets) {
+        if (b?.raceId !== race?.id || b?.status !== 'OPEN') continue;
+        const t = String(b.ticket || '').replace(/^三連/, '3連');
+        const k = TICKET_BUCKET[t];
+        if (k) out.add(k);
+      }
+    } catch (_) {}
+    return [...out];
+  }
+
+  function ensureReady(race, res, sourceName){
+    if (!res || typeof res !== 'object') throw new Error(`${sourceName}: 結果JSONなし`);
+    const top3 = Array.isArray(res.top3) ? res.top3.map(Number).filter(n => n >= 1 && n <= 18) : [];
+    const winner = Number(res.winner || top3[0] || 0);
+    if (top3.length < 3 || !(winner >= 1 && winner <= 18)) throw new Error(`${sourceName}: 着順未確定`);
+    res.winner = winner;
+    res.top3 = top3.slice(0, 3);
+    res.payouts = res.payouts || {};
+    const missing = requiredBuckets(race).filter(k => !res.payouts[k] || Object.keys(res.payouts[k]).length === 0);
+    if (missing.length) throw new Error(`${sourceName}: 払戻未確定 ${missing.join(',')}`);
+    return res;
+  }
+
+  async function htmlViaExistingRoute(url){
+    if (typeof liveHtmlViaProxyOrBridge === 'function') {
+      return await liveHtmlViaProxyOrBridge(url);
+    }
+    if (typeof window.__narBridgeFetch === 'function' && window.__bridgeAbsent !== true) {
+      const r = await window.__narBridgeFetch(url);
+      const status = Number(r?.status || 0), text = String(r?.text || '');
+      if (status >= 200 && status < 400 && text.length >= 300) {
+        return {text, via:`Bridge ${window.__narBridgeVersion || ''}`.trim(), finalUrl:String(r?.finalUrl || url)};
+      }
+      throw new Error(`Bridge HTTP ${status || 0}`);
+    }
+    throw new Error('Cloudflare Proxy / 住宅IP Bridge が利用できません');
+  }
+
+  async function resultFromNetkeiba(race){
+    const id = raceIdOf(race);
+    if (!id) throw new Error('公式race_idなし');
+    const org = String(race?.org || '').toUpperCase();
+    const stamp = Date.now();
+    const urls = org === 'NAR' ? [
+      `https://nar.netkeiba.com/race/result.html?race_id=${id}&rf=race_list&_live=${stamp}`,
+      `https://nar.sp.netkeiba.com/race/race_result.html?race_id=${id}&_live=${stamp}`
+    ] : [
+      `https://race.netkeiba.com/race/result.html?race_id=${id}&rf=race_submenu&_live=${stamp}`,
+      `https://db.netkeiba.com/race/${id}/?live=${stamp}`,
+      `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_toggle_menu&_live=${stamp}`
+    ];
+    const errors = [];
+    for (const url of urls) {
+      try {
+        const x = await htmlViaExistingRoute(url);
+        const res = parseNetkeibaResult(x.text, race, x.finalUrl || url);
+        return ensureReady(race, res, `netkeiba/${x.via || 'HTML'}`);
+      } catch (e) {
+        errors.push(String(e?.message || e));
+      }
+    }
+    throw new Error(errors.slice(0, 3).join(' | ') || 'netkeiba結果未確定');
+  }
+
+  if (typeof HttpProvider !== 'undefined') {
+    const previousGetResult = HttpProvider.prototype.getResult;
+    HttpProvider.prototype.getResult = async function(race){
+      const errors = [];
+
+      // 1) Worker /result: 正常ならそのまま採用。
+      try {
+        const d = await previousGetResult.call(this, race);
+        return ensureReady(race, d, 'Worker /result');
+      } catch (e) {
+        errors.push(`Worker: ${e?.message || e}`);
+      }
+
+      // 2) Workerが502/parse待ちでも、同じrace_idの結果HTMLをクライアント側で直接解析。
+      try {
+        const d = await resultFromNetkeiba(race);
+        try { UI?.addLog?.(`${race.title} 結果取得: ${d?.payoutMeta?.source || SOURCE} へフォールバック成功`, 'ok'); } catch (_) {}
+        return d;
+      } catch (e) {
+        errors.push(`netkeiba: ${e?.message || e}`);
+      }
+
+      const err = new Error(`RESULT_PENDING / ${errors.join(' / ')}`);
+      err.code = 'RESULT_PENDING';
+      throw err;
+    };
+  }
+
+  function addBadge(){
+    const notices = document.querySelectorAll('main > .notice');
+    if (!notices.length || document.getElementById('fixed38ResultNotice')) return;
+    const div = document.createElement('div');
+    div.id = 'fixed38ResultNotice';
+    div.className = 'notice';
+    div.style.borderColor = '#4f7db6';
+    div.style.background = '#0d1d2a';
+    div.innerHTML = '<b>FIXED38 RESULT FAILOVER</b> — Worker /result が502・parse待ちでも、Cloudflare→住宅IP Bridge経由のnetkeiba結果HTMLを直接解析して精算します。必要な払戻券種が揃うまで誤精算せず待機し、最初の5分は10秒ごと、その後30秒ごとに再確認します。';
+    notices[notices.length - 1].insertAdjacentElement('afterend', div);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addBadge, {once:true});
+  else addBadge();
+
+  console.log('✅ FIXED38 LIVE RESULT MULTI-SOURCE FAILOVER loaded');
+})();
+
 </script>
 
 </body>
