@@ -186,6 +186,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#3c82b8;background:#0d1f2b"><b>FIXED31 JRA JSON API 400</b> — JRAオッズAPIを現行の最小URL <code>race_id + type + action=update</code> に統一。旧 <code>pid/action=init/sort/compress/output</code> 付きURLでHTTP 400になった場合を回避し、update→initの順で自動再試行します。</div>
 <div class="notice" style="border-color:#a36f2f;background:#2a1f0d"><b>FIXED32 NAR公式オッズ優先</b> — NARのnetkeiba遮断/HTTP 400時は、地方競馬情報サイト（keiba.go.jp）の単複・枠連・馬連・ワイド・馬単・3連複・3連単へ自動フォールバックします。水沢などの競馬場コードはrace_idから復元します。</div>
 <div class="notice" style="border-color:#8b5cf6;background:#1d1630"><b>FIXED40 NAR 3連単・前回値保持</b> — NAR公式SP/PC/IPATの人気順URLを拡張し、3連単の取得0件を補強。更新失敗時は前回の正常オッズを消さず保持し、0件時に別券種の取得元を誤表示しません。</div>
+<div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -1450,9 +1451,11 @@ async function liveGetJraWinOddsJsonV21(race,id){
   return {status:'LIVE',horses,at:new Date().toISOString(),source:`netkeiba JSON API / ${x.via}`};
 }
 async function liveGetWinOddsViaNetkeibaV20(race){
-  const id=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||'';
-  if(!id) throw new Error('netkeiba race_id がありません');
   const nar=String(race?.org||'').toUpperCase()==='NAR';
+  const id=nar
+    ? (window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||'')
+    : (String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||'');
+  if(!id) throw new Error('netkeiba race_id がありません');
   const errors=[];
 
   // FIXED21: JRAの静的HTMLはオッズ欄が ---.- のプレースホルダになるため、JSON APIを最優先する。
@@ -1545,6 +1548,92 @@ async function liveJraOfficialWinOddsV34(race){
   ranked.forEach((x,i)=>{if(!x.pop)x.pop=i+1});
   return {status:'LIVE',horses:out.sort((a,b)=>a.no-b.no),at:new Date().toISOString(),source:'JRA公式 jra.go.jp / Worker v6.4'};
 }
+
+
+/* ============================================================
+   FIXED44 NAR NETKEIBA RACE_ID SANITIZER
+   - Reject placeholder/stale 12-digit ids such as 208600000000.
+   - For NAR, derive canonical netkeiba id from JST date + track + race no.
+   - Canonical format: YYYY + NAR netkeiba track code + MMDD + RR.
+   - Example: 2026-09-13 金沢6R => 202646091306.
+   ============================================================ */
+(() => {
+  'use strict';
+  if (window.__KEIBA_FIXED44_NAR_RACEID__) return;
+  window.__KEIBA_FIXED44_NAR_RACEID__ = true;
+
+  const TRACK = Object.freeze({
+    '門別':'30','盛岡':'35','水沢':'36','浦和':'42','船橋':'43','大井':'44','川崎':'45',
+    '金沢':'46','笠松':'47','名古屋':'48','園田':'50','姫路':'51','高知':'54','佐賀':'55',
+    '帯広':'65','帯広ば':'65','帯広(ば)':'65','ばんえい':'65'
+  });
+  const VALID_CODES = new Set(Object.values(TRACK));
+  const norm = s => String(s ?? '').replace(/[\s　]+/g,'').trim();
+
+  function dateYmd(r){
+    let d=String(r?.date ?? r?.raceDate ?? '').replace(/\D/g,'').slice(0,8);
+    if(/^20\d{6}$/.test(d)) return d;
+    const raw=r?.startTime ?? r?.start_time ?? r?.postTime ?? r?.raceTime ?? '';
+    if(raw){
+      try{
+        const p=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(raw));
+        const o=Object.fromEntries(p.map(x=>[x.type,x.value]));
+        d=`${o.year}${o.month}${o.day}`;
+        if(/^20\d{6}$/.test(d)) return d;
+      }catch(_){ }
+    }
+    return '';
+  }
+  function trackCode(r){
+    const t=norm(r?.track ?? r?.venue ?? r?.course ?? r?.trackName ?? '');
+    if(TRACK[t]) return TRACK[t];
+    const k=Object.keys(TRACK).find(x=>t.includes(norm(x)) || norm(x).includes(t));
+    return k ? TRACK[k] : '';
+  }
+  function raceNo(r){
+    const n=Number(r?.no ?? r?.raceNo ?? r?.race_no ?? r?.r ?? r?.race ?? 0);
+    return n>=1 && n<=12 ? n : 0;
+  }
+  function derive(r){
+    if(String(r?.org ?? r?.organization ?? '').toUpperCase()!=='NAR') return '';
+    const d=dateYmd(r), code=trackCode(r), no=raceNo(r);
+    if(!/^20\d{6}$/.test(d) || !code || !no) return '';
+    return `${d.slice(0,4)}${code}${d.slice(4,8)}${String(no).padStart(2,'0')}`;
+  }
+  function valid(r,id){
+    id=String(id ?? '').trim();
+    if(!/^20\d{10}$/.test(id)) return false;
+    if(!VALID_CODES.has(id.slice(4,6))) return false;
+    const mm=Number(id.slice(6,8)), dd=Number(id.slice(8,10)), rr=Number(id.slice(10,12));
+    if(!(mm>=1&&mm<=12&&dd>=1&&dd<=31&&rr>=1&&rr<=12)) return false;
+    const d=dateYmd(r), code=trackCode(r), no=raceNo(r);
+    if(d && (id.slice(0,4)!==d.slice(0,4) || id.slice(6,10)!==d.slice(4,8))) return false;
+    if(code && id.slice(4,6)!==code) return false;
+    if(no && rr!==no) return false;
+    return true;
+  }
+  function canonical(r){
+    const org=String(r?.org ?? r?.organization ?? '').toUpperCase();
+    if(org==='NAR'){
+      const d=derive(r);
+      if(d) return d;
+      for(const v of [r?.netkeibaRaceId,r?.sourceRaceId,r?.raceId,r?.race_id,r?.officialRaceId,r?.official_race_id,r?.id,r?.url,r?.sourceUrl,r?.resultUrl]){
+        const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);
+        if(m && valid(r,m[1])) return m[1];
+      }
+      return '';
+    }
+    for(const v of [r?.raceId,r?.race_id,r?.officialRaceId,r?.official_race_id,r?.netkeibaRaceId,r?.sourceRaceId,r?.id,r?.url,r?.sourceUrl,r?.resultUrl]){
+      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/); if(m) return m[1];
+    }
+    return '';
+  }
+
+  window.__fixed44NarNetkeibaRaceId=derive;
+  window.__fixed44ValidNarNetkeibaRaceId=valid;
+  window.__fixed44CanonicalRaceId=canonical;
+  console.log('✅ FIXED44 NAR canonical race_id helper loaded');
+})();
 
 class HttpProvider{
   constructor(base){this.base=(base||"").replace(/\/$/,"");this.kind="live";}
@@ -1659,7 +1748,10 @@ class HttpProvider{
       }
     }
     try{
-      const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||'');
+      const isNar44=String(race?.org||'').toUpperCase()==='NAR';
+      const rid=isNar44
+        ? (window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||String(race?.id||''))
+        : (String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||''));
       const d=await this.json("/odds?race_id="+encodeURIComponent(rid)+"&type="+encodeURIComponent(race.org)+"&raceId="+encodeURIComponent(rid)+"&org="+encodeURIComponent(race.org));
       const hs=(d&&Array.isArray(d.horses))?d.horses:(Array.isArray(d)?d:[]);
       if(String(race?.org||'').toUpperCase()==='JRA' && liveSuspiciousWeightOddsV34(hs)){
@@ -1704,7 +1796,10 @@ class HttpProvider{
   async getResult(race){
     // FIXED23: houserace Worker の現行契約は race_id/type。
     // legacy raceId/org も併記し、旧Workerとの互換性を残す。
-    const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||'');
+    const isNar44=String(race?.org||'').toUpperCase()==='NAR';
+    const rid=isNar44
+      ? (window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||String(race?.id||''))
+      : (String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||''));
     if(!rid) throw new Error("結果取得用 race_id がありません");
     return await this.json("/result?race_id="+encodeURIComponent(rid)+"&type="+encodeURIComponent(race.org)+"&raceId="+encodeURIComponent(rid)+"&org="+encodeURIComponent(race.org));
   }
@@ -5744,6 +5839,11 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     return clean(race?.track||race?.venue||race?.course||'').replace(/\s+/g,'');
   }
   function normalizeRaceId(race,date){
+    if(String(race?.org||'').toUpperCase()==='NAR'){
+      const temp={...race,date:date||race?.date};
+      const id44=window.__fixed44NarNetkeibaRaceId?.(temp)||window.__fixed44CanonicalRaceId?.(temp)||'';
+      if(id44)return id44;
+    }
     const vals=[race?.id,race?.raceId,race?.race_id,race?.url,race?.sourceUrl,race?.resultUrl];
     for(const v of vals){
       const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);
@@ -6505,6 +6605,10 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   }
 
   function raceId23(r){
+    if(String(r?.org||'').toUpperCase()==='NAR'){
+      const id44=window.__fixed44NarNetkeibaRaceId?.(r)||window.__fixed44CanonicalRaceId?.(r)||'';
+      if(id44)return id44;
+    }
     for(const v of [r?.id,r?.raceId,r?.race_id,r?.url,r?.sourceUrl,r?.resultUrl]){
       const m=String(v??'').match(/(?:race_id=)?(20\d{10})/); if(m)return m[1];
     }
@@ -8113,15 +8217,21 @@ function raceDateYmd(r){
   return '';
 }
 function raceId(r){
-  // まずAPI/URLに含まれる公式12桁race_idを優先する。
-  for(const v of [r?.raceId,r?.race_id,r?.officialRaceId,r?.official_race_id,r?.netkeibaRaceId,r?.sourceRaceId,r?.id,r?.url,r?.sourceUrl,r?.resultUrl]){
-    const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);if(m)return m[1];
-  }
-  try{const m=JSON.stringify(r).match(/(?:race_id[^0-9]{0,12})?(20\d{10})/);if(m)return m[1]}catch(_){ }
-
-  // NARは 日付 + 競馬場コード + R からnetkeibaの12桁race_idを復元できる。
-  // 例: 2026-09-12 帯広6R => 202665091206
   const org=String(r?.org||'').toUpperCase();
+  if(org==='NAR'){
+    const fixed=window.__fixed44NarNetkeibaRaceId?.(r)||window.__fixed44CanonicalRaceId?.(r)||'';
+    if(fixed){try{r.netkeibaRaceId=fixed}catch(_){ } return fixed;}
+  }
+  for(const v of [r?.raceId,r?.race_id,r?.officialRaceId,r?.official_race_id,r?.netkeibaRaceId,r?.sourceRaceId,r?.id,r?.url,r?.sourceUrl,r?.resultUrl]){
+    const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);
+    if(!m)continue;
+    if(org==='NAR' && window.__fixed44ValidNarNetkeibaRaceId && !window.__fixed44ValidNarNetkeibaRaceId(r,m[1]))continue;
+    return m[1];
+  }
+  try{
+    const m=JSON.stringify(r).match(/(?:race_id[^0-9]{0,12})?(20\d{10})/);
+    if(m && (org!=='NAR' || !window.__fixed44ValidNarNetkeibaRaceId || window.__fixed44ValidNarNetkeibaRaceId(r,m[1])))return m[1];
+  }catch(_){ }
   if(org==='NAR'){
     const ymd=raceDateYmd(r);
     const track=clean(r?.track||r?.venue||r?.course||'').replace(/\s+/g,'');
@@ -9468,6 +9578,10 @@ console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
   }[c] || c));
 
   function raceIdOf(race){
+    if(String(race?.org||'').toUpperCase()==='NAR'){
+      const id44=window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||'';
+      if(id44)return id44;
+    }
     for (const v of [race?.raceId, race?.race_id, race?.officialRaceId, race?.official_race_id,
                      race?.netkeibaRaceId, race?.sourceRaceId, race?.id, race?.url, race?.resultUrl]) {
       const m = String(v ?? '').match(/(20\d{10})/);
@@ -10071,5 +10185,14 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
 })();
 </script>
 
+
+<script id="fixed44Diag">
+(() => {
+  try{
+    const r=(typeof engine!=='undefined'&&engine?.selected)?engine.selected:null;
+    if(r&&String(r.org||'').toUpperCase()==='NAR') console.log('FIXED44 NAR race_id',window.__fixed44NarNetkeibaRaceId?.(r));
+  }catch(_){ }
+})();
+</script>
 </body>
 </html>
