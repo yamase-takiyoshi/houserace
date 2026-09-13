@@ -1480,6 +1480,71 @@ async function liveGetWinOddsViaNetkeibaV20(race){
   throw new Error(errors.slice(0,4).join(' / ')||'netkeiba単勝オッズ取得失敗');
 }
 
+
+/* ============================================================
+   FIXED34 JRA OFFICIAL WIN ODDS
+   - Main win odds: JRA official first.
+   - Reject the classic 55.0 / 58.0 carried-weight misparse.
+   ============================================================ */
+function liveRaceDateYmdV34(race){
+  const src=String(race?.date||race?.raceDate||race?.startTime||'');
+  const m=src.match(/(20\d{2})[-\/]?(\d{2})[-\/]?(\d{2})/);
+  if(m)return `${m[1]}${m[2]}${m[3]}`;
+  const d=new Date();
+  const jp=new Date(d.getTime()+9*3600*1000);
+  return `${jp.getUTCFullYear()}${String(jp.getUTCMonth()+1).padStart(2,'0')}${String(jp.getUTCDate()).padStart(2,'0')}`;
+}
+function liveSuspiciousWeightOddsV34(horses){
+  const v=(Array.isArray(horses)?horses:[])
+    .map(h=>Number(h?.odds??h?.winOdds??h?.win_odds))
+    .filter(x=>Number.isFinite(x)&&x>0);
+  if(v.length<3)return false;
+  const inWeight=v.filter(x=>x>=49&&x<=61).length;
+  const uniq=new Set(v.map(x=>Math.round(x*10)/10)).size;
+  return inWeight/v.length>=0.70 && uniq<=6 && !v.some(x=>x>0&&x<20);
+}
+async function liveJraOfficialWinOddsV34(race){
+  const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||'';
+  if(!/^\d{12}$/.test(rid))throw new Error('JRA公式単勝: race_id不正');
+  const st=Store.get("settings",{});
+  const base=String(st.netkeibaProxyUrl||st.apiBase||"https://houserace.nitta-katsuhiko.workers.dev").trim().replace(/\/$/,'');
+  if(!base)throw new Error('JRA公式単勝: Worker URL未設定');
+  const date=liveRaceDateYmdV34(race);
+  const ep=`${base}/?source=jra&jra=official&kind=JRA&type=odds&race_id=${encodeURIComponent(rid)}&date=${encodeURIComponent(date)}&timeout=25000&_=${Date.now()}`;
+  const res=await fetch(ep,{cache:'no-store',headers:{Accept:'text/html,*/*'}});
+  const raw=await res.text();
+  if(!res.ok)throw new Error(`JRA公式 Worker HTTP ${res.status}: ${raw.slice(0,160)}`);
+  const doc=new DOMParser().parseFromString(raw,'text/html');
+  const out=[];
+  const seen=new Set();
+  for(const tr of Array.from(doc.querySelectorAll('tbody tr,tr'))){
+    const numCell=tr.querySelector('td.num');
+    const horseCell=tr.querySelector('td.horse');
+    if(!numCell||!horseCell)continue;
+    const no=Number((String(numCell.textContent||'').match(/\b(?:[1-9]|1[0-8])\b/)||[])[0]||0);
+    if(!no||seen.has(no))continue;
+    const a=horseCell.querySelector('.name a[href*="/JRADB/accessU.html"],a[href*="/JRADB/accessU.html"]');
+    const name=String(a?.textContent||'').replace(/[\s　]+/g,'').trim();
+    if(!name)continue;
+    const oddsText=String(
+      horseCell.querySelector('.odds .num strong')?.textContent||
+      horseCell.querySelector('.odds strong')?.textContent||
+      horseCell.querySelector('.odds .num')?.textContent||
+      ''
+    ).replace(/,/g,'').trim();
+    const odds=Number((oddsText.match(/\d{1,4}(?:\.\d+)?/)||[])[0]||0);
+    if(!(odds>=1&&odds<=9999))continue;
+    const pop=Number((String(horseCell.querySelector('.pop_rank')?.textContent||'').match(/\d{1,2}/)||[])[0]||0);
+    out.push({no,name,odds:Math.round(odds*10)/10,pop:pop||null});
+    seen.add(no);
+  }
+  if(out.length<2)throw new Error(`JRA公式単勝解析 ${out.length}頭`);
+  if(liveSuspiciousWeightOddsV34(out))throw new Error('JRA公式単勝が斤量パターンに見えるため破棄');
+  const ranked=out.filter(x=>x.odds>0).slice().sort((a,b)=>a.odds-b.odds);
+  ranked.forEach((x,i)=>{if(!x.pop)x.pop=i+1});
+  return {status:'LIVE',horses:out.sort((a,b)=>a.no-b.no),at:new Date().toISOString(),source:'JRA公式 jra.go.jp / Worker v6.4'};
+}
+
 class HttpProvider{
   constructor(base){this.base=(base||"").replace(/\/$/,"");this.kind="live";}
   async json(url){
@@ -1583,10 +1648,22 @@ class HttpProvider{
   }
   async getOdds(race){
     const errors=[];
+    if(String(race?.org||'').toUpperCase()==='JRA'){
+      try{
+        const official=await liveJraOfficialWinOddsV34(race);
+        race.horses=official.horses.map(h=>({...h,name:liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`}));
+        return official;
+      }catch(e){
+        errors.push("JRA公式単勝: "+(e?.message||e));
+      }
+    }
     try{
       const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||'');
       const d=await this.json("/odds?race_id="+encodeURIComponent(rid)+"&type="+encodeURIComponent(race.org)+"&raceId="+encodeURIComponent(rid)+"&org="+encodeURIComponent(race.org));
       const hs=(d&&Array.isArray(d.horses))?d.horses:(Array.isArray(d)?d:[]);
+      if(String(race?.org||'').toUpperCase()==='JRA' && liveSuspiciousWeightOddsV34(hs)){
+        throw new Error("Worker /odds が斤量(55.0/58.0等)をオッズとして返したため破棄");
+      }
       if(hs.length){
         const oldNames=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveCleanHorseNameV22(h?.name,h?.no)]).filter(x=>x[0]>=1&&x[1]));
         race.horses=hs.map((h,i)=>{
@@ -8180,31 +8257,45 @@ async function fetchOddsApi(r,id,apiType){
   if(String(r?.org||'').toUpperCase()!=='JRA')throw new Error('JSON APIはJRAのみ');
   const urls=jraOddsApiUrls(id,apiType),proxy=cloudflareOddsProxyUrl(),errors=[];
   for(const url of urls){
+    const action=new URL(url).searchParams.get('action')||'';
     if(proxy){
       try{
         const endpoint=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
         const res=await fetch(endpoint,{method:'GET',cache:'no-store',headers:{'Accept':'application/json,text/plain,*/*'}});
         const raw=await res.text();
         if(res.ok){
-          try{return {json:parseOddsApiJson(raw),url,via:'cloudflare'}}catch(e){
+          try{
+            return {json:parseOddsApiJson(raw),url,via:'cloudflare'};
+          }catch(e){
             let wrap=null;try{wrap=JSON.parse(raw)}catch(_){}
-            if(wrap?.needBridge&&typeof window.__narBridgeFetch==='function'&&window.__bridgeAbsent!==true){
-              const target=wrap?.bridge?.candidates?.[0]?.url||url;
-              try{
-                const rr=await residentialBridgeFetch(target);
-                return {json:parseOddsApiJson(rr.text),url:rr.url||target,via:'cloudflare→residential-bridge'};
-              }catch(be){errors.push(`Cloudflare→Bridge ${new URL(url).searchParams.get('action')}: ${be?.message||be}`)}
+            if(wrap?.needBridge){
+              // FIXED34:
+              // netkeiba JSON API is often HTTP 400 via residential Bridge.
+              // Do not loop the same API into Bridge. Let ensureType() move to
+              // the normal HTML odds pages, which are much more compatible.
+              errors.push(`Cloudflare ${action}: API upstream unavailable → HTMLへ切替`);
             }else{
-              errors.push(`Cloudflare JSON ${new URL(url).searchParams.get('action')}: ${e?.message||e}`);
+              errors.push(`Cloudflare JSON ${action}: ${e?.message||e}`);
             }
           }
-        }else errors.push(`Cloudflare ${new URL(url).searchParams.get('action')}: HTTP ${res.status}`);
-      }catch(e){errors.push(`Cloudflare ${new URL(url).searchParams.get('action')}: ${e?.message||e}`)}
+        }else{
+          errors.push(`Cloudflare ${action}: HTTP ${res.status}`);
+        }
+      }catch(e){
+        errors.push(`Cloudflare ${action}: ${e?.message||e}`);
+      }
+      // Proxy configured: never send this JSON API URL to Bridge.
+      continue;
     }
+
+    // Legacy mode only: if no Cloudflare proxy is configured, residential Bridge
+    // may still be tried for backwards compatibility.
     try{
       const rr=await residentialBridgeFetch(url);
-      return {json:parseOddsApiJson(rr.text),url:rr.url||url,via:proxy?'cloudflare-fallback→residential-bridge':'residential-bridge'};
-    }catch(e){errors.push(`Bridge ${new URL(url).searchParams.get('action')}: ${e?.message||e}`)}
+      return {json:parseOddsApiJson(rr.text),url:rr.url||url,via:'residential-bridge'};
+    }catch(e){
+      errors.push(`Bridge ${action}: ${e?.message||e}`);
+    }
   }
   throw new Error(errors.join(' / ')||'JSON API取得失敗');
 }
@@ -8224,6 +8315,10 @@ const NAR_OFFICIAL_BABA_BY_TRACK={
 const NAR_OFFICIAL_PATH={
   '単勝':'OddsTanFuku','複勝':'OddsTanFuku','枠連':'OddsWakuLenFukuTan','馬連':'OddsUmLenFuku',
   'ワイド':'OddsWide','馬単':'OddsUmLenTan','3連複':'Odds3LenFuku','3連単':'Odds3LenTan'
+};
+const NAR_OFFICIAL_SP_PATH={
+  '単勝':'S_OddsTan','複勝':'S_OddsFuku','枠連':'S_OddsWakuLenFuku','馬連':'S_OddsUmLenFuku',
+  'ワイド':'S_OddsWide','馬単':'S_OddsUmLenTan','3連複':'S_Odds3LenFuku','3連単':'S_Odds3LenTan'
 };
 function narOfficialMeta(r,id){
   id=String(id||'').match(/20\d{10}/)?.[0]||'';
@@ -8245,12 +8340,20 @@ function narOfficialMeta(r,id){
   return {baba,date:ds,no};
 }
 function narOfficialUrls(r,id,type){
-  const meta=narOfficialMeta(r,id),path=NAR_OFFICIAL_PATH[type];
-  if(!meta||!path)return [];
+  const meta=narOfficialMeta(r,id),path=NAR_OFFICIAL_PATH[type],spPath=NAR_OFFICIAL_SP_PATH[type];
+  if(!meta||(!path&&!spPath))return [];
   const q=`k_raceDate=${encodeURIComponent(meta.date)}&k_raceNo=${meta.no}&k_babaCode=${encodeURIComponent(meta.baba)}`;
-  const base=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/${path}?${q}`;
-  // odds_flg=5 is the popularity-oriented rendering on current pages; plain and 4 are fallbacks.
-  return [`${base}&odds_flg=5`,base,`${base}&odds_flg=4`];
+  const out=[];
+  // FIXED35: SP版の人気順は「順位｜組合せ｜オッズ」の単純表で安定している。
+  if(spPath){
+    const sp=`https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/${spPath}?${q}`;
+    out.push(`${sp}&odds_flg=5`,sp);
+  }
+  if(path){
+    const pc=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/${path}?${q}`;
+    out.push(`${pc}&odds_flg=5`,pc,`${pc}&odds_flg=4`);
+  }
+  return [...new Set(out)];
 }
 function officialHalf32(v){return String(v??'').replace(/[０-９．，－ー―]/g,ch=>({
   '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','．':'.','，':',','－':'-','ー':'-','―':'-'
@@ -8359,7 +8462,110 @@ function parseNarOfficialCombos32(html,type,st){
   if(st.rows[type].length===before && ['枠連','馬連','ワイド','馬単'].includes(type))parseMatrix(html,type,st);
   return st.rows[type].length-before;
 }
+
+function parseNarOfficialSp35(html,type,st){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const before=st.rows[type]?.length||0;
+  const tables=[...doc.querySelectorAll('table')];
+  const maxNo=type==='枠連'?8:18;
+  const need=(type==='3連複'||type==='3連単')?3:2;
+
+  // 単勝・複勝：SP版は 馬番｜馬名｜オッズ、人気順では 順位｜馬番｜馬名｜オッズ。
+  if(type==='単勝'||type==='複勝'){
+    let seq=0;
+    for(const tb of tables){
+      for(const tr of tb.querySelectorAll('tr')){
+        const cells=[...tr.querySelectorAll('th,td')];
+        if(cells.length<3)continue;
+        const texts=cells.map(c=>officialText32(c.textContent));
+        const joined=texts.join('|');
+        if(/馬番/.test(joined)&&/馬名/.test(joined)&&/オッズ/.test(joined))continue;
+
+        let nameIndex=-1;
+        for(let i=0;i<texts.length;i++){
+          const x=texts[i];
+          if(!x||/^(?:人気順|馬番順|順位|順|位|馬番|馬名|オッズ)$/.test(x))continue;
+          if(/[ぁ-んァ-ヶ一-龠A-Za-z]/.test(x) && !/^\d/.test(x)){nameIndex=i;break}
+        }
+        if(nameIndex<0)continue;
+
+        let no=0;
+        for(let i=nameIndex-1;i>=0;i--){
+          if(/^\d{1,2}$/.test(texts[i])){
+            const n=Number(texts[i]);
+            if(n>=1&&n<=18){no=n;break}
+          }
+        }
+        if(!no)continue;
+
+        let oddsText='';
+        for(let i=nameIndex+1;i<texts.length;i++){
+          const x=texts[i].replace(/,/g,'').replace(/\s+/g,'');
+          if(/^\d{1,5}(?:\.\d+)?(?:[-－–—―]\d{1,5}(?:\.\d+)?)?$/.test(x)){
+            oddsText=x.replace(/[－–—―]/g,'-');break;
+          }
+        }
+        if(!oddsText)continue;
+
+        const rg=range(oddsText);
+        if(!rg||rg.mid<1)continue;
+        seq++;
+        addRow(st,type,String(no),rg.text,seq);
+      }
+    }
+    return (st.rows[type]?.length||0)-before;
+  }
+
+  // 組合せ券種：SP人気順は 順位｜組合せ｜オッズ。
+  const sep='[-－–—―>＞→]';
+  const comboRe=need===3
+    ? new RegExp(`^\\s*([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])\\s*$`)
+    : new RegExp(`^\\s*([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])\\s*$`);
+
+  let seq=0;
+  for(const tb of tables){
+    for(const tr of tb.querySelectorAll('tr')){
+      const cells=[...tr.querySelectorAll('th,td')];
+      if(cells.length<3)continue;
+      const texts=cells.map(c=>officialText32(c.textContent));
+      if(/組合せ/.test(texts.join('|'))&&/オッズ/.test(texts.join('|')))continue;
+
+      let combo='',ci=-1;
+      for(let i=0;i<texts.length;i++){
+        const m=texts[i].replace(/\s+/g,'').match(comboRe);
+        if(!m)continue;
+        const ns=m.slice(1,need+1).map(Number);
+        if(ns.every(n=>n>=1&&n<=maxNo)){combo=ns.join('-');ci=i;break}
+      }
+      if(!combo)continue;
+
+      let oddsText='';
+      for(let i=ci+1;i<texts.length;i++){
+        const x=texts[i].replace(/,/g,'').replace(/\s+/g,'').replace(/[－–—―]/g,'-');
+        if(/^\d{1,6}(?:\.\d+)?(?:-\d{1,6}(?:\.\d+)?)?$/.test(x)){
+          const rg=range(x);
+          if(rg&&rg.mid>=1){oddsText=x;break}
+        }
+      }
+      if(!oddsText)continue;
+
+      let rank=++seq;
+      if(ci>0 && /^\d+$/.test(texts[ci-1])){
+        const r=Number(texts[ci-1]); if(r>=1)rank=r;
+      }
+
+      if(type==='3連複'||type==='馬連'||type==='ワイド'||type==='枠連'){
+        combo=combo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+      }
+      addRow(st,type,combo,oddsText,rank);
+    }
+  }
+  return (st.rows[type]?.length||0)-before;
+}
+
 function parseNarOfficialIntoRows32(html,type,st){
+  const spAdded=parseNarOfficialSp35(html,type,st);
+  if(spAdded>0)return spAdded;
   if(type==='単勝'||type==='複勝'){
     const r=parseNarOfficialSingle32(html,st);return type==='単勝'?r.win:r.place;
   }
