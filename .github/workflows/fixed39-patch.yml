@@ -25,18 +25,18 @@ jobs:
           p = Path('index.html')
           s = p.read_text(encoding='utf-8')
 
-          old_bridge = '''async function bridgeFetch(url){
+          old_bridge = r'''async function bridgeFetch(url){
             const r=await window.__oneFileBridgeFetch(url);
             if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
             return {text:r.text,url:r.finalUrl||url,via:r.via};
           }'''
 
-          new_bridge = '''function fixed39NativeFirstUrl(url){
+          new_bridge = r'''function fixed39NativeFirstUrl(url){
             try{
               const u=new URL(String(url));
               const h=u.hostname.toLowerCase();
-              const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\\/odds(?:\\/|$)/i.test(u.pathname) && !/api_get_nar_odds\\.html$/i.test(u.pathname);
-              const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\\/KeibaWeb\\/TodayRaceInfo\\//i.test(u.pathname);
+              const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\/odds(?:\/|$)/i.test(u.pathname) && !/api_get_nar_odds\.html$/i.test(u.pathname);
+              const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\/KeibaWeb\/TodayRaceInfo\//i.test(u.pathname);
               return narNetkeiba||narOfficial;
             }catch(_){return false}
           }
@@ -68,7 +68,7 @@ jobs:
           if nar_start < 0 or jra_start < 0 or jra_start <= nar_start:
               raise SystemExit(f'FIXED39 abort: baseUrls boundaries invalid fn={fn} nar={nar_start} jra={jra_start}')
 
-          new_nar = '''  if(nar){
+          new_nar = r'''  if(nar){
             // FIXED39: PC版NAR netkeibaを券種別に最優先。mobileは最後のfallback。
             // TYPE_CODEは既存の正しい b1/b3/b4/b5/b6/b7/b8 をそのまま使う。
             const desktopTyped=[
@@ -88,9 +88,8 @@ jobs:
               ...mobileTyped
             ];
             return [...desktopTyped,...mobileTyped];
-          }
-'''
-          s = s[:nar_start] + new_nar + s[jra_start:]
+          }'''
+          s = s[:nar_start] + new_nar + '\n' + s[jra_start:]
 
           marker = '<!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->'
           if marker in s and 'FIXED39 NAR RESIDENTIAL-FIRST' not in s:
@@ -106,7 +105,10 @@ jobs:
           if missing:
               raise SystemExit('FIXED39 guard failed: ' + ', '.join(missing))
 
-          if s.find('https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', s.find('function baseUrls')) > s.find('https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', s.find('function baseUrls')):
+          basepos = s.find('function baseUrls')
+          deskpos = s.find('https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', basepos)
+          mobpos = s.find('https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}', basepos)
+          if deskpos < 0 or mobpos < 0 or deskpos > mobpos:
               raise SystemExit('FIXED39 guard failed: desktop URL is not first')
 
           p.write_text(s, encoding='utf-8')
