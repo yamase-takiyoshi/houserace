@@ -8262,6 +8262,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
+<!-- FIXED39 NAR RESIDENTIAL-FIRST + PC NETKEIBA FIRST / 2026-09-14 -->
 <!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->
 <style id="allTicketOddsCssV298">
 #ticketOddsModule{margin-top:12px;border:1px solid var(--line,#2b4131);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.10)}
@@ -8479,34 +8480,54 @@ async function residentialBridgeFetch(url){
   const r=await window.__residentialBridgeFetch38(url);
   return {text:r.text,url:r.finalUrl||url,via:r.via};
 }
+function fixed39NativeFirstUrl(url){
+  try{
+    const u=new URL(String(url));
+    const h=u.hostname.toLowerCase();
+    const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\/odds(?:\/|$)/i.test(u.pathname) && !/api_get_nar_odds\.html$/i.test(u.pathname);
+    const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\/KeibaWeb\/TodayRaceInfo\//i.test(u.pathname);
+    return narNetkeiba||narOfficial;
+  }catch(_){return false}
+}
 async function bridgeFetch(url){
-  const r=await window.__oneFileBridgeFetch(url);
+  const target=String(url);
+  // FIXED39: NAR odds -> residential Bridge first; Cloudflare is fallback.
+  if(fixed39NativeFirstUrl(target)){
+    try{
+      const rr=await residentialBridgeFetch(target);
+      if(rr?.text && String(rr.text).trim().length>=20)return rr;
+    }catch(e){
+      console.warn('[FIXED39] residential-first failed; fallback normal route',target,e);
+    }
+  }
+  const r=await window.__oneFileBridgeFetch(target);
   if(!(r.status>=200&&r.status<300)) throw new Error(r.error||`取得 HTTP ${r.status||0}`);
-  return {text:r.text,url:r.finalUrl||url,via:r.via};
+  return {text:r.text,url:r.finalUrl||target,via:r.via};
 }
 function baseUrls(r,id,type){
   const nar=String(r?.org||'').toUpperCase()==='NAR';
   const code=type||'b1';
   if(nar){
-    // FIXED30: nar.sp の旧 /odds/odds.html は 404 になる。
-    // 3連複/3連単は現在のモバイル「オッズ一覧」に人気順表が載るため、
-    // type=b7/b8 の旧個別URLではなく overview を最優先にする。
-    const overview=[
-      `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
-      `https://nar.sp.netkeiba.com/odds/?race_id=${id}`
-    ];
-    if(code==='b7'||code==='b8') return [
-      ...overview,
-      `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-      `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
-    ];
-    return [
-      `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-      `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`,
-      `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-      `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
-    ];
-  }
+  // FIXED39: PC版NAR netkeibaを券種別に最優先。mobileは最後のfallback。
+  // TYPE_CODEは既存の正しい b1/b3/b4/b5/b6/b7/b8 をそのまま使う。
+  const desktopTyped=[
+    `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+    `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+  ];
+  const mobileTyped=[
+    `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+    `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`
+  ];
+  if(code==='b7'||code==='b8') return [
+    ...desktopTyped,
+    `https://nar.netkeiba.com/odds/index.html?race_id=${id}`,
+    `https://nar.netkeiba.com/odds/?race_id=${id}`,
+    `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
+    `https://nar.sp.netkeiba.com/odds/?race_id=${id}`,
+    ...mobileTyped
+  ];
+  return [...desktopTyped,...mobileTyped];
+}
   return [
     // FIXED20: iPad + Bridge 1.7.7 では desktop odds が HTTP 400 になるため mobile を最優先。
     `https://race.sp.netkeiba.com/?pid=odds_view&race_id=${id}&type=${code}`,
