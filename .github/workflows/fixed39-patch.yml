@@ -1,3 +1,4 @@
+# second push: workflow already exists on main, so this triggers the one-shot patch
 name: Apply FIXED39 NAR bridge routing
 
 on:
