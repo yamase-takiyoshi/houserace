@@ -182,6 +182,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
+<div class="notice" style="border-color:#2f8f63;background:#0d281d"><b>FIXED30 NAR 3連単</b> — NARの旧 <code>/odds/odds.html</code> 404を回避し、現行のnetkeibaモバイルオッズ一覧から3連単/3連複の人気順表を券種別に取得します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -7845,7 +7846,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
-<!-- v5.18.305 EV RANGE (PLACE/WIDE) + NETKEIBA MOBILE-FIRST ALL TICKET ODDS / 2026-09-13 -->
+<!-- v5.18.306 NAR TRIFECTA FIX + EV RANGE (PLACE/WIDE) + NETKEIBA MOBILE-FIRST ALL TICKET ODDS / 2026-09-13 -->
 <style id="allTicketOddsCssV298">
 #ticketOddsModule{margin-top:12px;border:1px solid var(--line,#2b4131);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.10)}
 #ticketOddsModule .ticket-odds-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;border-bottom:1px solid var(--line,#2b4131)}
@@ -7871,11 +7872,11 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   #ticketOddsModule table{min-width:760px}
 }
 </style>
-<script id="allTicketOddsV305">
+<script id="allTicketOddsV306">
 (function(){
 'use strict';
-if(window.__ALL_TICKET_ODDS_V305__) return;
-window.__ALL_TICKET_ODDS_V305__=true;
+if(window.__ALL_TICKET_ODDS_V306__) return;
+window.__ALL_TICKET_ODDS_V306__=true;
 const TYPES=['単勝','複勝','枠連','ワイド','馬連','馬単','3連複','3連単'];
 const TYPE_CODE={'単勝':'b1','複勝':'b1','枠連':'b3','馬連':'b4','ワイド':'b5','馬単':'b6','3連複':'b7','3連単':'b8'};
 const API_TYPE_CODE={'単勝':'1','複勝':'1','枠連':'3','馬連':'4','ワイド':'5','馬単':'6','3連複':'7','3連単':'8'};
@@ -8012,7 +8013,38 @@ function addRow(st,type,selection,oddsText,rank){
 function findHeadingTable(doc,needle){const hs=[...doc.querySelectorAll('h1,h2,h3,h4,.RaceOdds_Hd,.Odds_Hd')];for(const h of hs){const t=clean(h.textContent).replace(/３/g,'3');if(!t.includes(needle))continue;let n=h.nextElementSibling;for(let i=0;n&&i<8;i++,n=n.nextElementSibling){if(n.matches?.('table'))return n;const q=n.querySelector?.('table');if(q)return q;if(/^H[1-4]$/.test(n.tagName))break}}return null}
 function parseSingleTable(tb,type,st){if(!tb)return;const rows=[...tb.querySelectorAll('tr')];for(const tr of rows){const c=[...tr.querySelectorAll('th,td')].map(x=>clean(x.textContent));if(c.length<2)continue;const joined=c.join('|');if(/馬名|単勝オッズ|複勝オッズ/.test(joined)&&!/^[0-9]/.test(c[0]))continue;const ints=c.map(x=>/^\d{1,2}$/.test(x)?Number(x):NaN);let no=-1;for(let i=ints.length-1;i>=0;i--)if(ints[i]>=1&&ints[i]<=18){no=ints[i];break}if(no<1)continue;const oddsCells=c.filter((x,i)=>i>0&&/^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?$/.test(x.replace(/,/g,'')));if(!oddsCells.length)continue;const pick=type==='複勝'?(oddsCells.find(x=>x.includes('-'))||oddsCells[oddsCells.length-1]):([...oddsCells].reverse().find(x=>!x.includes('-'))||'');if(pick)addRow(st,type,String(no),pick,no)}}
 function parseSinglePlace(doc,st){const combo=findHeadingTable(doc,'単勝・複勝');if(combo){const rows=[...combo.querySelectorAll('tr')];for(const tr of rows){const c=[...tr.querySelectorAll('th,td')].map(x=>clean(x.textContent));if(c.length<4)continue;const joined=c.join('|');if(/馬名|単勝オッズ|複勝オッズ/.test(joined)&&!/^[0-9]/.test(c[0]))continue;const ints=c.map(x=>/^\d{1,2}$/.test(x)?Number(x):NaN);let no=-1;for(let i=ints.length-1;i>=0;i--)if(ints[i]>=1&&ints[i]<=18){no=ints[i];break}if(no<1)continue;const oddsCells=c.filter((x,i)=>i>0&&/^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?$/.test(x.replace(/,/g,'')));const place=[...oddsCells].reverse().find(x=>x.includes('-'))||'';const win=[...oddsCells].reverse().find(x=>!x.includes('-')&&Number(x)>0)||'';if(win)addRow(st,'単勝',String(no),win,no);if(place)addRow(st,'複勝',String(no),place,no)}return}parseSingleTable(findHeadingTable(doc,'単勝'),'単勝',st);parseSingleTable(findHeadingTable(doc,'複勝'),'複勝',st)}
-function parseRankTable(tb,type,st,wideToo=false){if(!tb)return;let rank=0;for(const tr of tb.querySelectorAll('tr')){const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;const c=cells.map(x=>clean(x.textContent));if(/人気|組み合わせ|オッズ/.test(c.join('|'))&&c.some(x=>/人気|組み合わせ/.test(x)))continue;const r0=/^\d+$/.test(c[0])?Number(c[0]):(++rank);let comboCell=cells[1]||cells[0];let ns=[...comboCell.textContent.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>m[1]);if(type==='枠連')ns=[...comboCell.textContent.matchAll(/\b([1-8])\b/g)].map(m=>m[1]);const need=(type==='3連複'||type==='3連単')?3:2;if(ns.length<need){const joined=c.slice(1,-1).join(' ');ns=[...joined.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>m[1])}if(ns.length<need)continue;const selection=ns.slice(0,need).join('-');const oddsCandidates=c.slice(2).filter(x=>/\d/.test(x));if(!oddsCandidates.length)continue;addRow(st,type,selection,oddsCandidates[0],r0);if(wideToo&&oddsCandidates[1])addRow(st,'ワイド',selection,oddsCandidates[1],r0)} }
+function parseRankTable(tb,type,st,wideToo=false){
+  if(!tb)return;
+  let rank=0;
+  for(const tr of tb.querySelectorAll('tr')){
+    const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;
+    const c=cells.map(x=>clean(x.textContent));
+    if(/人気|組み合わせ|オッズ/.test(c.join('|'))&&c.some(x=>/人気|組み合わせ/.test(x)))continue;
+    const r0=/^\d+$/.test(c[0])?Number(c[0]):(++rank);
+    const comboCell=cells[1]||cells[0];
+    const need=(type==='3連複'||type==='3連単')?3:2;
+    const maxNo=type==='枠連'?8:18;
+    // FIXED30: mobile版は組番が複数span/liに分かれることがある。
+    // textContent が「831」のように連結されても、leaf要素から 8-3-1 を復元する。
+    let ns=[...comboCell.querySelectorAll('*')]
+      .filter(el=>el.children.length===0)
+      .map(el=>clean(el.textContent))
+      .filter(x=>/^\d{1,2}$/.test(x)&&Number(x)>=1&&Number(x)<=maxNo);
+    if(ns.length<need){
+      const re=type==='枠連'?/\b([1-8])\b/g:/\b([1-9]|1[0-8])\b/g;
+      ns=[...String(comboCell.textContent||'').matchAll(re)].map(m=>m[1]);
+    }
+    if(ns.length<need){
+      const joined=c.slice(1,-1).join(' '),re=type==='枠連'?/\b([1-8])\b/g:/\b([1-9]|1[0-8])\b/g;
+      ns=[...joined.matchAll(re)].map(m=>m[1]);
+    }
+    if(ns.length<need)continue;
+    const selection=ns.slice(0,need).join('-');
+    const oddsCandidates=c.slice(2).filter(x=>/\d/.test(x));if(!oddsCandidates.length)continue;
+    addRow(st,type,selection,oddsCandidates[0],r0);
+    if(wideToo&&oddsCandidates[1])addRow(st,'ワイド',selection,oddsCandidates[1],r0);
+  }
+}
 function parseOverview(html,st){const doc=new DOMParser().parseFromString(html,'text/html');parseSinglePlace(doc,st);parseRankTable(findHeadingTable(doc,'馬連・ワイド'),'馬連',st,true);parseRankTable(findHeadingTable(doc,'馬単'),'馬単',st);parseRankTable(findHeadingTable(doc,'3連複'),'3連複',st);parseRankTable(findHeadingTable(doc,'3連単'),'3連単',st)}
 function parseMatrix(html,type,st){const doc=new DOMParser().parseFromString(html,'text/html');const tables=[...doc.querySelectorAll('table')];let added=0;for(const tb of tables){let colHeaders=[];for(const tr of tb.querySelectorAll('tr')){const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;const texts=cells.map(x=>clean(x.textContent));if(texts.every(x=>/^\d{1,2}$/.test(x)||x==='')){colHeaders=texts.map(x=>/^\d{1,2}$/.test(x)?Number(x):null);continue}let rowNo=/^\d{1,2}$/.test(texts[0])?Number(texts[0]):null;if(!rowNo)continue;for(let i=1;i<cells.length;i++){const tx=texts[i];const rg=range(tx);if(!rg||rg.mid<1)continue;let nums=[...tx.matchAll(/\b([1-9]|1[0-8])\b/g)].map(m=>Number(m[1]));let colNo=nums.find(n=>n!==rowNo)||colHeaders[i]||null;const inp=cells[i].querySelector('input');if(!colNo&&inp){const bag=[inp.value,inp.name,inp.id,inp.dataset?.umaban,inp.dataset?.horse].filter(Boolean).join(' ');const mm=bag.match(/(?:^|\D)([1-9]|1[0-8])(?:\D|$)/g)||[];const vs=mm.map(x=>Number(x.match(/\d+/)[0])).filter(n=>n!==rowNo);colNo=vs[0]||null}if(!colNo||colNo===rowNo)continue;let selection=(type==='馬単')?`${rowNo}-${colNo}`:[rowNo,colNo].sort((a,b)=>a-b).join('-');addRow(st,type,selection,rg.text,st.rows[type].length+1);added++}}}return added}
 function cloudflareOddsProxyUrl(){
@@ -8068,11 +8100,26 @@ async function bridgeFetch(url){
 function baseUrls(r,id,type){
   const nar=String(r?.org||'').toUpperCase()==='NAR';
   const code=type||'b1';
-  if(nar)return [
-    `https://nar.sp.netkeiba.com/odds/odds.html?race_id=${id}&type=${code}`,
-    `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
-    `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
-  ];
+  if(nar){
+    // FIXED30: nar.sp の旧 /odds/odds.html は 404 になる。
+    // 3連複/3連単は現在のモバイル「オッズ一覧」に人気順表が載るため、
+    // type=b7/b8 の旧個別URLではなく overview を最優先にする。
+    const overview=[
+      `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}`,
+      `https://nar.sp.netkeiba.com/odds/?race_id=${id}`
+    ];
+    if(code==='b7'||code==='b8') return [
+      ...overview,
+      `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+      `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+    ];
+    return [
+      `https://nar.sp.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+      `https://nar.sp.netkeiba.com/odds/?race_id=${id}&type=${code}`,
+      `https://nar.netkeiba.com/odds/index.html?race_id=${id}&type=${code}`,
+      `https://nar.netkeiba.com/odds/?race_id=${id}&type=${code}`
+    ];
+  }
   return [
     // FIXED20: iPad + Bridge 1.7.7 では desktop odds が HTTP 400 になるため mobile を最優先。
     `https://race.sp.netkeiba.com/?pid=odds_view&race_id=${id}&type=${code}`,
@@ -8243,8 +8290,27 @@ function parseTypeHtml(html,type,st){
       parseRankTable(tb,type,st);
     }
   }else{
-    // 3連複/3連単は人気順テーブルを優先。ページ内に複数表がある場合は全表を試す。
-    for(const tb of doc.querySelectorAll('table')) parseRankTable(tb,type,st);
+    // FIXED30: overview には3連複と3連単の両方があるため、選択券種の見出し直下だけ解析する。
+    // 全tableを3連単として読むと、3連複等を誤って3連単へ混入させるため禁止。
+    let tb=findHeadingTable(doc,type);
+    if(!tb && type==='3連複') tb=findHeadingTable(doc,'三連複');
+    if(!tb && type==='3連単') tb=findHeadingTable(doc,'三連単');
+    if(tb) parseRankTable(tb,type,st);
+    else {
+      // 個別ページで見出しが省略される場合だけ、3頭組の人気順tableを限定フォールバック。
+      const candidates=[...doc.querySelectorAll('table')].filter(t=>{
+        const tx=clean(t.textContent).replace(/３/g,'3');
+        if(!/人気|組み合わせ|オッズ/.test(tx)) return false;
+        const rows=[...t.querySelectorAll('tr')].slice(0,8);
+        let hit=0;
+        for(const tr of rows){
+          const nums=[...clean(tr.textContent).matchAll(/(?:^|\D)([1-9]|1[0-8])(?=\D|$)/g)];
+          if(nums.length>=3) hit++;
+        }
+        return hit>=2;
+      });
+      if(candidates.length===1) parseRankTable(candidates[0],type,st);
+    }
   }
   return (st.rows[type]?.length||0)-before;
 }
