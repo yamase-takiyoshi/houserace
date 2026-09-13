@@ -184,6 +184,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
 <div class="notice" style="border-color:#2f8f63;background:#0d281d"><b>FIXED30 NAR 3連単</b> — NARの旧 <code>/odds/odds.html</code> 404を回避し、現行のnetkeibaモバイルオッズ一覧から3連単/3連複の人気順表を券種別に取得します。</div>
 <div class="notice" style="border-color:#3c82b8;background:#0d1f2b"><b>FIXED31 JRA JSON API 400</b> — JRAオッズAPIを現行の最小URL <code>race_id + type + action=update</code> に統一。旧 <code>pid/action=init/sort/compress/output</code> 付きURLでHTTP 400になった場合を回避し、update→initの順で自動再試行します。</div>
+<div class="notice" style="border-color:#a36f2f;background:#2a1f0d"><b>FIXED32 NAR公式オッズ優先</b> — NARのnetkeiba遮断/HTTP 400時は、地方競馬情報サイト（keiba.go.jp）の単複・枠連・馬連・ワイド・馬単・3連複・3連単へ自動フォールバックします。水沢などの競馬場コードはrace_idから復元します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -7856,7 +7857,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
-<!-- v5.18.306 NAR TRIFECTA FIX + EV RANGE (PLACE/WIDE) + NETKEIBA MOBILE-FIRST ALL TICKET ODDS / 2026-09-13 -->
+<!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->
 <style id="allTicketOddsCssV298">
 #ticketOddsModule{margin-top:12px;border:1px solid var(--line,#2b4131);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.10)}
 #ticketOddsModule .ticket-odds-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;border-bottom:1px solid var(--line,#2b4131)}
@@ -7969,6 +7970,7 @@ async function syncMainHorsesFromWinRowsV23(r,st){
       const no=Number(x.selection), prev=old.get(no)||{};
       const prevNoise=Number(prev.modelNoise);
       return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0,
+        name:String(prev.name||x.horseName||'').trim(),
         modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(raceId(r),no)};
     });
     let names=new Map();
@@ -8200,6 +8202,193 @@ async function fetchOddsApi(r,id,apiType){
   }
   throw new Error(errors.join(' / ')||'JSON API取得失敗');
 }
+/* ============================================================
+   FIXED32 NAR OFFICIAL ODDS FALLBACK
+   netkeiba NAR pages are intermittently blocked/HTTP 400 on Bridge 1.7.7.
+   Prefer the official keiba.go.jp live odds pages for NAR.
+   ============================================================ */
+const NAR_OFFICIAL_BABA_BY_NK={
+  '30':'36','35':'10','36':'11','42':'18','43':'19','44':'20','45':'21',
+  '46':'22','47':'23','48':'24','50':'27','51':'28','54':'31','55':'32','65':'3'
+};
+const NAR_OFFICIAL_BABA_BY_TRACK={
+  '帯広':'3','帯広ば':'3','ばんえい':'3','門別':'36','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20','川崎':'21',
+  '金沢':'22','笠松':'23','名古屋':'24','園田':'27','姫路':'28','高知':'31','佐賀':'32'
+};
+const NAR_OFFICIAL_PATH={
+  '単勝':'OddsTanFuku','複勝':'OddsTanFuku','枠連':'OddsWakuLenFukuTan','馬連':'OddsUmLenFuku',
+  'ワイド':'OddsWide','馬単':'OddsUmLenTan','3連複':'Odds3LenFuku','3連単':'Odds3LenTan'
+};
+function narOfficialMeta(r,id){
+  id=String(id||'').match(/20\d{10}/)?.[0]||'';
+  let baba='';
+  const t=clean(r?.track||r?.venue||r?.course||'').replace(/\s+/g,'');
+  if(t){
+    const k=Object.keys(NAR_OFFICIAL_BABA_BY_TRACK).find(x=>t===x||t.includes(x));
+    if(k)baba=NAR_OFFICIAL_BABA_BY_TRACK[k];
+  }
+  if(!baba&&id)baba=NAR_OFFICIAL_BABA_BY_NK[id.slice(4,6)]||'';
+  let ds='',no=Number(r?.no??r?.raceNo??r?.race_no??r?.r??0);
+  if(id){
+    ds=`${id.slice(0,4)}/${id.slice(6,8)}/${id.slice(8,10)}`;
+    if(!(no>=1&&no<=12))no=Number(id.slice(10,12));
+  }else{
+    const ymd=raceDateYmd(r); if(/^20\d{6}$/.test(ymd))ds=`${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}`;
+  }
+  if(!baba||!/^20\d{2}\/\d{2}\/\d{2}$/.test(ds)||!(no>=1&&no<=12))return null;
+  return {baba,date:ds,no};
+}
+function narOfficialUrls(r,id,type){
+  const meta=narOfficialMeta(r,id),path=NAR_OFFICIAL_PATH[type];
+  if(!meta||!path)return [];
+  const q=`k_raceDate=${encodeURIComponent(meta.date)}&k_raceNo=${meta.no}&k_babaCode=${encodeURIComponent(meta.baba)}`;
+  const base=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/${path}?${q}`;
+  // odds_flg=5 is the popularity-oriented rendering on current pages; plain and 4 are fallbacks.
+  return [`${base}&odds_flg=5`,base,`${base}&odds_flg=4`];
+}
+function officialHalf32(v){return String(v??'').replace(/[０-９．，－ー―]/g,ch=>({
+  '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','．':'.','，':',','－':'-','ー':'-','―':'-'
+}[ch]||ch));}
+function officialText32(v){return clean(officialHalf32(v));}
+function officialTables32(doc,type){
+  const label={'単勝':'単勝・複勝','複勝':'単勝・複勝','枠連':'枠連複','馬連':'馬連複','ワイド':'ワイド','馬単':'馬連単','3連複':'三連複','3連単':'三連単'}[type]||type;
+  const heads=[...doc.querySelectorAll('h1,h2,h3,h4,h5,h6,caption')];
+  const h=heads.find(x=>officialText32(x.textContent).includes(label));
+  if(!h)return [...doc.querySelectorAll('table')];
+  const out=[];
+  let n=h.nextElementSibling;
+  for(let i=0;n&&i<18;i++,n=n.nextElementSibling){
+    if(/^H[1-6]$/.test(n.tagName||'')&&officialText32(n.textContent).includes('オッズ'))break;
+    if(n.matches?.('table'))out.push(n);
+    out.push(...(n.querySelectorAll?.('table')||[]));
+    if(out.length>12)break;
+  }
+  if(!out.length){
+    const p=h.parentElement;
+    if(p)out.push(...p.querySelectorAll('table'));
+  }
+  return out.length?[...new Set(out)]:[...doc.querySelectorAll('table')];
+}
+function parseNarOfficialSingle32(html,st){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const tables=officialTables32(doc,'単勝');
+  const beforeW=st.rows['単勝'].length,beforeP=st.rows['複勝'].length;
+  let seq=0;
+  for(const tb of tables){
+    for(const tr of tb.querySelectorAll('tr')){
+      const cells=[...tr.querySelectorAll('th,td')]; if(cells.length<4)continue;
+      const texts=cells.map(c=>officialText32(c.textContent));
+      const joined=texts.join('|');
+      if(/馬番/.test(joined)&&/単勝/.test(joined))continue;
+      let firstDec=-1;
+      for(let i=0;i<texts.length;i++){
+        const m=texts[i].replace(/,/g,'').match(/(?:^|\s)(\d{1,5}(?:\.\d+))(?:\s|$)/);
+        if(m&&Number(m[1])>=1){firstDec=i;break}
+      }
+      if(firstDec<1)continue;
+      const ints=[];
+      for(let i=0;i<firstDec;i++)if(/^\d{1,2}$/.test(texts[i])&&Number(texts[i])>=1&&Number(texts[i])<=18)ints.push({i,n:Number(texts[i])});
+      if(!ints.length)continue;
+      const no=ints[ints.length-1].n;
+      const winM=texts[firstDec].replace(/,/g,'').match(/\d{1,5}(?:\.\d+)?/); const win=Number(winM?.[0]);
+      if(!(win>=1))continue;
+      let name='';
+      for(let i=firstDec-1;i>=0;i--){
+        const x=texts[i];
+        if(!x||/^\d+$/.test(x)||/^(人気|枠|馬番|印)$/.test(x))continue;
+        if(/[ぁ-んァ-ヶ一-龠A-Za-z]/.test(x)){name=x;break}
+      }
+      seq++; addRow(st,'単勝',String(no),String(win),seq);
+      const wr=st.rows['単勝'].find(x=>x.key===`単勝|${no}`); if(wr&&name)wr.horseName=name;
+      const placeNums=[];
+      for(let i=firstDec+1;i<texts.length;i++){
+        const x=texts[i];
+        if(/^[牡牝セ騙]\s*\d+/.test(x))break;
+        for(const m of x.replace(/,/g,'').matchAll(/\d{1,4}(?:\.\d+)?/g)){
+          const v=Number(m[0]); if(v>=1&&v<1000)placeNums.push(v);
+        }
+        if(placeNums.length>=2)break;
+      }
+      if(placeNums.length){
+        const lo=placeNums[0],hi=placeNums[1]??placeNums[0];
+        if(hi>=lo&&hi<1000){addRow(st,'複勝',String(no),`${lo} - ${hi}`,seq);const pr=st.rows['複勝'].find(x=>x.key===`複勝|${no}`);if(pr&&name)pr.horseName=name;}
+      }
+    }
+  }
+  return {win:st.rows['単勝'].length-beforeW,place:st.rows['複勝'].length-beforeP};
+}
+function parseNarOfficialCombos32(html,type,st){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const tables=officialTables32(doc,type),before=st.rows[type].length;
+  const need=(type==='3連複'||type==='3連単')?3:2;
+  const maxNo=type==='枠連'?8:18;
+  let seq=0;
+  const sep='[-－–—―>＞→]';
+  const pat=need===3?new RegExp(`(?:^|\\D)([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])(?:\\D|$)`):new RegExp(`(?:^|\\D)([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])(?:\\D|$)`);
+  for(const tb of tables){
+    for(const tr of tb.querySelectorAll('tr')){
+      const cells=[...tr.querySelectorAll('th,td')]; if(cells.length<2)continue;
+      const texts=cells.map(c=>officialText32(c.textContent));
+      let combo='',comboIndex=-1;
+      for(let i=0;i<texts.length;i++){
+        const m=texts[i].match(pat); if(!m)continue;
+        const ns=m.slice(1,need+1).map(Number); if(ns.every(n=>n>=1&&n<=maxNo)){combo=ns.join('-');comboIndex=i;break}
+      }
+      if(!combo)continue;
+      let odd=NaN,oddIndex=-1;
+      for(let i=comboIndex+1;i<texts.length;i++){
+        const m=texts[i].replace(/,/g,'').match(/(?:^|\s)(\d{1,6}(?:\.\d+)?)(?:\s|$)/);
+        if(m){const v=Number(m[1]);if(v>=1&&v<1000000){odd=v;oddIndex=i;break}}
+      }
+      if(!(odd>=1))continue;
+      let rank=++seq;
+      for(let i=oddIndex+1;i<texts.length;i++)if(/^\d+$/.test(texts[i])){const v=Number(texts[i]);if(v>=1){rank=v;break}}
+      if(type==='3連複'||type==='馬連'||type==='ワイド'||type==='枠連'){
+        const ns=combo.split('-').map(Number).sort((a,b)=>a-b);combo=ns.join('-');
+      }
+      addRow(st,type,combo,String(odd),rank);
+    }
+  }
+  // Pair types also have matrix renderings; reuse the existing parser when popularity rows were absent.
+  if(st.rows[type].length===before && ['枠連','馬連','ワイド','馬単'].includes(type))parseMatrix(html,type,st);
+  return st.rows[type].length-before;
+}
+function parseNarOfficialIntoRows32(html,type,st){
+  if(type==='単勝'||type==='複勝'){
+    const r=parseNarOfficialSingle32(html,st);return type==='単勝'?r.win:r.place;
+  }
+  return parseNarOfficialCombos32(html,type,st);
+}
+async function fetchNarOfficial32(r,id,type,st){
+  const urls=narOfficialUrls(r,id,type); if(!urls.length)throw new Error('NAR公式URL生成不可');
+  const errs=[];
+  for(const u of urls){
+    try{
+      const x=await bridgeFetch(u);
+      const txt=String(x.text||'');
+      if(txt.length<300||!/オッズ|地方競馬情報サイト|Odds/i.test(txt))throw new Error(`公式HTML不正 ${txt.length}字`);
+      const added=parseNarOfficialIntoRows32(txt,type,st);
+      if(added>0 || st.rows[type]?.length)return {added,url:x.url||u,via:x.via||'bridge'};
+      errs.push(`${new URL(u).pathname}: 解析0件`);
+    }catch(e){errs.push(`${new URL(u).pathname}: ${e?.message||e}`)}
+  }
+  throw new Error(errs.slice(0,3).join(' / ')||'NAR公式オッズ取得失敗');
+}
+function parseNarWinApi32(raw,st){
+  let j=null; try{j=JSON.parse(String(raw||'').replace(/^\uFEFF/,'').trim())}catch(_){throw new Error('NAR API JSON解析失敗')}
+  const map=j?.ary_odds; if(!map||typeof map!=='object')throw new Error('NAR API ary_oddsなし');
+  const before=st.rows['単勝'].length;let seq=0;
+  for(const [k,v] of Object.entries(map)){
+    const no=Number(String(k).replace(/\D/g,'')); if(!(no>=1&&no<=18))continue;
+    const odd=Number(v?.Odds??v?.odds??v?.Tansho??v?.tansho); if(!(odd>=1))continue;
+    const rank=Number(v?.Ninki??v?.ninki)||(++seq); addRow(st,'単勝',String(no),String(odd),rank);
+  }
+  return st.rows['単勝'].length-before;
+}
+async function fetchNarWinApi32(id,st){
+  const url=`https://nar.netkeiba.com/api/api_get_nar_odds.html?race_id=${encodeURIComponent(id)}`;
+  const x=await bridgeFetch(url);const added=parseNarWinApi32(x.text,st);if(!added)throw new Error('NAR API 単勝0件');return {added,url:x.url||url};
+}
 function apiSelection(type,key){
   const raw=String(key??'');
   const separated=raw.match(/\d+/g)?.map(Number).filter(n=>n>0)||[];
@@ -8263,7 +8452,8 @@ async function loadOverview(r,st,force=false){
   setStatus('netkeiba JSON API 単勝・複勝取得中…');
   const errs=[];
   try{
-    if(String(r?.org||'').toUpperCase()==='JRA'){
+    const org=String(r?.org||'').toUpperCase();
+    if(org==='JRA'){
       try{
         const x=await fetchOddsApi(r,st.id,'1');
         parseOddsApiIntoRows(x.json,'単勝',st);
@@ -8279,9 +8469,33 @@ async function loadOverview(r,st,force=false){
         }
         errs.push('JSON API: 単勝・複勝0件');
       }catch(e){errs.push(`JSON API: ${e?.message||e}`)}
+    }else if(org==='NAR'){
+      // FIXED32: netkeiba NAR HTMLより先に公式 keiba.go.jp を使う。
+      try{
+        const x=await fetchNarOfficial32(r,st.id,'単勝',st);
+        if(haveWin()||havePlace()){
+          st.source=`[NAR公式] ${x.url}`;st.at=new Date();st.loaded=true;
+          st.sourceByType['単勝']=st.source;st.sourceByType['複勝']=st.source;
+          st.atByType['単勝']=st.at;st.atByType['複勝']=st.at;
+          if(!havePlace())st.errorByType['複勝']='NAR公式ページから複勝レンジ未解析';
+          if(haveWin())await syncMainHorsesFromWinRowsV23(r,st);
+          return;
+        }
+      }catch(e){errs.push(`NAR公式: ${e?.message||e}`)}
+      // netkeibaには単勝だけの軽量NAR JSON APIがあるため第2候補にする。
+      try{
+        const x=await fetchNarWinApi32(st.id,st);
+        if(haveWin()){
+          st.source=`[NAR JSON API] ${x.url}`;st.at=new Date();st.loaded=true;
+          st.sourceByType['単勝']=st.source;st.atByType['単勝']=st.at;
+          await syncMainHorsesFromWinRowsV23(r,st);
+          // 複勝はこのAPIだけでは保証できないため、下のHTMLへ続行する。
+          if(havePlace())return;
+        }
+      }catch(e){errs.push(`NAR JSON API: ${e?.message||e}`)}
     }
 
-    // NAR またはJRA JSON API障害時の旧HTMLフォールバック。
+    // 最終フォールバック: netkeiba HTML。
     try{
       const x=await bridgeFetchCandidates(baseUrls(r,st.id,'b1'));
       const doc=new DOMParser().parseFromString(x.text,'text/html');
@@ -8347,7 +8561,8 @@ async function ensureType(r,st,type,force=false){
   st.errorByType[type]=''; setStatus(`netkeiba ${type} 実オッズ取得中…`);
   const errs=[];
   try{
-    if(String(r?.org||'').toUpperCase()==='JRA'){
+    const org=String(r?.org||'').toUpperCase();
+    if(org==='JRA'){
       try{
         const x=await fetchOddsApi(r,st.id,API_TYPE_CODE[type]);
         const added=parseOddsApiIntoRows(x.json,type,st);
@@ -8358,6 +8573,15 @@ async function ensureType(r,st,type,force=false){
         }
         errs.push('JSON API解析0件');
       }catch(e){errs.push(`JSON API: ${e?.message||e}`)}
+    }else if(org==='NAR'){
+      try{
+        const x=await fetchNarOfficial32(r,st.id,type,st);
+        if(x.added>0||st.rows[type]?.length){
+          st.source=`[NAR公式] ${x.url}`;st.at=new Date();
+          st.sourceByType[type]=st.source;st.atByType[type]=st.at;
+          renderRows();return;
+        }
+      }catch(e){errs.push(`NAR公式: ${e?.message||e}`)}
     }
 
     const urls=baseUrls(r,st.id,code);
@@ -8391,7 +8615,8 @@ async function preloadAllNetkeiba(r,st,force=false){
   }finally{st.allLoading=false;renderRows()}
 }
 function demoRows(r,type){const hs=(r?.horses||[]).slice().sort((a,b)=>(b.modelProb||0)-(a.modelProb||0));const out=[];const push=(sel,odds,p)=>out.push({selection:sel,odds,oddsText:odds.toFixed(1),prob:p,ev:p*odds,rank:out.length+1,demo:true});if(type==='単勝')for(const h of hs)push(String(h.no),Number(h.odds)||1,pWin(h));else if(type==='複勝')for(const h of hs.slice(0,12)){const p=placeProb(r,h.no);push(String(h.no),Math.max(1.1,1/Math.max(.01,p)*.78),p)}else if(['馬連','ワイド','馬単'].includes(type)){for(let i=0;i<Math.min(7,hs.length);i++)for(let j=0;j<Math.min(7,hs.length);j++){if(i===j)continue;if(type!=='馬単'&&j<=i)continue;const p=type==='ワイド'?calcProb(type,`${hs[i].no}-${hs[j].no}`,r):pairProb(r,hs[i].no,hs[j].no,type==='馬単');push(`${hs[i].no}-${hs[j].no}`,Math.max(1.1,1/Math.max(.001,p)*.78),p);if(out.length>=40)return out}}else if(['3連複','3連単'].includes(type)){const n=Math.min(6,hs.length);for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(let k=0;k<n;k++){if(new Set([i,j,k]).size<3)continue;if(type==='3連複'&&!(i<j&&j<k))continue;const sel=`${hs[i].no}-${hs[j].no}-${hs[k].no}`,p=trioProb(r,[hs[i].no,hs[j].no,hs[k].no],type==='3連単');push(sel,Math.max(1.1,1/Math.max(.0001,p)*.74),p);if(out.length>=50)return out}}return out}
-function setStatus(t){const e=document.getElementById('ticketOddsStatus');if(e)e.textContent=t}
+function compactOddsErr32(t,max=260){t=String(t||'').replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max)+'…':t}
+function setStatus(t){const e=document.getElementById('ticketOddsStatus');if(e){const full=String(t??'');e.textContent=compactOddsErr32(full,320);e.title=full}}
 /* FIXED26: odds cache -> race.horses/model probability re-sync.
    AUTO DRIVE can replace the race object while the odds cache survives.
    In that case odds are visible but 想定確率/EV became "--" because the
@@ -8421,6 +8646,7 @@ function ensureModelFromWinRowsV26(r,st){
       no,
       odds:Number(x.odds),
       pop:Number(x.rank)||Number(prev.pop)||0,
+      name:String(prev.name||x.horseName||'').trim(),
       modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(rid,no)
     };
   });
@@ -8465,7 +8691,7 @@ function renderRows(){
   if(evSortOption)evSortOption.textContent=ranged?'EV順（下限優先）':'EV順';
   if(!rows.length){
     const missing=(!isDemo&&!rid)?'LIVEレースの公式race_idを解決できません（架空オッズには切替えません）':`${active}オッズはまだ取得できていません`;
-    tbody.innerHTML=`<tr><td colspan="${ranged?8:6}" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="${ranged?8:6}" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(compactOddsErr32(typeErr||missing,420))}</td></tr>`;
   }else{
     tbody.innerHTML=rows.slice(0,300).map((x,i)=>{
       const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--';
@@ -8482,8 +8708,11 @@ function renderRows(){
     }).join('');
   }
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
-  const isJsonApi=/\[JSON API\]|api_get_jra_odds/.test(String(src||''));
-  const route=isJsonApi?(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba JSON API':'Bridge→netkeiba JSON API'):(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba HTML':'Bridge→netkeiba HTML');
+  const srcText=String(src||'');
+  const isNarOfficial=/\[NAR公式\]|keiba\.go\.jp/.test(srcText);
+  const isNarApi=/\[NAR JSON API\]|api_get_nar_odds/.test(srcText);
+  const isJsonApi=/\[JSON API\]|api_get_jra_odds/.test(srcText);
+  const route=isNarOfficial?'NAR公式 keiba.go.jp':isNarApi?'Bridge→netkeiba NAR API':isJsonApi?(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba JSON API':'Bridge→netkeiba JSON API'):(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba HTML':'Bridge→netkeiba HTML');
   const status=isDemo&&!rid?'DEMO計算値（実オッズではありません）':src?`${route} / ${active} / ${rows.length}件 / ${at?at.toLocaleTimeString('ja-JP'):''} / AUTO 5秒`:(!rid?'LIVE / race_id未解決':(typeErr||`${route}未取得 / AUTO 5秒`));
   setStatus(status);
 }
