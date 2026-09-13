@@ -732,7 +732,7 @@ const DEFAULTS={
   mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
   initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
-  netkeibaProxyUrl:"",
+  netkeibaProxyUrl:"https://houserace.nitta-katsuhiko.workers.dev",
   jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
 };
 const Store={
@@ -1681,6 +1681,12 @@ class CharacterEngine{
 class SimulationEngine{
   constructor(){
     this.settings={...DEFAULTS,...Store.get("settings",{})};
+    const ONEFILE_WORKER="https://houserace.nitta-katsuhiko.workers.dev";
+    const oldWorker=/^https:\/\/(?:takuya|userace)\.nitta-katsuhiko\.workers\.dev\/?$/i;
+    if(!this.settings.apiBase || oldWorker.test(String(this.settings.apiBase).trim())) this.settings.apiBase=ONEFILE_WORKER;
+    if(!this.settings.netkeibaProxyUrl || oldWorker.test(String(this.settings.netkeibaProxyUrl).trim())) this.settings.netkeibaProxyUrl=ONEFILE_WORKER;
+    Store.set("settings",this.settings);
+    localStorage.setItem("keibaNetkeibaProxyUrl",ONEFILE_WORKER);
     if(Store.get("liveStateSchemaVersion",0)!==LIVE_STATE_SCHEMA_VERSION){
       ["characters","bets","runtime"].forEach(k=>Store.del(k));
       Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);
@@ -2214,7 +2220,7 @@ function openSettings(){
   $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";
   $("#sAuto").value=s.auto?"1":"0";$("#sResultDelay").value=s.resultDelaySec??18;
   $("#sApi").value=s.apiBase||"";
-  $("#sNetkeibaProxy").value=s.netkeibaProxyUrl||localStorage.getItem("keibaNetkeibaProxyUrl")||"";
+  $("#sNetkeibaProxy").value=s.netkeibaProxyUrl||localStorage.getItem("keibaNetkeibaProxyUrl")||"https://houserace.nitta-katsuhiko.workers.dev";
   $("#settingsDlg").showModal();
 }
 $("#saveSettings").onclick=()=>{
@@ -2223,8 +2229,8 @@ $("#saveSettings").onclick=()=>{
     jraCloseBeforeMin:+$("#sJraClose").value,narCloseBeforeMin:+$("#sNarClose").value,
     jra:$("#sJra").value==="1",nar:$("#sNar").value==="1",
     auto:$("#sAuto").value==="1",resultDelaySec:+$("#sResultDelay").value,
-    apiBase:$("#sApi").value.trim(),
-    netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()};
+    apiBase:$("#sApi").value.trim()||"https://houserace.nitta-katsuhiko.workers.dev",
+    netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()||"https://houserace.nitta-katsuhiko.workers.dev"};
   Store.set("settings",engine.settings);
   localStorage.setItem("keibaNetkeibaProxyUrl",engine.settings.netkeibaProxyUrl||"");
   if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
