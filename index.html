@@ -11776,5 +11776,218 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
 })();
 
 </script>
+
+<script>
+/* =========================================================
+   FIXED54 — NETWORK RECOVERY / WORKER HEALTH / CURRENT-WEEK JRA OFF-DAY GUARD
+   2026-09-14
+   - Diagnose Worker /health before a long period fetch.
+   - Auto-repair a stale apiBase to the canonical houserace Worker when possible.
+   - Treat 2026-09-08..11 and 2026-09-14 as confirmed JRA no-meeting days
+     for the current one-week test, so they are not reported as fetch failures.
+   - On network failure, wait briefly for the residential Bridge and retry once.
+   - If a previously successful positive history block exists, it may be used as
+     an explicitly labeled CACHE FALLBACK rather than turning a transient outage
+     into an empty race day.
+   - Fail fast with a precise reason when both Worker and required Bridge paths
+     are unavailable; never fabricate races or odds.
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED54_NETWORK_RECOVERY__) return;
+  window.__FIXED54_NETWORK_RECOVERY__=true;
+
+  const CANON54='https://houserace.nitta-katsuhiko.workers.dev';
+  const NO_JRA_54=new Set([
+    '2026-09-08','2026-09-09','2026-09-10','2026-09-11','2026-09-14'
+  ]);
+  const sleep54=ms=>new Promise(r=>setTimeout(r,ms));
+  const esc54=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const log54=(m,t='ok')=>{try{window.UI?.addLog?.(m,t)}catch(_){}};
+
+  function bridgeReady54(){
+    return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true;
+  }
+  async function waitBridge54(ms=4500){
+    const end=Date.now()+ms;
+    while(Date.now()<end){
+      if(bridgeReady54()) return true;
+      await sleep54(180);
+    }
+    return bridgeReady54();
+  }
+  function currentBase54(){
+    let b='';
+    try{b=String(window.engine?.settings?.apiBase||'').trim()}catch(_){ }
+    if(!b){
+      try{b=String(window.Store?.get?.('settings',{})?.apiBase||'').trim()}catch(_){ }
+    }
+    return (b||CANON54).replace(/\/$/,'');
+  }
+  async function health54(base,timeoutMs=7000){
+    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),timeoutMs);
+    const started=performance.now();
+    try{
+      const r=await fetch(String(base).replace(/\/$/,'')+`/health?_fixed54=${Date.now()}`,{
+        method:'GET',cache:'no-store',mode:'cors',signal:ctrl.signal,headers:{Accept:'application/json,text/plain,*/*'}
+      });
+      const text=await r.text(); let j=null;
+      try{j=text?JSON.parse(text):null}catch(_){ }
+      return {ok:r.ok&&j?.ok!==false,status:r.status,ms:Math.round(performance.now()-started),version:j?.version||'',text:text.slice(0,180),base};
+    }catch(e){
+      return {ok:false,status:0,ms:Math.round(performance.now()-started),version:'',error:e?.name==='AbortError'?`timeout ${timeoutMs}ms`:String(e?.message||e),base};
+    }finally{clearTimeout(timer)}
+  }
+  async function repairAndProbe54(){
+    const configured=currentBase54();
+    let first=await health54(configured);
+    if(first.ok) return {worker:first,repaired:false,configured,bridge:bridgeReady54()};
+
+    if(configured!==CANON54){
+      const second=await health54(CANON54);
+      if(second.ok){
+        try{
+          if(window.engine?.settings){
+            window.engine.settings.apiBase=CANON54;
+            try{window.Store?.set?.('settings',window.engine.settings)}catch(_){ }
+            try{if(typeof HttpProvider==='function')window.engine.provider=new HttpProvider(CANON54)}catch(_){ }
+          }else{
+            const s=window.Store?.get?.('settings',{})||{};s.apiBase=CANON54;window.Store?.set?.('settings',s);
+          }
+        }catch(_){ }
+        log54(`FIXED54: API URLを ${CANON54} に自動修復しました`,'ok');
+        return {worker:second,repaired:true,configured,bridge:bridgeReady54()};
+      }
+      return {worker:first,canonical:second,repaired:false,configured,bridge:bridgeReady54()};
+    }
+    return {worker:first,repaired:false,configured,bridge:bridgeReady54()};
+  }
+
+  function emptyJra54(date){
+    return {
+      ok:true,date,org:'JRA',oddsTiming:'FINAL',races:[],count:0,
+      source:'FIXED54 confirmed JRA no-meeting day (2026 current-week guard)',
+      warning:'No JRA meeting on this date. This is not a fetch failure.',
+      diagnostics:{meetingSource:'fixed54-confirmed-current-week-off-day',requestedRaces:0,loadedRaces:0,failedRaces:0,errors:[]},
+      diagnosticSummary:{meetingSource:'none',requestedRaces:0,loadedRaces:0,failedRaces:0,firstErrors:[]},
+      _fetchMeta:{mode:'FIXED54_CONFIRMED_NO_JRA',fetchedAt:new Date().toISOString()}
+    };
+  }
+  function positiveCache54(date,org){
+    try{
+      const a=Array.isArray(window.webHistory)?window.webHistory:(typeof webHistory!=='undefined'&&Array.isArray(webHistory)?webHistory:[]);
+      return a.find(x=>x?.date===date&&String(x?.org||'').toUpperCase()===String(org||'').toUpperCase()&&Array.isArray(x?.races)&&x.races.length>0)||null;
+    }catch(_){return null}
+  }
+  function networkish54(e){
+    const s=String(e?.message||e||'');
+    return /Load failed|Failed to fetch|NetworkError|network request failed|fetch failed|タイムアウト|timeout/i.test(s);
+  }
+
+  function installHistory54(){
+    const prev=window.getHistoryBlock || (typeof getHistoryBlock==='function'?getHistoryBlock:null);
+    if(!prev||prev.__fixed54Wrapped) return false;
+    const wrapped=async function(date,org,options={}){
+      const kind=String(org||'').toUpperCase();
+      if(kind==='JRA'&&NO_JRA_54.has(String(date))){
+        log54(`JRA ${date}: 開催なし確認済み → WEB取得を省略`,'ok');
+        return emptyJra54(String(date));
+      }
+      try{
+        return await prev(date,org,options);
+      }catch(e){
+        if(networkish54(e)){
+          const cached=positiveCache54(String(date),kind);
+          if(cached){
+            cached._fetchMeta={...(cached._fetchMeta||{}),mode:'FIXED54_CACHE_FALLBACK',fallbackAt:new Date().toISOString(),fallbackReason:String(e?.message||e)};
+            log54(`${kind} ${date}: WEB通信失敗 → 既存の正常キャッシュ ${cached.races.length}R を使用`,'warn');
+            return cached;
+          }
+          if(!bridgeReady54()){
+            log54(`${kind} ${date}: Worker通信失敗。Bridge接続を4.5秒待機します…`,'warn');
+            await waitBridge54(4500);
+          }
+          if(bridgeReady54()){
+            try{
+              log54(`${kind} ${date}: Bridge ${window.__narBridgeVersion||''} 接続確認 → 再試行`,'ok');
+              return await prev(date,org,{...options,force:true,retries:1,timeoutMs:24000});
+            }catch(e2){
+              throw new Error(`${kind} ${date}: Worker/Bridge再試行失敗: ${String(e2?.message||e2)}`);
+            }
+          }
+          throw new Error(`${kind} ${date}: WEB通信不可 (${String(e?.message||e)}) / Worker=${currentBase54()} / Bridge未接続`);
+        }
+        throw e;
+      }
+    };
+    wrapped.__fixed54Wrapped=true;wrapped.__fixed54Previous=prev;
+    window.getHistoryBlock=wrapped;try{getHistoryBlock=wrapped}catch(_){ }
+    return true;
+  }
+
+  function ensurePanel54(){
+    const anchor=document.getElementById('fixed53Lab')||document.getElementById('btProgress');
+    if(!anchor||document.getElementById('fixed54NetPanel'))return;
+    const box=document.createElement('div');box.id='fixed54NetPanel';box.className='notice';box.style.marginTop='8px';
+    box.innerHTML=`<div style="font-weight:800;margin-bottom:6px">📡 FIXED54 通信リカバリ</div>
+      <div class="controls"><button id="probe54">📡 Worker / Bridge 通信診断</button></div>
+      <div id="probe54Status" class="muted" style="margin-top:6px">未診断</div>`;
+    anchor.insertAdjacentElement('afterend',box);
+    const btn=document.getElementById('probe54');
+    if(btn)btn.onclick=async()=>{
+      btn.disabled=true;const s=document.getElementById('probe54Status');if(s)s.textContent='診断中…';
+      try{
+        const d=await repairAndProbe54();const w=d.worker;
+        if(s)s.innerHTML=`Worker: <b style="color:${w.ok?'#9ee37d':'#ff9c9c'}">${w.ok?'OK':'NG'}</b> ${esc54(w.base||'')} ${w.status?`HTTP ${w.status}`:''} ${w.version?`/ ${esc54(w.version)}`:''} ${w.ms?`/ ${w.ms}ms`:''}${w.error?` / ${esc54(w.error)}`:''}<br>Bridge: <b style="color:${bridgeReady54()?'#9ee37d':'#f6d365'}">${bridgeReady54()?`OK ${esc54(window.__narBridgeVersion||'')}`:'待機 / 未接続'}</b>${d.repaired?'<br><b>API URLは自動修復済みです。</b>':''}`;
+      }finally{btn.disabled=false}
+    };
+  }
+
+  function installRunGuard54(){
+    const btn=document.getElementById('runWebBacktest');
+    if(!btn||btn.dataset.fixed54Guard==='1'||typeof btn.onclick!=='function')return false;
+    const old=btn.onclick;btn.dataset.fixed54Guard='1';
+    btn.onclick=async function(ev){
+      installHistory54();
+      const p=document.getElementById('btProgress');
+      const org=String(document.getElementById('btOrg')?.value||'BOTH').toUpperCase();
+      if(p)p.textContent='通信事前診断中…';
+      const d=await repairAndProbe54();
+      if(!d.worker.ok){
+        const br=await waitBridge54(1400);
+        // NAR history needs the Worker race list in this build; JRA-only can still be rescued by Bridge paths.
+        if(org==='NAR'||org==='BOTH'){
+          const msg=`停止: Worker /health 通信NG (${d.worker.error||('HTTP '+d.worker.status)})。NAR履歴のレース一覧取得にWorkerが必要です。Bridge=${br?(window.__narBridgeVersion||'接続'):'未接続'}。`;
+          if(p)p.textContent=msg;
+          log54(msg,'error');
+          const st=document.getElementById('probe54Status');if(st)st.innerHTML=`<b style="color:#ff9c9c">Worker NG:</b> ${esc54(d.worker.error||('HTTP '+d.worker.status))}<br>URL: ${esc54(d.worker.base||currentBase54())}<br>Bridge: ${br?esc54(window.__narBridgeVersion||'接続'):'未接続'}`;
+          return;
+        }
+        if(!br){
+          const msg=`停止: Worker通信NG + Bridge未接続。JRA過去データ取得経路がありません。`;
+          if(p)p.textContent=msg;log54(msg,'error');return;
+        }
+        log54(`Worker NGですがJRA-onlyなので Bridge ${window.__narBridgeVersion||''} で継続します`,'warn');
+      }
+      return await old.call(this,ev);
+    };
+    return true;
+  }
+
+  function boot54(){
+    installHistory54();ensurePanel54();installRunGuard54();
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('fixed54Badge')){
+      const e=document.createElement('div');e.id='fixed54Badge';e.className='muted';e.style.marginTop='4px';
+      e.innerHTML='<b>FIXED54:</b> Worker /health 事前診断・API URL自動修復・Bridge待機再試行・正常キャッシュFallback・2026/9/8–11,14 JRA開催なし誤エラー防止';
+      host.insertAdjacentElement('afterend',e);
+    }
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot54,5200);setTimeout(boot54,7600)},{once:true});
+  else{setTimeout(boot54,5200);setTimeout(boot54,7600)}
+  console.log('✅ FIXED54 network recovery loaded');
+})();
+</script>
+
 </body>
 </html>
