@@ -1931,10 +1931,15 @@ class SimulationEngine{
       }
 
       // 発走後、結果を取得して精算
+      // FIXED41: 結果取得中/バックオフ中のレースは1秒loopから再投入しない。
+      // これによりRESULT_PENDINGの過去レースが、次レースの5秒オッズ通信を圧迫しない。
       if(now >= start + Number(this.settings.resultDelaySec||18)*1000 && !race.settled){
-        UI.autoStep=`${race.title} 結果確認`;
-        await this.settle(race);
-        acted=true;
+        const retryAt41 = Math.max(Number(race.__resultRetryAt||0), Number(race.__resultNextV41||0));
+        if(!race.__resultBusyV41 && (!retryAt41 || now >= retryAt41)){
+          UI.autoStep=`${race.title} 結果確認`;
+          await this.settle(race);
+          acted=true;
+        }
       }
     }
 
@@ -9732,11 +9737,21 @@ console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
       const errors = [];
 
       // 1) Worker /result: 正常ならそのまま採用。
+      // FIXED41: HTTP 425 は「まだ結果未確定」の明示応答なので、
+      // この1回では追加フォールバックを連打せず、その場で RESULT_PENDING として終了する。
       try {
         const d = await previousGetResult.call(this, race);
         return ensureReady(race, d, 'Worker /result');
       } catch (e) {
         errors.push(`Worker: ${e?.message || e}`);
+        const status = Number(e?.status || 0);
+        const msg = String(e?.message || e || '');
+        if (status === 425 || /(?:^|\s)HTTP\s*425(?:\s|$|\/)/i.test(msg)) {
+          const pending = new Error(`RESULT_PENDING / Worker HTTP 425`);
+          pending.code = 'RESULT_PENDING';
+          pending.status = 425;
+          throw pending;
+        }
       }
 
       // 2) Workerが502/parse待ちでも、同じrace_idの結果HTMLをクライアント側で直接解析。
@@ -9967,6 +9982,93 @@ console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
 
 <script>
 console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhiko.workers.dev / ODDS=https://keiba-odds.nitta-katsuhiko.workers.dev");
+</script>
+
+
+<script id="fixed41ResultIsolation">
+/* ============================================================
+   FIXED41 RESULT ISOLATION / 425 QUIET BACKOFF
+   - LIVE結果取得は1レース1本だけ（多重settle禁止）
+   - 未確定は最低30秒バックオフ
+   - 過去レース結果待ちと5秒LIVEオッズ更新を分離
+   - FIXED38側でWorker HTTP 425時は追加netkeibaフォールバックを打ち切り
+   ============================================================ */
+(() => {
+  'use strict';
+  if (window.__KEIBA_FIXED41_RESULT_ISOLATION__) return;
+  window.__KEIBA_FIXED41_RESULT_ISOLATION__ = true;
+
+  const RESULT_RETRY_MS_V41 = 30000;
+
+  if (typeof SimulationEngine !== 'undefined') {
+    const previousSettleV41 = SimulationEngine.prototype.settle;
+
+    SimulationEngine.prototype.settle = async function(race) {
+      // DEMOは従来動作のまま。
+      if (this?.provider?.kind !== 'live') {
+        return await previousSettleV41.call(this, race);
+      }
+      if (!race || race.settled) return;
+
+      const now = Date.now();
+      const nextAt = Math.max(Number(race.__resultRetryAt || 0), Number(race.__resultNextV41 || 0));
+      if (race.__resultBusyV41) return;
+      if (nextAt && now < nextAt) return;
+
+      race.__resultBusyV41 = true;
+      try {
+        await previousSettleV41.call(this, race);
+      } catch (e) {
+        // 既存settleは通常内部catchするが、将来の例外にもfail-closedで対応。
+        race.settled = false;
+        race.status = 'RESULT WAIT';
+        race.__lastResultError = String(e?.message || e || 'RESULT_PENDING');
+      } finally {
+        race.__resultBusyV41 = false;
+        if (race.settled) {
+          race.__resultNextV41 = 0;
+          race.__resultRetryAt = 0;
+          race.__lastResultError = '';
+        } else {
+          // FIXED9の10秒値より長い30秒を優先。1秒loopからの再投入も抑止。
+          const t = Date.now() + RESULT_RETRY_MS_V41;
+          race.__resultNextV41 = t;
+          race.__resultRetryAt = Math.max(Number(race.__resultRetryAt || 0), t);
+        }
+
+        // 背景で精算完了した場合も画面だけは即反映する。
+        try {
+          if (typeof UI !== 'undefined' && UI?.engine === this) {
+            UI.updateKpis?.(this);
+            UI.renderRaces?.(this);
+            UI.renderPeople?.(this);
+            UI.renderRank?.(this);
+            UI.renderBadges?.();
+          }
+        } catch (_) {}
+      }
+    };
+  }
+
+  function addNoticeV41(){
+    if(document.getElementById('fixed41ResultNotice')) return;
+    const host=document.querySelector('main');
+    if(!host) return;
+    const notices=host.querySelectorAll(':scope > .notice');
+    if(!notices.length) return;
+    const d=document.createElement('div');
+    d.id='fixed41ResultNotice';
+    d.className='notice';
+    d.style.borderColor='#2f9e7a';
+    d.style.background='#0c261d';
+    d.innerHTML='<b>FIXED41 RESULT ISOLATION</b> — HTTP 425（結果未確定）は追加フォールバックを打ち切り、同一レースの結果取得を多重実行しません。未確定時は30秒待機し、5秒LIVEオッズ更新とは独立して動作します。';
+    notices[notices.length-1].insertAdjacentElement('afterend',d);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',addNoticeV41,{once:true});
+  else addNoticeV41();
+
+  console.log('✅ FIXED41 RESULT ISOLATION + HTTP425 QUIET BACKOFF loaded');
+})();
 </script>
 
 </body>
