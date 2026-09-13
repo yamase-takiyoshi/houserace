@@ -177,9 +177,9 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-<b>FIXED21 JRAオッズ JSON API対応</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED23 馬名同期 + RESULT API修正</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
-<div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED21</b> — JRAオッズは静的HTML解析ではなく netkeiba JSON API を最優先。単勝・複勝・枠連・ワイド・馬連・馬単・3連複・3連単に対応し、API障害時のみ従来HTMLへフォールバックします。</div>
+<div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
@@ -1312,36 +1312,106 @@ async function liveJsonViaProxyOrBridgeV21(url){
   }
   throw new Error(errors.join(' / ')||'netkeiba JSON APIへ接続できません');
 }
+/* ============================================================
+   FIXED22 JRA HORSE NAME RECOVERY
+   - #2 / #3 などの仮名を「取得済み馬名」と誤判定しない
+   - netkeiba出馬表から 馬番→馬名 を取り直して単勝JSONへ結合
+   - 「4 ウンデ」のように馬番が馬名へ混入した場合は除去
+   ============================================================ */
+const LIVE_ENTRY_NAME_CACHE_V22=new Map();
+function liveCleanHorseNameV22(value,no=0){
+  let s=String(value??'').replace(/[\u00a0　\s]+/g,' ').trim();
+  if(!s) return '';
+  const n=Number(no);
+  if(n>=1&&n<=18){
+    s=s.replace(new RegExp(`^(?:#\s*)?${n}(?:\s+|$)`),'').trim();
+  }
+  s=s.replace(/^(?:馬名|選択|印)\s*/,'').trim();
+  if(!s || /^#?\d+$/.test(s) || /^Horse\s*\d+$/i.test(s) || /^[\d.\-–—―]+$/.test(s)) return '';
+  if(s.length>40) return '';
+  return s;
+}
+function liveHorseNoFromEntryRowV22(row,link){
+  if(!row) return 0;
+  const direct=row.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"],[class*="Horse_Num"]');
+  if(direct){
+    const m=String(direct.textContent||'').replace(/[０-９]/g,c=>'０１２３４５６７８９'.indexOf(c)).match(/(?:^|\D)([1-9]|1[0-8])(?:\D|$)/);
+    if(m) return Number(m[1]);
+  }
+  const cells=[...row.querySelectorAll('th,td')];
+  if(link&&cells.length){
+    const idx=cells.findIndex(x=>x===link||x.contains(link));
+    const before=idx>=0?cells.slice(0,idx):cells.slice(0,5);
+    const nums=[];
+    for(const el of before){
+      const t=String(el.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim().replace(/[０-９]/g,c=>'０１２３４５６７８９'.indexOf(c));
+      if(/^([1-9]|1[0-8])$/.test(t)) nums.push(Number(t));
+    }
+    if(nums.length) return nums[nums.length-1];
+  }
+  return 0;
+}
 function liveParseEntryNamesV21(html){
   const doc=new DOMParser().parseFromString(String(html||''),'text/html');
   const map=new Map();
-  const anchors=[...doc.querySelectorAll('a[href*="/horse/"],a[href*="horse_id="]')];
+
+  // PC版はtr単位で解析するのが最も安定する。
+  for(const tr of doc.querySelectorAll('tr')){
+    const a=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+    if(!a) continue;
+    const no=liveHorseNoFromEntryRowV22(tr,a);
+    const name=liveCleanHorseNameV22(a.textContent,no);
+    if(no>=1&&no<=18 && name && !map.has(no)) map.set(no,name);
+  }
+
+  // mobile版などtableでない構造を補完。馬番クラスを持つ祖先だけ採用する。
+  const anchors=[...doc.querySelectorAll('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]')];
   for(const a of anchors){
-    const name=String(a.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim();
-    if(!name || name.length>40) continue;
-    const row=a.closest('tr,li,[class*="HorseList"],[class*="HorseList_Item"],div');
-    if(!row) continue;
-    let no=Number(String(row.querySelector('.Umaban,[class*="Umaban"],[class*="HorseNum"],[class*="Num"]')?.textContent||'').match(/\d{1,2}/)?.[0]||0);
-    if(!(no>=1&&no<=18)){
-      const txt=String(row.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim();
-      const m=txt.match(/(?:^|\s)([1-9]|1[0-8])(?:\s|$)/); if(m) no=Number(m[1]);
+    let p=a.parentElement,no=0;
+    for(let depth=0;p&&depth<8;depth++,p=p.parentElement){
+      no=liveHorseNoFromEntryRowV22(p,a);
+      if(no>=1&&no<=18) break;
     }
-    if(no>=1&&no<=18 && !map.has(no)) map.set(no,name);
+    const name=liveCleanHorseNameV22(a.textContent,no);
+    if(no>=1&&no<=18 && name && !map.has(no)) map.set(no,name);
   }
   return map;
 }
 async function liveJraEntryNamesV21(id,race){
-  const names=new Map((race?.horses||[]).filter(h=>h?.no).map(h=>[Number(h.no),String(h.name||`#${h.no}`)]));
-  if(names.size>=2) return names;
+  const rid=String(id||'');
+  const expectedNos=new Set((race?.horses||[]).map(h=>Number(h?.no)).filter(n=>n>=1&&n<=18));
+  const names=new Map();
+
+  // 既存データは実馬名だけ採用。#2 等のplaceholderは捨てる。
+  for(const h of (race?.horses||[])){
+    const no=Number(h?.no),name=liveCleanHorseNameV22(h?.name,no);
+    if(no>=1&&no<=18 && name) names.set(no,name);
+  }
+
+  const cached=LIVE_ENTRY_NAME_CACHE_V22.get(rid);
+  if(cached instanceof Map){
+    for(const [no,name] of cached){ if(name) names.set(Number(no),name); }
+  }
+
+  // 全頭の実名が揃っている場合だけネット取得を省略する。
+  const expectedCount=expectedNos.size;
+  if(expectedCount>=2 && [...expectedNos].every(no=>names.has(no))) return names;
+
   const urls=[
-    `https://race.sp.netkeiba.com/?pid=race_shutuba&race_id=${id}`,
-    `https://race.netkeiba.com/race/shutuba.html?race_id=${id}`
+    `https://race.sp.netkeiba.com/?pid=race_shutuba&race_id=${rid}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${rid}`
   ];
+  let best=new Map();
   for(const u of urls){
     try{
-      const x=await liveHtmlViaProxyOrBridge(u), m=liveParseEntryNamesV21(x.text);
-      if(m.size){ for(const [k,v] of m) names.set(k,v); break; }
+      const x=await liveHtmlViaProxyOrBridge(u),m=liveParseEntryNamesV21(x.text);
+      if(m.size>best.size) best=m;
+      if(expectedCount ? [...expectedNos].every(no=>m.has(no)) : m.size>=2) break;
     }catch(_){ }
+  }
+  if(best.size){
+    LIVE_ENTRY_NAME_CACHE_V22.set(rid,new Map(best));
+    for(const [k,v] of best){ if(v) names.set(Number(k),v); }
   }
   return names;
 }
@@ -1501,23 +1571,51 @@ class HttpProvider{
   async getOdds(race){
     const errors=[];
     try{
-      const d=await this.json("/odds?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
+      const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||'');
+      const d=await this.json("/odds?race_id="+encodeURIComponent(rid)+"&type="+encodeURIComponent(race.org)+"&raceId="+encodeURIComponent(rid)+"&org="+encodeURIComponent(race.org));
       const hs=(d&&Array.isArray(d.horses))?d.horses:(Array.isArray(d)?d:[]);
       if(hs.length){
-        race.horses=hs;
-        return {status:"LIVE",horses:race.horses,at:d?.at||new Date().toISOString(),source:"Worker /odds"};
+        const oldNames=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveCleanHorseNameV22(h?.name,h?.no)]).filter(x=>x[0]>=1&&x[1]));
+        race.horses=hs.map((h,i)=>{
+          const no=Number(h?.no??h?.horseNo??h?.horse_no??(i+1));
+          const own=liveCleanHorseNameV22(h?.name??h?.horseName??h?.horse_name,no);
+          return {...h,no,name:own||oldNames.get(no)||''};
+        }).filter(h=>h.no>=1&&h.no<=18);
+
+        // FIXED22: Workerがオッズだけ返す、または #2 等を返しても、JRAは出馬表から実馬名を補完する。
+        if(String(race?.org||'').toUpperCase()==='JRA'){
+          const id=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||'';
+          if(id){
+            try{
+              const names=await liveJraEntryNamesV21(id,race);
+              for(const h of race.horses){
+                const nm=liveCleanHorseNameV22(names.get(Number(h.no))||h.name,h.no);
+                h.name=nm||`馬名未取得(${h.no})`;
+              }
+            }catch(_){
+              for(const h of race.horses){
+                h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
+              }
+            }
+          }
+        }
+        return {status:"LIVE",horses:race.horses,at:d?.at||new Date().toISOString(),source:"Worker /odds + FIXED22 horse names"};
       }
       errors.push("Worker /odds: 0頭");
     }catch(e){errors.push("Worker /odds: "+(e?.message||e))}
     try{
       const x=await liveGetWinOddsViaNetkeibaV20(race);
-      race.horses=x.horses;
+      race.horses=x.horses.map(h=>({...h,name:liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`}));
       return x;
     }catch(e){errors.push("Mobile Bridge: "+(e?.message||e))}
     throw new Error(errors.join(" / "));
   }
   async getResult(race){
-    return await this.json("/result?raceId="+encodeURIComponent(race.id)+"&org="+encodeURIComponent(race.org));
+    // FIXED23: houserace Worker の現行契約は race_id/type。
+    // legacy raceId/org も併記し、旧Workerとの互換性を残す。
+    const rid=String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1]||String(race?.id||'');
+    if(!rid) throw new Error("結果取得用 race_id がありません");
+    return await this.json("/result?race_id="+encodeURIComponent(rid)+"&type="+encodeURIComponent(race.org)+"&raceId="+encodeURIComponent(rid)+"&org="+encodeURIComponent(race.org));
   }
 }
 class CharacterEngine{
@@ -7845,6 +7943,46 @@ function ensureUI(){
 function updateTabs(){document.querySelectorAll('#ticketOddsTabs button').forEach(b=>b.classList.toggle('active',b.dataset.ticket===active))}
 function stateFor(r){const id=raceId(r)||String(r?.id||r?.title||'demo');if(!cache.has(id))cache.set(id,{id,loaded:false,loading:false,allLoading:false,rows:Object.fromEntries(TYPES.map(t=>[t,[]])),source:'',sourceByType:{},at:null,atByType:{},error:'',errorByType:{}});return cache.get(id)}
 function horseMap(r){return new Map((r?.horses||[]).map(h=>[Number(h.no),h]))}
+let mainHorseSyncBusyV23=false;
+async function syncMainHorsesFromWinRowsV23(r,st){
+  if(!r||mainHorseSyncBusyV23)return false;
+  const winRows=(st?.rows?.['単勝']||[]).filter(x=>/^\d{1,2}$/.test(String(x.selection||''))&&Number(x.odds)>=1);
+  if(!winRows.length)return false;
+  mainHorseSyncBusyV23=true;
+  try{
+    const old=new Map((r.horses||[]).map(h=>[Number(h.no),h]));
+    const seed=winRows.map(x=>{
+      const no=Number(x.selection), prev=old.get(no)||{};
+      return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0};
+    });
+    let names=new Map();
+    if(String(r.org||'').toUpperCase()==='JRA' && typeof liveJraEntryNamesV21==='function'){
+      try{names=await liveJraEntryNamesV21(raceId(r),{...r,horses:seed})}catch(e){console.warn('FIXED23 horse names',e)}
+    }
+    r.horses=seed.map(h=>{
+      const no=Number(h.no);
+      let nm='';
+      try{nm=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(names.get(no)||h.name,no):String(names.get(no)||h.name||'').trim()}catch(_){nm=String(names.get(no)||h.name||'').trim()}
+      return {...h,name:nm||`馬名未取得(${no})`};
+    }).sort((a,b)=>a.no-b.no);
+    try{const pe=probabilityRef();if(pe?.model)pe.model(r.horses)}catch(_){ }
+    try{
+      const ui=uiRef();
+      if(typeof engine!=='undefined'&&ui?.renderCurrent&&engine?.selected===r){
+        window.__fixed23RenderGuard=true;
+        ui.renderCurrent(engine);
+      }
+    }catch(e){console.warn('FIXED23 main render',e)}finally{window.__fixed23RenderGuard=false}
+    return true;
+  }finally{mainHorseSyncBusyV23=false}
+}
+function displaySelectionV23(type,selection,r){
+  const raw=String(selection??'');
+  if(type!=='単勝'&&type!=='複勝')return raw;
+  const no=Number(raw.match(/\d{1,2}/)?.[0]||0),h=horseMap(r).get(no);
+  const name=String(h?.name||'').trim();
+  return name?`${no} ${name}`:raw;
+}
 function pWin(h){return Math.max(0,Math.min(.999999,Number(h?.modelProb)||0))}
 function pl2(a,b){const pa=pWin(a),pb=pWin(b);return pa*pb/Math.max(1e-9,1-pa)}
 function pairProb(r,a,b,ordered){const hm=horseMap(r),ha=hm.get(+a),hb=hm.get(+b);if(!ha||!hb)return NaN;return ordered?pl2(ha,hb):pl2(ha,hb)+pl2(hb,ha)}
@@ -8044,6 +8182,7 @@ async function loadOverview(r,st,force=false){
           st.atByType['単勝']=st.at; st.atByType['複勝']=st.at;
           if(!haveWin())st.errorByType['単勝']='JSON APIに単勝データなし';
           if(!havePlace())st.errorByType['複勝']='JSON APIに複勝データなし';
+          if(haveWin()) await syncMainHorsesFromWinRowsV23(r,st);
           return;
         }
         errs.push('JSON API: 単勝・複勝0件');
@@ -8063,6 +8202,7 @@ async function loadOverview(r,st,force=false){
       if(!haveWin()&&!havePlace())throw new Error('HTML解析0件');
       if(!haveWin()) st.errorByType['単勝']='HTMLから単勝を解析できませんでした';
       if(!havePlace()) st.errorByType['複勝']='HTMLから複勝を解析できませんでした';
+      if(haveWin()) await syncMainHorsesFromWinRowsV23(r,st);
     }catch(e){errs.push(`HTML: ${e?.message||e}`);throw new Error(errs.join(' / '))}
   }catch(e){
     const msg=e?.message||String(e); st.error=msg;
@@ -8156,7 +8296,7 @@ function renderRows(){
     const missing=(!isDemo&&!rid)?'LIVEレースの公式race_idを解決できません（架空オッズには切替えません）':`${active}オッズはまだ取得できていません`;
     tbody.innerHTML=`<tr><td colspan="6" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
   }else{
-    tbody.innerHTML=rows.slice(0,300).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(x.selection)}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('');
+    tbody.innerHTML=rows.slice(0,300).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('');
   }
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
   const isJsonApi=/\[JSON API\]|api_get_jra_odds/.test(String(src||''));
@@ -8191,6 +8331,7 @@ function onRace(r){
   ensureUI();
   if(!r){ currentRace=null; setStatus('レース選択待ち'); return; }
   currentRace=r;
+  if(window.__fixed23RenderGuard){ renderRows(); return; }
   const pe=probabilityRef();
   if(r?.horses?.length&&pe?.model)try{pe.model(r.horses)}catch(_){}
   renderOrLoad(false,false);
@@ -8214,7 +8355,7 @@ function hook(){
 }
 window.__oddsBoard={onRace,render:renderOrLoad,cache,hook};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000)},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000)}
-console.log('✅ v5.18.304 NETKEIBA MOBILE-FIRST ALL TICKET ODDS loaded');
+console.log('✅ FIXED23 NETKEIBA ALL TICKET ODDS + MAIN HORSE SYNC loaded');
 })();
 </script>
 
