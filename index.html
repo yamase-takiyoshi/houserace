@@ -181,6 +181,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
+<div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED28 AUTO 5秒</b> — LIVEオッズは選択中レースの発走前に5秒ごと自動再取得。全券種を原子的に入れ替え、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップし、発走後は停止します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -7932,7 +7933,7 @@ function ensureUI(){
   const div=document.createElement('div'); div.id='ticketOddsModule';
   div.innerHTML=`<div class="ticket-odds-head"><b>🎫 全券種オッズ</b><span class="ticket-odds-status" id="ticketOddsStatus">レース選択待ち</span></div>
   <div class="ticket-tabs" id="ticketOddsTabs">${TYPES.map(t=>`<button type="button" data-ticket="${t}">${t}</button>`).join('')}</div>
-  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順（下限優先）</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">複勝・ワイドのみEV下限 / 代表 / 上限。その他は単一EV。判定は複勝・ワイドのみEV下限基準</span></div>
+  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順（下限優先）</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">LIVEは発走前5秒ごと自動更新（通信中は重複取得をスキップ）。複勝・ワイドのみEV下限 / 代表 / 上限。その他は単一EV。</span></div>
   <div class="ticket-odds-scroll"><table><thead id="ticketOddsHead"><tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV</th><th>評価</th></tr></thead><tbody id="ticketOddsBody"></tbody></table></div>`;
   body.appendChild(div);
   document.getElementById('ticketOddsTabs').addEventListener('click',e=>{const b=e.target.closest('button[data-ticket]');if(!b)return;active=b.dataset.ticket;updateTabs();renderOrLoad(true)});
@@ -8392,7 +8393,7 @@ function renderRows(){
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
   const isJsonApi=/\[JSON API\]|api_get_jra_odds/.test(String(src||''));
   const route=isJsonApi?(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba JSON API':'Bridge→netkeiba JSON API'):(cloudflareOddsProxyUrl()?'Cloudflare→netkeiba HTML':'Bridge→netkeiba HTML');
-  const status=isDemo&&!rid?'DEMO計算値（実オッズではありません）':src?`${route} / ${active} / ${rows.length}件 / ${at?at.toLocaleTimeString('ja-JP'):''}`:(!rid?'LIVE / race_id未解決':(typeErr||`${route}未取得`));
+  const status=isDemo&&!rid?'DEMO計算値（実オッズではありません）':src?`${route} / ${active} / ${rows.length}件 / ${at?at.toLocaleTimeString('ja-JP'):''} / AUTO 5秒`:(!rid?'LIVE / race_id未解決':(typeErr||`${route}未取得 / AUTO 5秒`));
   setStatus(status);
 }
 async function renderOrLoad(userAction=false,force=false){
@@ -8444,9 +8445,90 @@ function hook(){
   try{onRace(ui.engine?.selected||ui.engine?.races?.[0])}catch(_){}
   return true;
 }
-window.__oddsBoard={onRace,render:renderOrLoad,cache,hook};
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000)},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000)}
-console.log('✅ FIXED26 EV RANGE + ODDS CACHE PROBABILITY SYNC loaded');
+
+// FIXED28: LIVE odds atomic auto refresh every 5 seconds.
+// Keeps the previous table visible while the next snapshot is fetched, then swaps all ticket rows at once.
+// If a refresh is still running, the next tick is skipped to avoid overlapping requests on iPad/Safari.
+const LIVE_ODDS_AUTO_MS_V28=5000;
+let liveOddsAutoBusyV28=false;
+let liveOddsAutoTimerV28=null;
+let liveOddsAutoTickV28=0;
+function liveRaceRefreshableV28(r){
+  if(!r||allOddsIsDemo())return false;
+  if(r.settled)return false;
+  const t=new Date(r.startTime).getTime();
+  if(Number.isFinite(t)&&Date.now()>=t)return false;
+  return !!raceId(r);
+}
+function blankOddsStateV28(r){
+  const id=raceId(r)||String(r?.id||r?.title||'live');
+  return {id,loaded:false,loading:false,allLoading:false,
+    rows:Object.fromEntries(TYPES.map(t=>[t,[]])),source:'',sourceByType:{},at:null,atByType:{},error:'',errorByType:{}};
+}
+async function refreshLiveOddsV28(reason='timer'){
+  const r=currentRace;
+  if(!r)return false;
+  if(!liveRaceRefreshableV28(r)){
+    const t=new Date(r.startTime).getTime();
+    if(Number.isFinite(t)&&Date.now()>=t)setStatus('発走済み / オッズ自動更新停止');
+    return false;
+  }
+  if(liveOddsAutoBusyV28)return false;
+  const rid=raceId(r);
+  liveOddsAutoBusyV28=true;
+  liveOddsAutoTickV28++;
+  const seq=liveOddsAutoTickV28;
+  const fresh=blankOddsStateV28(r);
+  try{
+    setStatus(`全券種オッズ更新中… / AUTO 5秒 / #${seq}`);
+    await preloadAllNetkeiba(r,fresh,true);
+    // User may have switched races while the requests were in flight.
+    if(r!==currentRace||raceId(currentRace)!==rid)return false;
+    const st=stateFor(r);
+    st.loaded=fresh.loaded;
+    st.rows=fresh.rows;
+    st.source=fresh.source;
+    st.sourceByType=fresh.sourceByType;
+    st.at=fresh.at||new Date();
+    st.atByType=fresh.atByType;
+    st.error=fresh.error;
+    st.errorByType=fresh.errorByType;
+    st.loading=false;
+    st.allLoading=false;
+    // The win-odds loader already syncs race.horses and recalculates model/EV.
+    // Also advance the main KPI timestamp so the 5-second activity is visible in the central panel.
+    try{
+      if(typeof engine!=='undefined'&&engine){
+        engine.lastOddsAt=Date.now();
+        const pe=probabilityRef();if(r?.horses?.length&&pe?.model)pe.model(r.horses);
+      }
+    }catch(_){ }
+    renderRows();
+    try{
+      const ui=uiRef();
+      if(typeof engine!=='undefined'&&ui?.renderCurrent&&engine?.selected===r){
+        window.__fixed23RenderGuard=true;
+        ui.renderCurrent(engine);
+      }
+    }catch(e){console.warn('FIXED28 main table redraw',e)}finally{window.__fixed23RenderGuard=false}
+    return true;
+  }catch(e){
+    console.warn('FIXED28 AUTO 5sec odds',e);
+    if(r===currentRace)setStatus(`AUTO 5秒 更新失敗: ${e?.message||e}`);
+    return false;
+  }finally{
+    liveOddsAutoBusyV28=false;
+  }
+}
+function startLiveOddsAutoV28(){
+  if(liveOddsAutoTimerV28)return;
+  liveOddsAutoTimerV28=setInterval(()=>{refreshLiveOddsV28('timer').catch(()=>{})},LIVE_ODDS_AUTO_MS_V28);
+  setTimeout(()=>{refreshLiveOddsV28('startup').catch(()=>{})},1200);
+}
+
+window.__oddsBoard={onRace,render:renderOrLoad,cache,hook,refreshNow:refreshLiveOddsV28,autoMs:LIVE_ODDS_AUTO_MS_V28};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
+console.log('✅ FIXED28 EV RANGE + ATOMIC AUTO 5SEC LIVE ODDS loaded');
 })();
 </script>
 
