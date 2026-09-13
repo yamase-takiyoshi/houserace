@@ -183,6 +183,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
 <div class="notice" style="border-color:#2f8f63;background:#0d281d"><b>FIXED30 NAR 3連単</b> — NARの旧 <code>/odds/odds.html</code> 404を回避し、現行のnetkeibaモバイルオッズ一覧から3連単/3連複の人気順表を券種別に取得します。</div>
+<div class="notice" style="border-color:#3c82b8;background:#0d1f2b"><b>FIXED31 JRA JSON API 400</b> — JRAオッズAPIを現行の最小URL <code>race_id + type + action=update</code> に統一。旧 <code>pid/action=init/sort/compress/output</code> 付きURLでHTTP 400になった場合を回避し、update→initの順で自動再試行します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -1418,8 +1419,17 @@ async function liveJraEntryNamesV21(id,race){
   return names;
 }
 async function liveGetJraWinOddsJsonV21(race,id){
-  const url=`https://race.netkeiba.com/api/api_get_jra_odds.html?pid=api_get_jra_odds&race_id=${encodeURIComponent(id)}&type=1&action=init&sort=odds&compress=0&output=json&_=${Date.now()}`;
-  const x=await liveJsonViaProxyOrBridgeV21(url);
+  // FIXED31: netkeibaの現行JRA odds APIは最小パラメータ + action=update を優先。
+  // 旧 pid/action=init/sort/compress/output 付きURLはBridge経由でHTTP 400になる環境がある。
+  const urls=[
+    `https://race.netkeiba.com/api/api_get_jra_odds.html?race_id=${encodeURIComponent(id)}&type=1&action=update`,
+    `https://race.netkeiba.com/api/api_get_jra_odds.html?race_id=${encodeURIComponent(id)}&type=1&action=init`
+  ];
+  let x=null,lastErr=null;
+  for(const url of urls){
+    try{x=await liveJsonViaProxyOrBridgeV21(url);break}catch(e){lastErr=e}
+  }
+  if(!x)throw lastErr||new Error('JRA JSON API取得失敗');
   const tan=x.json?.data?.odds?.['1']||{};
   const names=await liveJraEntryNamesV21(id,race);
   const horses=[];
@@ -8062,7 +8072,10 @@ async function residentialBridgeFetch(url){
   if(typeof window.__narBridgeFetch!=='function'||window.__bridgeAbsent===true)throw new Error('住宅IP Bridge未接続');
   const r=await window.__narBridgeFetch(url);
   const status=Number(r?.status||0),text=String(r?.text||'');
-  if(!(status>=200&&status<400)||text.length<10)throw new Error(`Bridge HTTP ${status||0}`);
+  if(!(status>=200&&status<400)||text.length<10){
+    const detail=String(r?.error||r?.message||'').trim();
+    throw new Error(`Bridge HTTP ${status||0}${detail?`: ${detail}`:''}`);
+  }
   return {text,url:String(r?.finalUrl||url),via:'residential-bridge'};
 }
 async function bridgeFetch(url){
@@ -8147,34 +8160,44 @@ function parseOddsApiJson(raw){
   if(!j?.data?.odds||typeof j.data.odds!=='object')throw new Error('data.oddsなし');
   return j;
 }
+function jraOddsApiUrls(id,apiType){
+  // FIXED31: current netkeiba contract. Keep init only as a compatibility fallback.
+  const base=`https://race.netkeiba.com/api/api_get_jra_odds.html?race_id=${encodeURIComponent(id)}&type=${encodeURIComponent(apiType)}`;
+  return [`${base}&action=update`,`${base}&action=init`];
+}
 function jraOddsApiUrl(id,apiType){
-  return `https://race.netkeiba.com/api/api_get_jra_odds.html?pid=api_get_jra_odds&race_id=${encodeURIComponent(id)}&type=${encodeURIComponent(apiType)}&action=init&sort=odds&compress=0&output=json&_=${Date.now()}`;
+  return jraOddsApiUrls(id,apiType)[0];
 }
 async function fetchOddsApi(r,id,apiType){
   if(String(r?.org||'').toUpperCase()!=='JRA')throw new Error('JSON APIはJRAのみ');
-  const url=jraOddsApiUrl(id,apiType),proxy=cloudflareOddsProxyUrl(),errors=[];
-  if(proxy){
-    try{
-      const endpoint=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
-      const res=await fetch(endpoint,{method:'GET',cache:'no-store',headers:{'Accept':'application/json,text/plain,*/*'}});
-      const raw=await res.text();
-      if(res.ok){
-        try{return {json:parseOddsApiJson(raw),url,via:'cloudflare'}}catch(e){
-          let wrap=null;try{wrap=JSON.parse(raw)}catch(_){}
-          if(wrap?.needBridge&&typeof window.__narBridgeFetch==='function'&&window.__bridgeAbsent!==true){
-            const target=wrap?.bridge?.candidates?.[0]?.url||url;
-            const rr=await residentialBridgeFetch(target);
-            return {json:parseOddsApiJson(rr.text),url:rr.url||target,via:'cloudflare→residential-bridge'};
+  const urls=jraOddsApiUrls(id,apiType),proxy=cloudflareOddsProxyUrl(),errors=[];
+  for(const url of urls){
+    if(proxy){
+      try{
+        const endpoint=`${proxy}/?url=${encodeURIComponent(url)}&bridge=auto&ts=${Date.now()}`;
+        const res=await fetch(endpoint,{method:'GET',cache:'no-store',headers:{'Accept':'application/json,text/plain,*/*'}});
+        const raw=await res.text();
+        if(res.ok){
+          try{return {json:parseOddsApiJson(raw),url,via:'cloudflare'}}catch(e){
+            let wrap=null;try{wrap=JSON.parse(raw)}catch(_){}
+            if(wrap?.needBridge&&typeof window.__narBridgeFetch==='function'&&window.__bridgeAbsent!==true){
+              const target=wrap?.bridge?.candidates?.[0]?.url||url;
+              try{
+                const rr=await residentialBridgeFetch(target);
+                return {json:parseOddsApiJson(rr.text),url:rr.url||target,via:'cloudflare→residential-bridge'};
+              }catch(be){errors.push(`Cloudflare→Bridge ${new URL(url).searchParams.get('action')}: ${be?.message||be}`)}
+            }else{
+              errors.push(`Cloudflare JSON ${new URL(url).searchParams.get('action')}: ${e?.message||e}`);
+            }
           }
-          errors.push(`Cloudflare JSON: ${e?.message||e}`);
-        }
-      }else errors.push(`Cloudflare HTTP ${res.status}`);
-    }catch(e){errors.push(`Cloudflare: ${e?.message||e}`)}
+        }else errors.push(`Cloudflare ${new URL(url).searchParams.get('action')}: HTTP ${res.status}`);
+      }catch(e){errors.push(`Cloudflare ${new URL(url).searchParams.get('action')}: ${e?.message||e}`)}
+    }
+    try{
+      const rr=await residentialBridgeFetch(url);
+      return {json:parseOddsApiJson(rr.text),url:rr.url||url,via:proxy?'cloudflare-fallback→residential-bridge':'residential-bridge'};
+    }catch(e){errors.push(`Bridge ${new URL(url).searchParams.get('action')}: ${e?.message||e}`)}
   }
-  try{
-    const rr=await residentialBridgeFetch(url);
-    return {json:parseOddsApiJson(rr.text),url:rr.url||url,via:proxy?'cloudflare-fallback→residential-bridge':'residential-bridge'};
-  }catch(e){errors.push(`Bridge: ${e?.message||e}`)}
   throw new Error(errors.join(' / ')||'JSON API取得失敗');
 }
 function apiSelection(type,key){
