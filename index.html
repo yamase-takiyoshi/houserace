@@ -732,7 +732,7 @@ const racePhase=(race,settings,now=Date.now())=>{
 
 const DEFAULTS={
   mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
-  initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
+  initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:30,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
   netkeibaProxyUrl:"https://keiba-odds.nitta-katsuhiko.workers.dev",
   jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
@@ -3469,8 +3469,16 @@ function renderBt(result){
 async function getHistoryBlock(date,org,options={}){
   const force=!!options.force;
   const cached=webHistory.find(x=>x.date===date&&x.org===org);
-  // 空ブロックは古い取得失敗の可能性があるため再取得する。
-  if(!force && cached && Array.isArray(cached.races) && cached.races.length>0)return cached;
+  const today55=(typeof today==='function'?today():new Date().toISOString().slice(0,10));
+  const past55=String(date)<String(today55);
+  const ds55=cached?.diagnosticSummary||cached?.diagnostics||{};
+  const verifiedEmpty55=!!cached && Array.isArray(cached.races) && cached.races.length===0 &&
+    ((String(ds55.meetingSource||'').toLowerCase()==='none') || Number(ds55.requestedRaces)===0) &&
+    !(Array.isArray(ds55.errors)&&ds55.errors.length);
+  // FIXED55: 完了済みの過去日は不変データとしてキャッシュ優先。
+  // 正常レースあり、または「開催なし」が検証済みの空ブロックだけを再利用する。
+  // 当日は結果が増えるためキャッシュ固定しない。
+  if(!force && past55 && cached && ((Array.isArray(cached.races)&&cached.races.length>0)||verifiedEmpty55))return cached;
   const d=await fetchHistoryDay(date,org,{retries:3,timeoutMs:12000});
   webHistory=webHistory.filter(x=>!(x.date===date&&x.org===org));
   webHistory.push(d);saveWebHistoryCache();
@@ -3508,7 +3516,7 @@ $("#runWebBacktest").onclick=async()=>{
         $("#btProgress").textContent=`${date} ${o} 取得中… ${n}/${total}`;
         try{
           // 必ず現在のWorkerを再確認。特にJRAの空キャッシュを再利用しない。
-          const d=await getHistoryBlock(date,o,{force:o==="JRA"});
+          const d=await getHistoryBlock(date,o,{force:false});
           blocks.push(d);
           const cnt=Array.isArray(d.races)?d.races.length:0;
           fetchStats[o].races+=cnt;
@@ -9525,13 +9533,23 @@ function hook(){
   return true;
 }
 
-// FIXED29: next-upcoming-race focus + LIVE odds atomic auto refresh every 5 seconds.
-// Keeps the previous table visible while the next snapshot is fetched, then swaps all ticket rows at once.
-// If a refresh is still running, the next tick is skipped to avoid overlapping requests on iPad/Safari.
-const LIVE_ODDS_AUTO_MS_V28=5000;
+// FIXED55: quota-saver adaptive LIVE odds refresh.
+// >10分:30秒 / 10〜5分:15秒 / 5〜3分:10秒 / 3分以内:5秒。
+// Exact 3-minute AUTO decision still forces one fresh all-ticket snapshot.
+const LIVE_ODDS_AUTO_MS_V28=30000;
 let liveOddsAutoBusyV28=false;
 let liveOddsAutoTimerV28=null;
+let liveOddsAutoStartedV28=false;
 let liveOddsAutoTickV28=0;
+function adaptiveOddsMsV55(r){
+  const start=new Date(r?.startTime||0).getTime(),now=Date.now();
+  if(!Number.isFinite(start)||start<=now)return 60000;
+  const left=start-now;
+  if(left<=3*60*1000)return 5000;
+  if(left<=5*60*1000)return 10000;
+  if(left<=10*60*1000)return 15000;
+  return 30000;
+}
 function liveRaceRefreshableV28(r){
   if(!r||allOddsIsDemo())return false;
   if(r.settled)return false;
@@ -9575,7 +9593,7 @@ async function refreshLiveOddsV28(reason='timer'){
   const seq=liveOddsAutoTickV28;
   const fresh=blankOddsStateV28(r);
   try{
-    setStatus(`全券種オッズ更新中… / AUTO 5秒 / #${seq}`);
+    setStatus(`全券種オッズ更新中… / 節約AUTO ${Math.round(adaptiveOddsMsV55(r)/1000)}秒 / #${seq}`);
     await preloadAllNetkeiba(r,fresh,true);
     // User may have switched races while the requests were in flight.
     if(r!==currentRace||raceId(currentRace)!==rid)return false;
@@ -9599,17 +9617,24 @@ async function refreshLiveOddsV28(reason='timer'){
     }catch(e){console.warn('FIXED28 main table redraw',e)}finally{window.__fixed23RenderGuard=false}
     return true;
   }catch(e){
-    console.warn('FIXED28 AUTO 5sec odds',e);
-    if(r===currentRace)setStatus(`AUTO 5秒 更新失敗: ${e?.message||e}`);
+    console.warn('FIXED55 adaptive AUTO odds',e);
+    if(r===currentRace)setStatus(`節約AUTO 更新失敗: ${e?.message||e}`);
     return false;
   }finally{
     liveOddsAutoBusyV28=false;
   }
 }
 function startLiveOddsAutoV28(){
-  if(liveOddsAutoTimerV28)return;
-  liveOddsAutoTimerV28=setInterval(()=>{refreshLiveOddsV28('timer').catch(()=>{})},LIVE_ODDS_AUTO_MS_V28);
-  setTimeout(()=>{refreshLiveOddsV28('startup').catch(()=>{})},1200);
+  if(liveOddsAutoStartedV28)return;
+  liveOddsAutoStartedV28=true;
+  const schedule=(delay)=>{
+    liveOddsAutoTimerV28=setTimeout(async()=>{
+      try{await refreshLiveOddsV28('adaptive')}catch(_){}
+      const r=liveRaceRefreshableV28(currentRace)?currentRace:nextUpcomingRaceV29();
+      schedule(adaptiveOddsMsV55(r));
+    },Math.max(1000,Number(delay)||LIVE_ODDS_AUTO_MS_V28));
+  };
+  schedule(1200);
 }
 
 async function getAutoCandidatesV37(r,minEv=1.10,force=true){
@@ -9665,10 +9690,11 @@ window.__oddsBoard={
   onRace,render:renderOrLoad,cache,hook,
   refreshNow:refreshLiveOddsV28,
   autoMs:LIVE_ODDS_AUTO_MS_V28,
+  nextAutoMs:adaptiveOddsMsV55,
   getAutoCandidates:getAutoCandidatesV37
 };
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
-console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
+console.log('✅ FIXED55 adaptive quota-saver LIVE ODDS loaded');
 })();
 </script>
 
@@ -11181,7 +11207,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     const prev=window.getHistoryBlock || (typeof getHistoryBlock==='function'?getHistoryBlock:null);
     if(!prev || prev.__fixed51WebForce)return;
     const wrapped=async function(date,org,options={}){
-      const o=battleWebActive51?{...options,force:true,retries:Math.max(3,Number(options.retries||0)),timeoutMs:Math.max(22000,Number(options.timeoutMs||0))}:options;
+      const o=battleWebActive51?{...options,force:false,retries:Math.max(1,Number(options.retries||0)),timeoutMs:Math.max(16000,Number(options.timeoutMs||0))}:options;
       return await prev(date,org,o);
     };
     wrapped.__fixed51WebForce=true;
@@ -11195,7 +11221,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     if(host&&!document.getElementById('fixed51PeriodWebBadge')){
       const e=document.createElement('div');
       e.id='fixed51PeriodWebBadge';e.className='muted';e.style.marginTop='6px';
-      e.innerHTML='<b>FIXED51 期間仮想対戦＝WEB自動取得:</b> STARTを押すだけで選択期間のJRA＋NARをWEBから再取得します。事前の「WEBから取得」は不要です。JRA=公式履歴 / NAR=keiba.go.jp。';
+      e.innerHTML='<b>FIXED55 期間仮想対戦＝キャッシュ優先:</b> 完了済み過去日は保存済み正常データを再利用し、不足日・当日だけWEB取得します。JRA=公式履歴 / NAR=keiba.go.jp。';
       host.insertAdjacentElement('afterend',e);
     }
   }
@@ -11208,15 +11234,15 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     const old=btn.onclick;
     if(typeof old!=='function')return false;
     btn.dataset.fixed51Installed='1';
-    btn.textContent='🌐 WEB自動取得＋期間仮想対戦 START';
+    btn.textContent='💾 キャッシュ優先＋不足分WEB取得＋期間仮想対戦 START';
     btn.onclick=async function(ev){
       if(battleWebActive51)return;
       battleWebActive51=true;
-      this.textContent='🌐 JRA＋NAR WEB取得中…';
+      this.textContent='💾 キャッシュ確認＋不足分WEB取得中…';
       const p=document.getElementById('btProgress');
       try{
-        if(p)p.textContent='期間仮想対戦: 選択期間のJRA＋NARをWEBから自動取得します…';
-        log51('期間仮想対戦: WEB自動取得開始（JRA公式履歴 + NAR keiba.go.jp）','ok');
+        if(p)p.textContent='期間仮想対戦: 保存済み正常キャッシュを優先し、不足分だけWEB取得します…';
+        log51('期間仮想対戦: キャッシュ優先＋不足分WEB取得開始（JRA公式履歴 + NAR keiba.go.jp）','ok');
         await old.call(this,ev);
       }catch(e){
         if(p)p.textContent='停止: '+String(e?.message||e);
@@ -11224,7 +11250,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
         throw e;
       }finally{
         battleWebActive51=false;
-        this.textContent='🌐 WEB自動取得＋期間仮想対戦 START';
+        this.textContent='💾 キャッシュ優先＋不足分WEB取得＋期間仮想対戦 START';
       }
     };
     return true;
@@ -11804,6 +11830,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   const sleep54=ms=>new Promise(r=>setTimeout(r,ms));
   const esc54=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const log54=(m,t='ok')=>{try{window.UI?.addLog?.(m,t)}catch(_){}};
+  let healthCache54=null;
 
   function bridgeReady54(){
     return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true;
@@ -11824,7 +11851,11 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     }
     return (b||CANON54).replace(/\/$/,'');
   }
-  async function health54(base,timeoutMs=7000){
+  async function health54(base,timeoutMs=7000,force=false){
+    const key=String(base).replace(/\/$/,'');
+    const age=healthCache54&&healthCache54.base===key?Date.now()-Number(healthCache54._at||0):Infinity;
+    const ttl=healthCache54?.ok?10*60*1000:30*1000;
+    if(!force&&healthCache54&&age<ttl)return {...healthCache54,cached:true};
     const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),timeoutMs);
     const started=performance.now();
     try{
@@ -11833,18 +11864,18 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
       });
       const text=await r.text(); let j=null;
       try{j=text?JSON.parse(text):null}catch(_){ }
-      return {ok:r.ok&&j?.ok!==false,status:r.status,ms:Math.round(performance.now()-started),version:j?.version||'',text:text.slice(0,180),base};
+      const z={ok:r.ok&&j?.ok!==false,status:r.status,ms:Math.round(performance.now()-started),version:j?.version||'',text:text.slice(0,180),base:key,_at:Date.now()};healthCache54=z;return z;
     }catch(e){
-      return {ok:false,status:0,ms:Math.round(performance.now()-started),version:'',error:e?.name==='AbortError'?`timeout ${timeoutMs}ms`:String(e?.message||e),base};
+      const z={ok:false,status:0,ms:Math.round(performance.now()-started),version:'',error:e?.name==='AbortError'?`timeout ${timeoutMs}ms`:String(e?.message||e),base:key,_at:Date.now()};healthCache54=z;return z;
     }finally{clearTimeout(timer)}
   }
-  async function repairAndProbe54(){
+  async function repairAndProbe54(force=false){
     const configured=currentBase54();
-    let first=await health54(configured);
+    let first=await health54(configured,7000,force);
     if(first.ok) return {worker:first,repaired:false,configured,bridge:bridgeReady54()};
 
     if(configured!==CANON54){
-      const second=await health54(CANON54);
+      const second=await health54(CANON54,7000,force);
       if(second.ok){
         try{
           if(window.engine?.settings){
@@ -11937,7 +11968,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     if(btn)btn.onclick=async()=>{
       btn.disabled=true;const s=document.getElementById('probe54Status');if(s)s.textContent='診断中…';
       try{
-        const d=await repairAndProbe54();const w=d.worker;
+        const d=await repairAndProbe54(true);const w=d.worker;
         if(s)s.innerHTML=`Worker: <b style="color:${w.ok?'#9ee37d':'#ff9c9c'}">${w.ok?'OK':'NG'}</b> ${esc54(w.base||'')} ${w.status?`HTTP ${w.status}`:''} ${w.version?`/ ${esc54(w.version)}`:''} ${w.ms?`/ ${w.ms}ms`:''}${w.error?` / ${esc54(w.error)}`:''}<br>Bridge: <b style="color:${bridgeReady54()?'#9ee37d':'#f6d365'}">${bridgeReady54()?`OK ${esc54(window.__narBridgeVersion||'')}`:'待機 / 未接続'}</b>${d.repaired?'<br><b>API URLは自動修復済みです。</b>':''}`;
       }finally{btn.disabled=false}
     };
@@ -11986,6 +12017,162 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot54,5200);setTimeout(boot54,7600)},{once:true});
   else{setTimeout(boot54,5200);setTimeout(boot54,7600)}
   console.log('✅ FIXED54 network recovery loaded');
+})();
+</script>
+
+
+<script id="fixed55QuotaSaver">
+/* =========================================================
+   FIXED55 — CLOUDFLARE QUOTA SAVER
+   2026-09-14
+   - Adaptive all-ticket polling: 30s / 15s / 10s / 5s.
+   - Exact AUTO decision remains a forced fresh snapshot at 3 minutes.
+   - Completed historical days are cache-first; only missing/current data is fetched.
+   - Counts Worker requests made by this browser (NOT the Cloudflare account total).
+   - 3 consecutive network failures => 60s local circuit-breaker.
+   - Manual 1027 button pauses Worker calls until next 00:00 UTC (09:00 JST).
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED55_QUOTA_SAVER__)return;
+  window.__FIXED55_QUOTA_SAVER__=true;
+
+  const KEY='keibaFixed55WorkerStats';
+  const HOLD='keibaFixed55WorkerHoldUntil';
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const utcDay=()=>new Date().toISOString().slice(0,10);
+  const nextUtcReset=()=>{
+    const d=new Date();
+    return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()+1,0,0,2);
+  };
+  const load=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(_){return {}}};
+  const save=s=>{try{localStorage.setItem(KEY,JSON.stringify(s))}catch(_){}};
+  const stats=(()=>{
+    const s=load();
+    if(s.day!==utcDay())return {day:utcDay(),attempted:0,ok:0,failed:0,suppressed:0,last:''};
+    return s;
+  })();
+  let failTimes=[];
+  let shortHold=0;
+
+  function holdUntil(){
+    const x=Number(localStorage.getItem(HOLD)||0);
+    return Math.max(x,shortHold);
+  }
+  function isWorker(u){
+    try{return /\.workers\.dev$/i.test(new URL(String(u),location.href).hostname)}catch(_){return false}
+  }
+  function fmtTime(t){
+    if(!t)return 'なし';
+    return new Date(t).toLocaleString('ja-JP',{hour12:false});
+  }
+  function update(){
+    save(stats);
+    const s=document.getElementById('fixed55Status');
+    if(!s)return;
+    let ms=30000,r=null;
+    try{
+      r=window.engine?.selected||null;
+      if(window.__oddsBoard?.nextAutoMs)ms=window.__oddsBoard.nextAutoMs(r);
+    }catch(_){}
+    const h=holdUntil(),holding=h>Date.now();
+    let cached=0;
+    try{
+      const a=Array.isArray(window.webHistory)?window.webHistory:(typeof webHistory!=='undefined'&&Array.isArray(webHistory)?webHistory:[]);
+      cached=a.filter(x=>Array.isArray(x?.races)&&(x.races.length>0||Number(x?.diagnosticSummary?.requestedRaces)===0)).length;
+    }catch(_){}
+    s.innerHTML=
+      `全券種AUTO更新: <b>${Math.round(ms/1000)}秒</b>（>10分=30秒 / 10–5分=15秒 / 5–3分=10秒 / 3分以内=5秒）<br>`+
+      `Worker呼出カウンタ: <b>${stats.attempted}</b>回 / 成功${stats.ok} / 失敗${stats.failed} / 抑止${stats.suppressed} `+
+      `<span class="muted">※このブラウザでFIXED55起動後の概算。Cloudflare全体使用量ではありません。</span><br>`+
+      `履歴キャッシュ: ${cached}日区分 / Worker停止: <b style="color:${holding?'#f6d365':'#9ee37d'}">${holding?`ON ～ ${esc(fmtTime(h))}`:'OFF'}</b>`;
+  }
+
+  const nativeFetch=window.fetch.bind(window);
+  window.fetch=async function(input,init){
+    const url=typeof input==='string'?input:(input?.url||String(input));
+    if(!isWorker(url))return nativeFetch(input,init);
+
+    const h=holdUntil();
+    if(h>Date.now()){
+      stats.suppressed++;stats.last=new Date().toISOString();update();
+      throw new TypeError(`FIXED55 Worker節約停止中 ～ ${fmtTime(h)}`);
+    }
+
+    stats.attempted++;stats.last=new Date().toISOString();update();
+    try{
+      const r=await nativeFetch(input,init);
+      if(r.ok){stats.ok++;failTimes=[];}
+      else{
+        stats.failed++;
+        failTimes.push(Date.now());
+        failTimes=failTimes.filter(x=>Date.now()-x<60000);
+        if(r.status===429){
+          shortHold=Date.now()+5*60*1000;
+        }else if(failTimes.length>=3){
+          shortHold=Date.now()+60*1000;
+        }
+      }
+      update();
+      return r;
+    }catch(e){
+      stats.failed++;
+      failTimes.push(Date.now());
+      failTimes=failTimes.filter(x=>Date.now()-x<60000);
+      if(failTimes.length>=3)shortHold=Date.now()+60*1000;
+      update();
+      throw e;
+    }
+  };
+
+  function addUI(){
+    if(document.getElementById('fixed55SaverPanel'))return;
+    const anchor=document.getElementById('fixed54NetPanel')||document.getElementById('fixed53Lab')||document.getElementById('btProgress');
+    if(!anchor)return;
+    const box=document.createElement('div');
+    box.id='fixed55SaverPanel';box.className='notice';box.style.marginTop='8px';
+    box.innerHTML=`<div style="font-weight:800;margin-bottom:6px">🪫 FIXED55 Cloudflare節約モード ON</div>
+      <div class="controls">
+        <button id="fixed55Pause10">⏸ Workerを10分停止</button>
+        <button id="fixed55Quota1027">🚫 Error 1027 → 9:00 JSTまで停止</button>
+        <button id="fixed55Resume">▶ Worker再開</button>
+      </div>
+      <div id="fixed55Status" class="muted" style="margin-top:6px"></div>`;
+    anchor.insertAdjacentElement('afterend',box);
+    document.getElementById('fixed55Pause10').onclick=()=>{
+      localStorage.setItem(HOLD,String(Date.now()+10*60*1000));update();
+    };
+    document.getElementById('fixed55Quota1027').onclick=()=>{
+      localStorage.setItem(HOLD,String(nextUtcReset()));update();
+    };
+    document.getElementById('fixed55Resume').onclick=()=>{
+      localStorage.removeItem(HOLD);shortHold=0;failTimes=[];update();
+    };
+    update();
+  }
+
+  function normalizeSettings(){
+    try{
+      if(window.engine?.settings){
+        if(Number(window.engine.settings.refreshSec)<30)window.engine.settings.refreshSec=30;
+        window.Store?.set?.('settings',window.engine.settings);
+      }
+    }catch(_){}
+  }
+
+  function badge(){
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('fixed55Badge')){
+      const e=document.createElement('div');e.id='fixed55Badge';e.className='muted';e.style.marginTop='4px';
+      e.innerHTML='<b>FIXED55 節約:</b> 全券種30/15/10/5秒可変更新・3分前は強制最新1回・完了済み過去日キャッシュ優先・連続通信失敗時60秒遮断・1027手動日次停止';
+      host.insertAdjacentElement('afterend',e);
+    }
+  }
+
+  const boot=()=>{normalizeSettings();addUI();badge();update()};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot,6200);setInterval(update,5000)},{once:true});
+  else{setTimeout(boot,6200);setInterval(update,5000)}
+  console.log('✅ FIXED55 Cloudflare quota saver loaded');
 })();
 </script>
 
