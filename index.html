@@ -177,9 +177,9 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-<b>FIXED24 馬名同期 + RESULT自動確定</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED23 馬名同期 + RESULT API修正</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
-<div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED24</b> — 馬名・全券種オッズ同期に加え、RESULTはWorkerを試した後、Cloudflare/Bridge経由のnetkeiba確定結果へ自動フォールバックします。確定後は自動精算して次レースへ移動します。</div>
+<div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
@@ -7842,7 +7842,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
-<!-- v5.18.304 NETKEIBA MOBILE-FIRST ALL TICKET ODDS / 2026-09-13 -->
+<!-- v5.18.305 EV RANGE (PLACE/WIDE) + NETKEIBA MOBILE-FIRST ALL TICKET ODDS / 2026-09-13 -->
 <style id="allTicketOddsCssV298">
 #ticketOddsModule{margin-top:12px;border:1px solid var(--line,#2b4131);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.10)}
 #ticketOddsModule .ticket-odds-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;border-bottom:1px solid var(--line,#2b4131)}
@@ -7855,7 +7855,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 #ticketOddsModule .ticket-odds-tools select,#ticketOddsModule .ticket-odds-tools button{font-size:12px;padding:6px 9px}
 #ticketOddsModule .ticket-odds-note{font-size:11px;color:var(--muted,#9ab0a1)}
 #ticketOddsModule .ticket-odds-scroll{overflow:auto;max-height:360px;-webkit-overflow-scrolling:touch}
-#ticketOddsModule table{min-width:610px;width:100%;border-collapse:collapse}
+#ticketOddsModule table{min-width:800px;width:100%;border-collapse:collapse}
 #ticketOddsModule th{position:sticky;top:0;z-index:2;background:var(--panel,#132019);white-space:nowrap}
 #ticketOddsModule td,#ticketOddsModule th{font-size:12px;padding:7px 8px}
 #ticketOddsModule td:nth-child(1),#ticketOddsModule td:nth-child(2){white-space:nowrap}
@@ -7865,7 +7865,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 @media(max-width:760px){
   #ticketOddsModule .ticket-odds-status{width:100%;max-width:none;margin-left:0;text-align:left}
   #ticketOddsModule .ticket-odds-scroll{max-height:320px}
-  #ticketOddsModule table{min-width:560px}
+  #ticketOddsModule table{min-width:760px}
 }
 </style>
 <script id="allTicketOddsV305">
@@ -7932,8 +7932,8 @@ function ensureUI(){
   const div=document.createElement('div'); div.id='ticketOddsModule';
   div.innerHTML=`<div class="ticket-odds-head"><b>🎫 全券種オッズ</b><span class="ticket-odds-status" id="ticketOddsStatus">レース選択待ち</span></div>
   <div class="ticket-tabs" id="ticketOddsTabs">${TYPES.map(t=>`<button type="button" data-ticket="${t}">${t}</button>`).join('')}</div>
-  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">横スクロール・縦スクロール対応 / 実オッズのみ</span></div>
-  <div class="ticket-odds-scroll"><table><thead><tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV</th><th>評価</th></tr></thead><tbody id="ticketOddsBody"></tbody></table></div>`;
+  <div class="ticket-odds-tools"><label>並び <select id="ticketOddsSort"><option value="popular">人気/取得順</option><option value="ev">EV順（下限優先）</option><option value="odds">オッズ順</option></select></label><button type="button" id="ticketOddsReload">再取得</button><span class="ticket-odds-note">複勝・ワイドはEV下限 / 代表 / 上限。判定はEV下限基準</span></div>
+  <div class="ticket-odds-scroll"><table><thead><tr><th>#</th><th>買い目</th><th>オッズ</th><th>想定確率</th><th>EV下限</th><th>EV代表</th><th>EV上限</th><th>評価</th></tr></thead><tbody id="ticketOddsBody"></tbody></table></div>`;
   body.appendChild(div);
   document.getElementById('ticketOddsTabs').addEventListener('click',e=>{const b=e.target.closest('button[data-ticket]');if(!b)return;active=b.dataset.ticket;updateTabs();renderOrLoad(true)});
   document.getElementById('ticketOddsSort').addEventListener('change',e=>{sortMode=e.target.value;renderRows()});
@@ -7953,7 +7953,9 @@ async function syncMainHorsesFromWinRowsV23(r,st){
     const old=new Map((r.horses||[]).map(h=>[Number(h.no),h]));
     const seed=winRows.map(x=>{
       const no=Number(x.selection), prev=old.get(no)||{};
-      return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0};
+      const prevNoise=Number(prev.modelNoise);
+      return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0,
+        modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(raceId(r),no)};
     });
     let names=new Map();
     if(String(r.org||'').toUpperCase()==='JRA' && typeof liveJraEntryNamesV21==='function'){
@@ -7991,7 +7993,19 @@ function trioProb(r,arr,ordered){const hm=horseMap(r),hs=arr.map(x=>hm.get(+x));
 function placeProb(r,n){const hm=horseMap(r),target=hm.get(+n);if(!target)return NaN;const hs=[...hm.values()],idx=hs.indexOf(target);let s=0;for(let a=0;a<hs.length;a++)for(let b=0;b<hs.length;b++)if(b!==a)for(let c=0;c<hs.length;c++)if(c!==a&&c!==b&&(a===idx||b===idx||c===idx))s+=pl3(hs[a],hs[b],hs[c]);return Math.min(1,s)}
 function calcProb(type,sel,r){const ns=String(sel).match(/\d+/g)?.map(Number)||[];if(type==='単勝'){const h=horseMap(r).get(ns[0]);return h?pWin(h):NaN}if(type==='複勝')return placeProb(r,ns[0]);if(type==='馬連'||type==='ワイド'){if(ns.length<2)return NaN;if(type==='馬連')return pairProb(r,ns[0],ns[1],false);const hm=horseMap(r),ha=hm.get(ns[0]),hb=hm.get(ns[1]);if(!ha||!hb)return NaN;let s=0;for(const hc of hm.values())if(hc!==ha&&hc!==hb){s+=pl3(ha,hb,hc)+pl3(hb,ha,hc)+pl3(ha,hc,hb)+pl3(hb,hc,ha)+pl3(hc,ha,hb)+pl3(hc,hb,ha)}return Math.min(1,s)}if(type==='馬単')return ns.length>=2?pairProb(r,ns[0],ns[1],true):NaN;if(type==='3連複')return ns.length>=3?trioProb(r,ns.slice(0,3),false):NaN;if(type==='3連単')return ns.length>=3?trioProb(r,ns.slice(0,3),true):NaN;return NaN}
 function evalLabel(ev){return ev>=1.2?'STRONG':ev>=1.05?'BUY':ev>=1?'WATCH':'PASS'}
-function addRow(st,type,selection,oddsText,rank){const rg=range(oddsText);if(!selection||!rg||!(rg.mid>=1))return;const normalized=String(selection).replace(/\s+/g,'-').replace(/^-|-$/g,'');const key=`${type}|${normalized}`;const row={key,type,selection:normalized,odds:rg.mid,oddsText:rg.text,rank:Number(rank)||st.rows[type].length+1};const old=st.rows[type].find(x=>x.key===key);if(old)Object.assign(old,row);else st.rows[type].push(row)}
+function evalRangeLabel(low,high){
+  if(Number.isFinite(low)&&low>=1.10)return 'STRONG';
+  if(Number.isFinite(low)&&low>=1.00)return 'BUY';
+  if(Number.isFinite(high)&&high>=1.00)return 'WATCH';
+  return 'PASS';
+}
+function addRow(st,type,selection,oddsText,rank){
+  const rg=range(oddsText);if(!selection||!rg||!(rg.mid>=1))return;
+  const normalized=String(selection).replace(/\s+/g,'-').replace(/^-|-$/g,'');
+  const key=`${type}|${normalized}`;
+  const row={key,type,selection:normalized,odds:rg.mid,oddsLow:rg.low,oddsMid:rg.mid,oddsHigh:rg.high,oddsText:rg.text,rank:Number(rank)||st.rows[type].length+1};
+  const old=st.rows[type].find(x=>x.key===key);if(old)Object.assign(old,row);else st.rows[type].push(row)
+}
 function findHeadingTable(doc,needle){const hs=[...doc.querySelectorAll('h1,h2,h3,h4,.RaceOdds_Hd,.Odds_Hd')];for(const h of hs){const t=clean(h.textContent).replace(/３/g,'3');if(!t.includes(needle))continue;let n=h.nextElementSibling;for(let i=0;n&&i<8;i++,n=n.nextElementSibling){if(n.matches?.('table'))return n;const q=n.querySelector?.('table');if(q)return q;if(/^H[1-4]$/.test(n.tagName))break}}return null}
 function parseSingleTable(tb,type,st){if(!tb)return;const rows=[...tb.querySelectorAll('tr')];for(const tr of rows){const c=[...tr.querySelectorAll('th,td')].map(x=>clean(x.textContent));if(c.length<2)continue;const joined=c.join('|');if(/馬名|単勝オッズ|複勝オッズ/.test(joined)&&!/^[0-9]/.test(c[0]))continue;const ints=c.map(x=>/^\d{1,2}$/.test(x)?Number(x):NaN);let no=-1;for(let i=ints.length-1;i>=0;i--)if(ints[i]>=1&&ints[i]<=18){no=ints[i];break}if(no<1)continue;const oddsCells=c.filter((x,i)=>i>0&&/^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?$/.test(x.replace(/,/g,'')));if(!oddsCells.length)continue;const pick=type==='複勝'?(oddsCells.find(x=>x.includes('-'))||oddsCells[oddsCells.length-1]):([...oddsCells].reverse().find(x=>!x.includes('-'))||'');if(pick)addRow(st,type,String(no),pick,no)}}
 function parseSinglePlace(doc,st){const combo=findHeadingTable(doc,'単勝・複勝');if(combo){const rows=[...combo.querySelectorAll('tr')];for(const tr of rows){const c=[...tr.querySelectorAll('th,td')].map(x=>clean(x.textContent));if(c.length<4)continue;const joined=c.join('|');if(/馬名|単勝オッズ|複勝オッズ/.test(joined)&&!/^[0-9]/.test(c[0]))continue;const ints=c.map(x=>/^\d{1,2}$/.test(x)?Number(x):NaN);let no=-1;for(let i=ints.length-1;i>=0;i--)if(ints[i]>=1&&ints[i]<=18){no=ints[i];break}if(no<1)continue;const oddsCells=c.filter((x,i)=>i>0&&/^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?$/.test(x.replace(/,/g,'')));const place=[...oddsCells].reverse().find(x=>x.includes('-'))||'';const win=[...oddsCells].reverse().find(x=>!x.includes('-')&&Number(x)>0)||'';if(win)addRow(st,'単勝',String(no),win,no);if(place)addRow(st,'複勝',String(no),place,no)}return}parseSingleTable(findHeadingTable(doc,'単勝'),'単勝',st);parseSingleTable(findHeadingTable(doc,'複勝'),'複勝',st)}
@@ -8166,7 +8180,12 @@ async function loadOverview(r,st,force=false){
   const haveWin=()=>Array.isArray(st.rows?.['単勝'])&&st.rows['単勝'].length>0;
   const havePlace=()=>Array.isArray(st.rows?.['複勝'])&&st.rows['複勝'].length>0;
   if(st.loading)return;
-  if(!force&&haveWin()&&havePlace())return;
+  if(!force&&haveWin()&&havePlace()){
+    ensureModelFromWinRowsV26(r,st);
+    if(haveWin()) syncMainHorsesFromWinRowsV23(r,st).catch(e=>console.warn('FIXED26 cached horse sync',e));
+    renderRows();
+    return;
+  }
   st.loading=true; st.error=''; st.errorByType['単勝']=''; st.errorByType['複勝']='';
   setStatus('netkeiba JSON API 単勝・複勝取得中…');
   const errs=[];
@@ -8281,22 +8300,83 @@ async function preloadAllNetkeiba(r,st,force=false){
 }
 function demoRows(r,type){const hs=(r?.horses||[]).slice().sort((a,b)=>(b.modelProb||0)-(a.modelProb||0));const out=[];const push=(sel,odds,p)=>out.push({selection:sel,odds,oddsText:odds.toFixed(1),prob:p,ev:p*odds,rank:out.length+1,demo:true});if(type==='単勝')for(const h of hs)push(String(h.no),Number(h.odds)||1,pWin(h));else if(type==='複勝')for(const h of hs.slice(0,12)){const p=placeProb(r,h.no);push(String(h.no),Math.max(1.1,1/Math.max(.01,p)*.78),p)}else if(['馬連','ワイド','馬単'].includes(type)){for(let i=0;i<Math.min(7,hs.length);i++)for(let j=0;j<Math.min(7,hs.length);j++){if(i===j)continue;if(type!=='馬単'&&j<=i)continue;const p=type==='ワイド'?calcProb(type,`${hs[i].no}-${hs[j].no}`,r):pairProb(r,hs[i].no,hs[j].no,type==='馬単');push(`${hs[i].no}-${hs[j].no}`,Math.max(1.1,1/Math.max(.001,p)*.78),p);if(out.length>=40)return out}}else if(['3連複','3連単'].includes(type)){const n=Math.min(6,hs.length);for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(let k=0;k<n;k++){if(new Set([i,j,k]).size<3)continue;if(type==='3連複'&&!(i<j&&j<k))continue;const sel=`${hs[i].no}-${hs[j].no}-${hs[k].no}`,p=trioProb(r,[hs[i].no,hs[j].no,hs[k].no],type==='3連単');push(sel,Math.max(1.1,1/Math.max(.0001,p)*.74),p);if(out.length>=50)return out}}return out}
 function setStatus(t){const e=document.getElementById('ticketOddsStatus');if(e)e.textContent=t}
-function enrich(rows,type,r){return rows.map(x=>{let p=Number.isFinite(x.prob)?x.prob:calcProb(type,x.selection,r);let ev=Number.isFinite(p)?p*Number(x.odds):NaN;return {...x,prob:p,ev}})}
+/* FIXED26: odds cache -> race.horses/model probability re-sync.
+   AUTO DRIVE can replace the race object while the odds cache survives.
+   In that case odds are visible but 想定確率/EV became "--" because the
+   new race object had no modeled horses.  Bootstrap immediately from the
+   cached 単勝 rows, then the existing async name sync can enrich names. */
+function fixed26StableNoise(rid,no){
+  const text=String(rid||'race')+':'+String(no||0);
+  let h=2166136261>>>0;
+  for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619)>>>0}
+  return ((h%10001)/10000-.5)*0.20; // -0.10 .. +0.10, deterministic
+}
+function ensureModelFromWinRowsV26(r,st){
+  if(!r||!st)return false;
+  const winRows=(st.rows?.['単勝']||[]).filter(x=>/^\d{1,2}$/.test(String(x.selection||''))&&Number(x.odds)>=1);
+  if(!winRows.length)return false;
+  const old=new Map((r.horses||[]).map(h=>[Number(h.no),h]));
+  const currentComplete=winRows.every(x=>{
+    const h=old.get(Number(x.selection));
+    return h && Number.isFinite(Number(h.modelProb)) && Number(h.modelProb)>0;
+  });
+  if(currentComplete)return true;
+  const rid=raceId(r)||String(r?.id||r?.title||'race');
+  const seed=winRows.map(x=>{
+    const no=Number(x.selection), prev=old.get(no)||{};
+    const prevNoise=Number(prev.modelNoise);
+    return {...prev,
+      no,
+      odds:Number(x.odds),
+      pop:Number(x.rank)||Number(prev.pop)||0,
+      modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(rid,no)
+    };
+  });
+  const pe=probabilityRef();
+  try{if(pe?.model)pe.model(seed)}catch(e){console.warn('FIXED26 probability bootstrap',e)}
+  r.horses=seed.sort((a,b)=>a.no-b.no);
+  return r.horses.some(h=>Number.isFinite(Number(h.modelProb))&&Number(h.modelProb)>0);
+}
+function enrich(rows,type,r){
+  return rows.map(x=>{
+    const p=Number.isFinite(x.prob)?x.prob:calcProb(type,x.selection,r);
+    const rg=range(x.oddsText||x.odds);
+    const low=Number.isFinite(Number(x.oddsLow))?Number(x.oddsLow):(rg?.low??Number(x.odds));
+    const mid=Number.isFinite(Number(x.oddsMid))?Number(x.oddsMid):(rg?.mid??Number(x.odds));
+    const high=Number.isFinite(Number(x.oddsHigh))?Number(x.oddsHigh):(rg?.high??Number(x.odds));
+    const evLow=Number.isFinite(p)&&Number.isFinite(low)?p*low:NaN;
+    const evMid=Number.isFinite(p)&&Number.isFinite(mid)?p*mid:NaN;
+    const evHigh=Number.isFinite(p)&&Number.isFinite(high)?p*high:NaN;
+    const ranged=(type==='複勝'||type==='ワイド');
+    return {...x,prob:p,oddsLow:low,oddsMid:mid,oddsHigh:high,ev:evMid,evLow,evMid,evHigh,evDecision:ranged?evLow:evMid,evRange:ranged};
+  })
+}
 function renderRows(){
   ensureUI();if(!currentRace)return;
   const st=stateFor(currentRace),tbody=document.getElementById('ticketOddsBody');if(!tbody)return;
   let rows=st.rows[active]||[];const rid=raceId(currentRace);const isDemo=allOddsIsDemo();
+  if(!isDemo)ensureModelFromWinRowsV26(currentRace,st);
   if(isDemo&&!rid)rows=demoRows(currentRace,active);
   rows=enrich(rows,active,currentRace);
-  if(sortMode==='ev')rows.sort((a,b)=>(b.ev||-1)-(a.ev||-1));
+  if(sortMode==='ev')rows.sort((a,b)=>(Number.isFinite(b.evDecision)?b.evDecision:-1)-(Number.isFinite(a.evDecision)?a.evDecision:-1));
   else if(sortMode==='odds')rows.sort((a,b)=>(a.odds||1e9)-(b.odds||1e9));
   else rows.sort((a,b)=>(a.rank||9999)-(b.rank||9999));
   const typeErr=st.errorByType?.[active]||'';
   if(!rows.length){
     const missing=(!isDemo&&!rid)?'LIVEレースの公式race_idを解決できません（架空オッズには切替えません）':`${active}オッズはまだ取得できていません`;
-    tbody.innerHTML=`<tr><td colspan="6" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="8" class="odds-missing">${(st.loading||st.allLoading)?'取得中…':esc(typeErr||missing)}</td></tr>`;
   }else{
-    tbody.innerHTML=rows.slice(0,300).map((x,i)=>{const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--',ev=Number.isFinite(x.ev)?x.ev.toFixed(2):'--',lab=Number.isFinite(x.ev)?evalLabel(x.ev):'--',cl=x.ev>=1.2?'odds-ev-strong':x.ev>=1.05?'odds-ev-good':'';return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${ev}</td><td>${lab}</td></tr>`}).join('');
+    const ranged=(active==='複勝'||active==='ワイド');
+    tbody.innerHTML=rows.slice(0,300).map((x,i)=>{
+      const p=Number.isFinite(x.prob)?`${(x.prob*100).toFixed(2)}%`:'--';
+      const lo=Number.isFinite(x.evLow)?x.evLow.toFixed(2):'--';
+      const mid=Number.isFinite(x.evMid)?x.evMid.toFixed(2):'--';
+      const hi=Number.isFinite(x.evHigh)?x.evHigh.toFixed(2):'--';
+      const score=ranged?x.evLow:x.evMid;
+      const lab=ranged?(Number.isFinite(x.evLow)||Number.isFinite(x.evHigh)?evalRangeLabel(x.evLow,x.evHigh):'--'):(Number.isFinite(x.evMid)?evalLabel(x.evMid):'--');
+      const cl=Number.isFinite(score)?(score>=(ranged?1.10:1.20)?'odds-ev-strong':score>=(ranged?1.00:1.05)?'odds-ev-good':''):'';
+      return `<tr><td>${i+1}</td><td><b>${esc(displaySelectionV23(active,x.selection,currentRace))}</b></td><td>${esc(x.oddsText||Number(x.odds).toFixed(1))}</td><td>${p}</td><td class="${cl}">${lo}</td><td>${mid}</td><td>${hi}</td><td>${lab}</td></tr>`;
+    }).join('');
   }
   const at=st.atByType?.[active]||st.at,src=st.sourceByType?.[active]||st.source;
   const isJsonApi=/\[JSON API\]|api_get_jra_odds/.test(String(src||''));
@@ -8355,242 +8435,7 @@ function hook(){
 }
 window.__oddsBoard={onRace,render:renderOrLoad,cache,hook};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000)},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000)}
-console.log('✅ FIXED23 NETKEIBA ALL TICKET ODDS + MAIN HORSE SYNC loaded');
-})();
-</script>
-
-
-<script id="fixed24ResultAutoSettle">
-/* ============================================================
-   FIXED24 RESULT AUTO-SETTLE FALLBACK
-   - /result Worker の契約差・400/空レスポンスを吸収
-   - JRA/NARとも netkeiba 確定結果を Cloudflare/Bridge 経由で取得
-   - top3 + 単勝/複勝/ワイド/3連複払戻を正規化
-   - settle() 成功後は既存AUTO DRIVEが次レースへ自動移動
-   ============================================================ */
-(() => {
-  if (window.__FIXED24_RESULT_AUTO_SETTLE__) return;
-  window.__FIXED24_RESULT_AUTO_SETTLE__ = true;
-
-  const clean24 = s => String(s == null ? '' : s).replace(/[\u00a0\s　]+/g,' ').trim();
-  const half24 = s => String(s == null ? '' : s).replace(/[０-９．，－ー―]/g,c=>({
-    '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','．':'.','，':',','－':'-','ー':'-','―':'-'
-  }[c] || c));
-  const num24 = s => {
-    const m=half24(clean24(s)).match(/-?\d+(?:\.\d+)?/);
-    return m ? Number(m[0]) : 0;
-  };
-  const raceId24 = race => String(race?.id||race?.raceId||race?.race_id||'').match(/(20\d{10})/)?.[1] || '';
-
-  function normalizePayoutMap24(v){
-    if(!v || typeof v!=='object') return {};
-    if(Array.isArray(v)){
-      const o={};
-      for(const x of v){
-        if(!x || typeof x!=='object') continue;
-        const key=String(x.no??x.horseNo??x.selection??x.combo??x.key??'').replace(/[－ー―→＞>]/g,'-').trim();
-        const val=x.refundYen??x.payoutYen??x.refund??x.payout??x.amount??x.value??x.odds;
-        if(key && val!=null) o[key]=val;
-      }
-      return o;
-    }
-    return {...v};
-  }
-
-  function normalizeResult24(raw){
-    if(!raw || typeof raw!=='object') return null;
-    const candidates=[raw,raw.result,raw.data,raw.data?.result,raw.race?.result,raw.payload,raw.payload?.result].filter(Boolean);
-    for(const x of candidates){
-      if(!x || typeof x!=='object') continue;
-      let top3=(x.top3||x.top_3||x.placing||x.finishTop3||x.finish_top3||[]);
-      if(Array.isArray(top3)) top3=top3.map(v=>Number(v?.no??v?.horseNo??v)).filter(n=>n>=1&&n<=18);
-      else top3=[];
-      const winner=Number(x.winner??x.win??x.first??top3[0]??0);
-      if(!top3.length && winner>=1) top3=[winner];
-      const p=x.payouts||x.refunds||x.payback||x.payout||{};
-      const payouts={
-        win:normalizePayoutMap24(p.win||p.tansho||p['単勝']),
-        place:normalizePayoutMap24(p.place||p.fukusho||p['複勝']),
-        wide:normalizePayoutMap24(p.wide||p['ワイド']),
-        trio:normalizePayoutMap24(p.trio||p.sanrenpuku||p['3連複']||p['三連複'])
-      };
-      if(top3.length || winner>=1){
-        return {...x,winner:winner||top3[0],top3,payouts};
-      }
-    }
-    return null;
-  }
-
-  function horseRow24(row){
-    const link=row.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
-    if(!link) return null;
-    const els=[...row.querySelectorAll('th,td')];
-    const cells=els.map(x=>clean24(x.textContent));
-    const hidx=els.findIndex(x=>x===link || x.contains(link));
-    const before=(hidx>=0?cells.slice(0,hidx):cells.slice(0,5))
-      .map(x=>/^\d{1,2}$/.test(half24(x))?Number(half24(x)):0).filter(Boolean);
-    let rank=num24(row.querySelector('.Rank,.Result_Num,td.Result_Num,[class*="Rank"],[class*="rank"]')?.textContent||'');
-    let no=num24(row.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"]')?.textContent||'');
-    if(!rank && before.length) rank=before[0];
-    if(!no && before.length) no=before[before.length-1];
-    if(!(no>=1&&no<=18)) return null;
-    return {rank,no,name:clean24(link.textContent)};
-  }
-
-  function parseResultHtml24(html){
-    const doc=new DOMParser().parseFromString(String(html||''),'text/html');
-    const finish=[],names=new Map();
-    for(const tr of doc.querySelectorAll('tr')){
-      const x=horseRow24(tr); if(!x) continue;
-      if(x.name) names.set(x.no,x.name);
-      if(x.rank>=1&&x.rank<=50) finish.push(x);
-    }
-    const byRank=new Map();
-    finish.sort((a,b)=>a.rank-b.rank).forEach(x=>{if(!byRank.has(x.rank))byRank.set(x.rank,x)});
-    const ordered=[...byRank.values()].sort((a,b)=>a.rank-b.rank);
-
-    const payouts={win:{},place:{},wide:{},trio:{}};
-    const labels=['単勝','複勝','ワイド','3連複','三連複'];
-    for(const tr of doc.querySelectorAll('tr')){
-      const cells=[...tr.querySelectorAll('th,td')].map(c=>half24(clean24(c.textContent)));
-      if(!cells.length) continue;
-      const joined=cells.join(' ');
-      const label=labels.find(t=>joined.includes(t));
-      if(!label) continue;
-
-      const amounts=[];
-      for(const c of cells){
-        for(const m of String(c).matchAll(/([\d,]+)\s*円/g)){
-          const n=Number(m[1].replace(/,/g,'')); if(n>0) amounts.push(n);
-        }
-      }
-      if(!amounts.length) continue;
-      const comboCells=cells.filter(c=>!/円/.test(c)&&!labels.includes(c));
-      const comboText=comboCells.join(' ').replace(/[－ー―→＞>]/g,'-');
-
-      if(label==='単勝'||label==='複勝'){
-        const nums=[];
-        for(const c of comboCells){
-          for(const m of String(c).matchAll(/(?:^|[^\d])([1-9]|1[0-8])(?:[^\d]|$)/g)){
-            const n=Number(m[1]); if(!nums.includes(n)) nums.push(n);
-          }
-        }
-        nums.slice(0,amounts.length).forEach((n,i)=>{
-          (label==='単勝'?payouts.win:payouts.place)[String(n)]=amounts[Math.min(i,amounts.length-1)];
-        });
-      }else if(label==='ワイド'){
-        const combos=[...comboText.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)];
-        combos.slice(0,amounts.length).forEach((m,i)=>{
-          const key=[Number(m[1]),Number(m[2])].sort((a,b)=>a-b).join('-');
-          payouts.wide[key]=amounts[Math.min(i,amounts.length-1)];
-        });
-      }else{
-        const combos=[...comboText.matchAll(/([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])\s*-\s*([1-9]|1[0-8])/g)];
-        combos.slice(0,amounts.length).forEach((m,i)=>{
-          const key=[Number(m[1]),Number(m[2]),Number(m[3])].sort((a,b)=>a-b).join('-');
-          payouts.trio[key]=amounts[Math.min(i,amounts.length-1)];
-        });
-      }
-    }
-
-    const top3=ordered.slice(0,3).map(x=>x.no);
-    return {winner:top3[0]||0,top3,finish:ordered,payouts,names};
-  }
-
-  async function resultViaNetkeiba24(race){
-    const id=raceId24(race);
-    if(!id) throw new Error('netkeiba結果取得用 race_id がありません');
-    const nar=String(race?.org||'').toUpperCase()==='NAR';
-    const urls=nar ? [
-      `https://nar.netkeiba.com/race/result.html?race_id=${id}&rf=race_list`,
-      `https://nar.sp.netkeiba.com/race/race_result.html?race_id=${id}`,
-      `https://nar.netkeiba.com/race/result.html?mode=result&race_id=${id}`
-    ] : [
-      `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_submenu`,
-      `https://race.netkeiba.com/race/result.html?race_id=${id}&rf=race_submenu`,
-      `https://db.netkeiba.com/race/${id}/`
-    ];
-    const errors=[];
-    for(const url of urls){
-      try{
-        const x=await liveHtmlViaProxyOrBridge(url);
-        const r=parseResultHtml24(x.text);
-        if(r.top3.length<3){errors.push(`${url}: Top3 ${r.top3.length}頭`);continue}
-        // resultページで実馬名が取れた場合、本体にも補完。
-        if(race?.horses?.length && r.names?.size){
-          race.horses.forEach(h=>{
-            const n=r.names.get(Number(h.no));
-            if(n && (!h.name || /^#\d+$/.test(String(h.name)) || /馬名未取得/.test(String(h.name)))) h.name=n;
-          });
-        }
-        return {winner:r.winner,top3:r.top3,finish:r.finish,payouts:r.payouts,at:new Date().toISOString(),source:`netkeiba result / ${x.via}`};
-      }catch(e){errors.push(`${url}: ${e?.message||e}`)}
-    }
-    throw new Error(errors.slice(0,5).join(' / ')||'netkeiba確定結果を取得できません');
-  }
-
-  function validResult24(r){
-    return !!r && Array.isArray(r.top3) && r.top3.length>=1 && Number(r.winner||r.top3[0])>=1;
-  }
-
-  if(typeof HttpProvider!=='undefined' && !HttpProvider.prototype.__fixed24Result){
-    HttpProvider.prototype.__fixed24Result=true;
-    HttpProvider.prototype.getResult=async function(race){
-      const id=raceId24(race);
-      if(!id) throw new Error('結果取得用 race_id がありません');
-      const org=String(race?.org||'JRA').toUpperCase();
-      const errors=[];
-
-      // Worker契約差を吸収。どれかで正規化結果が得られれば採用。
-      const eps=[
-        `/result?race_id=${encodeURIComponent(id)}&type=${encodeURIComponent(org)}`,
-        `/result?race_id=${encodeURIComponent(id)}&org=${encodeURIComponent(org)}`,
-        `/result?raceId=${encodeURIComponent(id)}&org=${encodeURIComponent(org)}`,
-        `/result?race_id=${encodeURIComponent(id)}&type=result&org=${encodeURIComponent(org)}`
-      ];
-      for(const ep of eps){
-        try{
-          const raw=await this.json(ep);
-          const n=normalizeResult24(raw);
-          if(validResult24(n)){
-            race.__resultSource='Worker /result';
-            return n;
-          }
-          errors.push(`${ep}: 結果未確定/形式不一致`);
-        }catch(e){errors.push(`${ep}: ${e?.message||e}`)}
-      }
-
-      // Workerが400/未確定でも、利用者回線Bridge/Cloudflare経由で確定結果へフォールバック。
-      try{
-        const n=await resultViaNetkeiba24(race);
-        if(validResult24(n)){
-          race.__resultSource=n.source||'netkeiba result';
-          try{ UI?.addLog?.(`[${new Date().toLocaleTimeString('ja-JP')}] ${race.title} 結果取得: ${race.__resultSource}`); }catch(_){ }
-          return n;
-        }
-      }catch(e){errors.push(`netkeiba: ${e?.message||e}`)}
-
-      throw new Error(errors.slice(0,8).join(' / '));
-    };
-  }
-
-  // RESULT WAIT中の過去レースを読み込み直後に素早く再確認する。
-  function kick24(){
-    try{
-      if(typeof engine==='undefined' || !engine?.settings?.auto) return;
-      const now=Date.now();
-      for(const r of (engine.races||[])){
-        const start=new Date(r.startTime).getTime();
-        if(!r.settled && r.status==='RESULT WAIT' && Number.isFinite(start) && now>=start+180000){
-          r.__resultRetryAt=0;
-        }
-      }
-    }catch(_){ }
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(kick24,1200),{once:true});
-  else setTimeout(kick24,1200);
-
-  console.log('✅ FIXED24 RESULT AUTO-SETTLE FALLBACK loaded');
+console.log('✅ FIXED26 EV RANGE + ODDS CACHE PROBABILITY SYNC loaded');
 })();
 </script>
 
