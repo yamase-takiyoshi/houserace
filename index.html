@@ -182,6 +182,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
+<div class="notice" style="border-color:#d69e2e;background:#2b2208"><b>AUTO TOP1 POLICY</b> — AUTOプレイヤーは発売締切3分前に全8券種を評価し、EV1.10以上の中から券種ごとに最高EVの1点だけを100円購入します。EV1.10未満の券種は見送ります。</div>
 <div class="notice" style="border-color:#2f8f63;background:#0d281d"><b>FIXED30 NAR 3連単</b> — NARの旧 <code>/odds/odds.html</code> 404を回避し、現行のnetkeibaモバイルオッズ一覧から3連単/3連複の人気順表を券種別に取得します。</div>
 <div class="notice" style="border-color:#3c82b8;background:#0d1f2b"><b>FIXED31 JRA JSON API 400</b> — JRAオッズAPIを現行の最小URL <code>race_id + type + action=update</code> に統一。旧 <code>pid/action=init/sort/compress/output</code> 付きURLでHTTP 400になった場合を回避し、update→initの順で自動再試行します。</div>
 <div class="notice" style="border-color:#a36f2f;background:#2a1f0d"><b>FIXED32 NAR公式オッズ優先</b> — NARのnetkeiba遮断/HTTP 400時は、地方競馬情報サイト（keiba.go.jp）の単複・枠連・馬連・ワイド・馬単・3連複・3連単へ自動フォールバックします。水沢などの競馬場コードはrace_idから復元します。</div>
@@ -1789,7 +1790,7 @@ class SimulationEngine{
     if(!c){
       c={
         id:"auto-player",name:"AUTOプレイヤー",avatar:"🤖",
-        desc:"AUTO: 締切3分前 / EV1.10以上 / 全買い目100円",
+        desc:"AUTO: 締切3分前 / EV1.10以上 / 券種ごと最高EV1点×100円",
         ticket:"all",minEV:1.10,staking:"fixed100",risk:0,
         bankroll:this.settings.initialBankroll,initial:this.settings.initialBankroll,
         invested:0,returned:0,wins:0,bets:0,skips:0,
@@ -1799,7 +1800,7 @@ class SimulationEngine{
       };
       this.characters.unshift(c);
     }
-    c.desc="AUTO: 締切3分前 / EV1.10以上 / 全買い目100円";
+    c.desc="AUTO: 締切3分前 / EV1.10以上 / 券種ごと最高EV1点×100円";
     return c;
   }
   save(){Store.set("settings",this.settings);Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
@@ -1974,8 +1975,8 @@ class SimulationEngine{
     race._autoBetting=true;
     try{
       // AUTO DRIVE policy is fixed by request:
-      // exactly 3 minutes before betting close, buy EVERY all-ticket candidate
-      // whose decision EV is >= 1.10, 100 yen each.
+      // exactly 3 minutes before betting close, evaluate every ticket type,
+      // then buy ONLY the highest-EV candidate per ticket type when EV >= 1.10, 100 yen each.
       this.settings.betTiming=3;
 
       try{await this.refreshOdds(race)}catch{}
@@ -1995,14 +1996,26 @@ class SimulationEngine{
         candidates=[];
       }
 
-      const qualified=candidates
+      // EV 1.10以上の候補から、券種ごとに最高EVの1点だけを採用する。
+      // 8券種の順序も固定して、同一レースで最大8点（各100円）まで。
+      const eligible=candidates
         .filter(x=>Number.isFinite(Number(x.ev))&&Number(x.ev)>=1.10)
         .sort((a,b)=>Number(b.ev)-Number(a.ev));
+
+      const bestByTicket=new Map();
+      for(const x of eligible){
+        const ticket=String(x.ticket||"").trim();
+        if(!ticket)continue;
+        const prev=bestByTicket.get(ticket);
+        if(!prev || Number(x.ev)>Number(prev.ev)) bestByTicket.set(ticket,x);
+      }
+      const ticketOrder=["単勝","複勝","枠連","ワイド","馬連","馬単","3連複","3連単"];
+      const qualified=ticketOrder.map(ticket=>bestByTicket.get(ticket)).filter(Boolean);
 
       race.betLocked=true;
       race.status="BET LOCKED";
 
-      this.log(`${race.title} 発売締切3分前。全券種EV1.10以上を100円ずつ購入判定（候補 ${qualified.length}点）`);
+      this.log(`${race.title} 発売締切3分前。EV1.10以上から券種ごと最高EV1点を100円購入判定（対象 ${qualified.length}券種）`);
 
       let made=0;
       for(const x of qualified){
@@ -2011,7 +2024,7 @@ class SimulationEngine{
         const sel=String(x.selection||"").trim();
         if(!sel)continue;
 
-        // race/day caps are intentionally not applied here: "全部100円買う".
+        // AUTO policy: per ticket type TOP1 only, fixed 100 yen stake.
         const stake=100;
         autoPlayer.bankroll-=stake;
         autoPlayer.invested+=stake;
@@ -2035,7 +2048,7 @@ class SimulationEngine{
           ev:Number(x.ev),
           stake,
           return:0,profit:-stake,status:"OPEN",
-          autoPolicy:"EV>=1.10_ALL_100YEN",
+          autoPolicy:"EV>=1.10_TOP1_PER_TICKET_100YEN",
           autoDecisionMinutesBeforeClose:3
         };
         this.bets.push(bet);
@@ -2044,9 +2057,9 @@ class SimulationEngine{
 
       if(!made){
         autoPlayer.skips++;
-        this.log(`${race.title} AUTOプレイヤーはEV1.10以上なしで見送り`);
+        this.log(`${race.title} AUTOプレイヤーはEV1.10以上の券種別候補なしで見送り`);
       }else{
-        this.log(`${race.title} AUTOプレイヤー ${made}点 × 100円 = ${fmtY(made*100)}購入`);
+        this.log(`${race.title} AUTOプレイヤー 券種別TOP1を ${made}点 × 100円 = ${fmtY(made*100)}購入`);
       }
 
       this.save();
@@ -2389,7 +2402,7 @@ $("#btnAuto").onclick=()=>{
     engine.ensureAutoPlayer();
   }
   engine.save();
-  UI.autoStep=engine.settings.auto?"AUTO: 締切3分前 / EV1.10以上 / 全て100円":"AUTO OFF";
+  UI.autoStep=engine.settings.auto?"AUTO: 締切3分前 / EV1.10以上 / 券種別TOP1×100円":"AUTO OFF";
   UI.renderAll(engine);
 };
 $("#btnSettings").onclick=()=>openSettings();
