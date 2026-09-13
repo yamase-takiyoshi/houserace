@@ -7,16 +7,18 @@
 <style>html,body{margin:0;background:#07100b;color:#eef7f0;font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif}#boot{padding:24px;font-size:15px}</style>
 </head>
 <body>
-<div id="boot">FIXED49 読み込み中…</div>
+<div id="boot">FIXED50 読み込み中…</div>
 <script>
 (async()=>{
   try{
-    const r=await fetch('./app48.html?v=20260914-0639',{cache:'no-store'});
+    const r=await fetch('./app48.html?v=20260914-0707',{cache:'no-store'});
     if(!r.ok)throw new Error('app48 HTTP '+r.status);
     let html=await r.text();
-    const tag='<scr'+'ipt src="./fixed49_patch.js?v=20260914-0639"></scr'+'ipt>';
-    if(/<\/body>/i.test(html))html=html.replace(/<\/body>/i,tag+'</body>');
-    else html+=tag;
+    const tag49='<scr'+'ipt src="./fixed49_patch.js?v=20260914-0707"></scr'+'ipt>';
+    const tag50='<scr'+'ipt src="./fixed50_patch.js?v=20260914-0707"></scr'+'ipt>';
+    const tags=tag49+tag50;
+    if(/<\/body>/i.test(html))html=html.replace(/<\/body>/i,tags+'</body>');
+    else html+=tags;
     document.open();
     document.write(html);
     document.close();
