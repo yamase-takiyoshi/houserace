@@ -8262,6 +8262,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 </script>
 
 
+<!-- FIXED40 NAR OFFICIAL SP ODDS FIRST / 2026-09-14 -->
 <!-- FIXED39 NAR RESIDENTIAL-FIRST + PC NETKEIBA FIRST / 2026-09-14 -->
 <!-- v5.18.307 FIXED32 NAR OFFICIAL ODDS + TRIFECTA + EV RANGE / 2026-09-13 -->
 <style id="allTicketOddsCssV298">
@@ -8485,7 +8486,7 @@ function fixed39NativeFirstUrl(url){
     const u=new URL(String(url));
     const h=u.hostname.toLowerCase();
     const narNetkeiba=(h==='nar.netkeiba.com'||h==='nar.sp.netkeiba.com') && /^\/odds(?:\/|$)/i.test(u.pathname) && !/api_get_nar_odds\.html$/i.test(u.pathname);
-    const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp') && /^\/KeibaWeb\/TodayRaceInfo\//i.test(u.pathname);
+    const narOfficial=(h==='www.keiba.go.jp'||h==='keiba.go.jp'||h==='sp.keiba.go.jp') && /^\/(?:KeibaWeb|KeibaWebSP)\/TodayRaceInfo\//i.test(u.pathname);
     return narNetkeiba||narOfficial;
   }catch(_){return false}
 }
@@ -8781,6 +8782,118 @@ async function fetchNarOfficial32(r,id,type,st){
   }
   throw new Error(errs.slice(0,3).join(' / ')||'NAR公式オッズ取得失敗');
 }
+/* FIXED40 NAR OFFICIAL MOBILE ODDS FIRST */
+const NAR_OFFICIAL_SP_PATH40={
+  '単勝':'S_OddsTan','複勝':'S_OddsFuku','枠連':'S_OddsWakuLenFuku','馬連':'S_OddsUmLenFuku',
+  'ワイド':'S_OddsWide','馬単':'S_OddsUmLenTan','3連複':'S_Odds3LenFuku','3連単':'S_Odds3LenTan'
+};
+function narOfficialSpUrls40(r,id,type){
+  const meta=narOfficialMeta(r,id),path=NAR_OFFICIAL_SP_PATH40[type];
+  if(!meta||!path)return [];
+  const q=`k_raceDate=${encodeURIComponent(meta.date)}&k_raceNo=${meta.no}&k_babaCode=${encodeURIComponent(meta.baba)}`;
+  const base=`https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/${path}?${q}`;
+  return [base,`${base}&odds_flg=5`];
+}
+function narSpOddsCell40(text,type){
+  const x=officialText32(text).replace(/,/g,'').replace(/[～〜~]/g,'-').replace(/\s+/g,' ').trim();
+  if(!x||x==='-')return '';
+  if(type==='複勝'||type==='ワイド'){
+    const m=x.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/);
+    if(m)return `${m[1]} - ${m[2]}`;
+  }
+  const m=x.match(/^(\d+(?:\.\d+)?)$/);
+  return m?m[1]:'';
+}
+function parseNarSpSingle40(html,type,st){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const before=st.rows[type]?.length||0;
+  let seq=0;
+  for(const tr of doc.querySelectorAll('tr')){
+    const cells=[...tr.querySelectorAll('th,td')];
+    if(cells.length<2)continue;
+    const texts=cells.map(c=>officialText32(c.textContent));
+    const joined=texts.join('|');
+    if(/馬番|馬名|オッズ|順位/.test(joined)&&!texts.some(x=>/^\d{1,2}$/.test(x)))continue;
+    let oddsIndex=-1,oddsText='';
+    for(let i=texts.length-1;i>=0;i--){
+      const v=narSpOddsCell40(texts[i],type);
+      if(v){oddsIndex=i;oddsText=v;break}
+    }
+    if(oddsIndex<0)continue;
+    const nums=[];
+    for(let i=0;i<oddsIndex;i++){
+      if(/^\d{1,2}$/.test(texts[i])){
+        const n=Number(texts[i]);
+        if(n>=1&&n<=18)nums.push({i,n});
+      }
+    }
+    if(!nums.length)continue;
+    const noObj=nums[nums.length-1],no=noObj.n;
+    let rank=++seq;
+    if(type==='単勝'&&nums.length>=2){const rr=nums[0].n;if(rr>=1)rank=rr;}
+    addRow(st,type,String(no),oddsText,rank);
+    const row=st.rows[type]?.find(x=>x.key===`${type}|${no}`);
+    if(row){
+      for(let i=noObj.i+1;i<oddsIndex;i++){
+        const x=texts[i];
+        if(/[ぁ-んァ-ヶ一-龠A-Za-z]/.test(x)&&!/^\d/.test(x)){row.horseName=x;break}
+      }
+    }
+  }
+  return (st.rows[type]?.length||0)-before;
+}
+function parseNarSpCombo40(html,type,st){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const before=st.rows[type]?.length||0;
+  const need=(type==='3連複'||type==='3連単')?3:2;
+  const maxNo=type==='枠連'?8:18;
+  const sep='[-－–—―]';
+  const pat=need===3
+    ?new RegExp(`(?:^|\\D)([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])(?:\\D|$)`)
+    :new RegExp(`(?:^|\\D)([1-9]|1[0-8])\\s*${sep}\\s*([1-9]|1[0-8])(?:\\D|$)`);
+  let seq=0;
+  for(const tr of doc.querySelectorAll('tr')){
+    const cells=[...tr.querySelectorAll('th,td')];
+    if(cells.length<2)continue;
+    const texts=cells.map(c=>officialText32(c.textContent));
+    let combo='',comboIndex=-1;
+    for(let i=0;i<texts.length;i++){
+      const m=texts[i].match(pat);if(!m)continue;
+      const ns=m.slice(1,need+1).map(Number);
+      if(ns.every(n=>n>=1&&n<=maxNo)){combo=ns.join('-');comboIndex=i;break}
+    }
+    if(!combo)continue;
+    let oddsText='';
+    for(let i=comboIndex+1;i<texts.length;i++){
+      const v=narSpOddsCell40(texts[i],type);if(v){oddsText=v;break}
+    }
+    if(!oddsText)continue;
+    let rank=++seq;
+    for(let i=0;i<comboIndex;i++)if(/^\d+$/.test(texts[i])){const n=Number(texts[i]);if(n>=1){rank=n;break}}
+    if(type==='枠連'||type==='馬連'||type==='ワイド'||type==='3連複')combo=combo.split('-').map(Number).sort((a,b)=>a-b).join('-');
+    addRow(st,type,combo,oddsText,rank);
+  }
+  return (st.rows[type]?.length||0)-before;
+}
+async function fetchNarOfficial40(r,id,type,st){
+  const plan=type==='単勝'?['単勝','複勝']:[type];
+  const errors=[];let total=0,lastUrl='',lastVia='';
+  for(const t of plan){
+    const urls=narOfficialSpUrls40(r,id,t);
+    for(const u of urls){
+      try{
+        const x=await bridgeFetch(u),txt=String(x.text||'');
+        if(txt.length<180||!/地方競馬|オッズ|Odds/i.test(txt))throw new Error(`公式SP HTML不正 ${txt.length}字`);
+        const added=(t==='単勝'||t==='複勝')?parseNarSpSingle40(txt,t,st):parseNarSpCombo40(txt,t,st);
+        if(added>0||st.rows[t]?.length){total+=Math.max(0,added);lastUrl=x.url||u;lastVia=x.via||'NAR公式SP';break}
+        errors.push(`${t} ${new URL(u).pathname}: 解析0件`);
+      }catch(e){errors.push(`${t} ${new URL(u).pathname}: ${e?.message||e}`)}
+    }
+  }
+  if(total>0||plan.some(t=>st.rows[t]?.length))return {added:total,url:lastUrl,via:lastVia||'NAR公式SP FIXED40'};
+  try{return await fetchNarOfficial32(r,id,type,st)}catch(e){errors.push(`PC公式: ${e?.message||e}`)}
+  throw new Error(errors.slice(0,6).join(' / ')||'NAR公式SPオッズ取得失敗');
+}
 function parseNarWinApi32(raw,st){
   let j=null; try{j=JSON.parse(String(raw||'').replace(/^\uFEFF/,'').trim())}catch(_){throw new Error('NAR API JSON解析失敗')}
   const map=j?.ary_odds; if(!map||typeof map!=='object')throw new Error('NAR API ary_oddsなし');
@@ -8879,7 +8992,7 @@ async function loadOverview(r,st,force=false){
     }else if(org==='NAR'){
       // FIXED32: netkeiba NAR HTMLより先に公式 keiba.go.jp を使う。
       try{
-        const x=await fetchNarOfficial32(r,st.id,'単勝',st);
+        const x=await fetchNarOfficial40(r,st.id,'単勝',st);
         if(haveWin()||havePlace()){
           st.source=`[NAR公式] ${x.url}`;st.at=new Date();st.loaded=true;
           st.sourceByType['単勝']=st.source;st.sourceByType['複勝']=st.source;
@@ -8982,7 +9095,7 @@ async function ensureType(r,st,type,force=false){
       }catch(e){errs.push(`JSON API: ${e?.message||e}`)}
     }else if(org==='NAR'){
       try{
-        const x=await fetchNarOfficial32(r,st.id,type,st);
+        const x=await fetchNarOfficial40(r,st.id,type,st);
         if(x.added>0||st.rows[type]?.length){
           st.source=`[NAR公式] ${x.url}`;st.at=new Date();
           st.sourceByType[type]=st.source;st.atByType[type]=st.at;
