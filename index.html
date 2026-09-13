@@ -163,12 +163,12 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <body>
 <script>
 /* ============================================================================
-   FIXED36 ONE-FILE JRA/NAR BRIDGE RECOVERY
+   FIXED37 ONE-FILE JRA/NAR BRIDGE PC-RESULT RECOVERY
    - Existing application remains in this single HTML file.
    - Every internal Bridge fetch is routed here first.
-   - Cloudflare proxy is tried first with a fully URL-encoded target.
+   - JRA historical result pages prefer the residential Bridge; other traffic keeps Cloudflare-first.
    - The native residential Bridge is retained as fallback.
-   - JRA result URLs are canonicalized to desktop result -> mobile -> DB fallback.
+   - JRA result URLs are canonicalized to desktop result first; mobile/DB are only fallbacks.
    ============================================================================ */
 (function(){
   'use strict';
@@ -202,11 +202,15 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
     const isJra = /(^|\/)race(?:\.sp)?\.netkeiba\.com|db\.netkeiba\.com/.test(lower) && !/nar\./.test(lower);
     const isResult = /race_result|\/race\/result\.html|db\.netkeiba\.com\/race\//i.test(src);
 
-    // JRA historical results: canonical PC result first. This is the key FIXED35 path.
+    // FIXED37: for JRA historical results, canonical desktop result is always first.
+    // Do not internally fan out to every legacy endpoint here; the history loader
+    // owns the fallback order. This prevents the same bad Cloudflare response from
+    // being retried recursively for desktop/SP/DB aliases.
     if (isJra && isResult && /^20\d{10}$/.test(id)) {
-      push(`https://race.netkeiba.com/race/result.html?race_id=${id}`);
-      push(`https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_submenu`);
-      push(`https://db.netkeiba.com/race/${id}/`);
+      const pc = `https://race.netkeiba.com/race/result.html?race_id=${id}`;
+      push(pc);
+      if (src !== pc) push(src);
+      return out;
     }
     push(src);
     return out;
@@ -268,33 +272,58 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   window.__oneFileBridgeFetch = async function(url){
     const urls = candidateUrls35(url);
     let last = {status:0,text:'',finalUrl:String(url||''),error:'取得失敗'};
+    const src = String(url || '');
+    const id = raceId35(src);
+    const preferResidential = /^20\d{10}$/.test(id) &&
+      /race\/result\.html|pid=race_result|db\.netkeiba\.com\/race\//i.test(src) &&
+      !/nar\./i.test(src);
 
-    // 1) Cloudflare first. Crucially, the target is always encodeURIComponent() encoded.
-    for (const target of urls){
-      try{
-        const r = await proxyFetch35(target);
-        if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
-        last = r;
-      }catch(e){
-        last = {status:0,text:'',finalUrl:target,error:`Proxy: ${e?.message || e}`};
+    async function tryNative(){
+      for (const target of urls){
+        try{
+          const r = await nativeFetch35(target);
+          if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
+          last = r;
+        }catch(e){
+          last = {status:0,text:'',finalUrl:target,error:`Bridge: ${e?.message || e}`};
+        }
       }
+      return null;
     }
 
-    // 2) Existing residential Bridge fallback. Try normalized candidates one by one.
-    for (const target of urls){
-      try{
-        const r = await nativeFetch35(target);
-        if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
-        last = r;
-      }catch(e){
-        last = {status:0,text:'',finalUrl:target,error:`Bridge: ${e?.message || e}`};
+    async function tryProxy(){
+      for (const target of urls){
+        try{
+          const r = await proxyFetch35(target);
+          if (Number(r.status) >= 200 && Number(r.status) < 400 && String(r.text||'').length >= 10) return r;
+          last = r;
+        }catch(e){
+          last = {status:0,text:'',finalUrl:target,error:`Proxy: ${e?.message || e}`};
+        }
       }
+      return null;
     }
 
+    // FIXED37: historical JRA result HTML is the case where Cloudflare can return
+    // a technically-200 but unusable/blocked page. Prefer the user's residential
+    // Userscript Bridge so the parser sees the actual desktop result page.
+    if (preferResidential){
+      const n = await tryNative();
+      if (n) return n;
+      const p = await tryProxy();
+      if (p) return p;
+      return last;
+    }
+
+    // Other traffic keeps the previous Cloudflare-first behavior.
+    const p = await tryProxy();
+    if (p) return p;
+    const n = await tryNative();
+    if (n) return n;
     return last;
   };
 
-  console.log('✅ FIXED36 ONE-FILE Bridge recovery loaded');
+  console.log('✅ FIXED37 ONE-FILE Bridge recovery loaded');
 })();
 </script>
 
@@ -314,9 +343,9 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 <main>
 <div class="notice">
-<b>FIXED36 一枚物 / JRA Bridge 400自動復旧</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
+<b>FIXED37 一枚物 / JRA Desktop Result + 住宅IP Bridge</b> — この版は「仮想馬券専用」です。AUTO DRIVE ONでは、開催監視・オッズ更新・発売締切3分前判定・仮想購入・結果確認・精算・次レース移動まで自動で継続します。デモモードは即動作します。LIVEモードでは、設定したAPI/Cloudflare Workerが正規化JSONを返すことでJRA/NAR実データへ差し替えできます。実データ取得に失敗した場合、勝手に架空データをLIVE表示せずERRORへ切り替えます。
 </div>
-<div class="notice" style="border-color:#4f8f73;background:#0c261b"><b>FIXED36 JRA RECOVERY</b> — JRAの住宅IP BridgeがHTTP 400でも即停止せず、同日のWorker <code>/history</code> をクリーン取得で1回だけ再試行します。Workerも失敗した場合は「JRA 0レース」ではなく「JRA取得失敗」と表示し、NARだけで誤ってJRA+NARバックテストを完了しません。</div>
+<div class="notice" style="border-color:#4f8f73;background:#0c261b"><b>FIXED37 JRA RECOVERY</b> — 過去JRA結果は <code>race.netkeiba.com/race/result.html</code> を住宅IP Bridge最優先で取得し、PC結果表（「倍」表記なし）を直接解析します。SP/DBはフォールバックのみ。Bridge失敗時はWorker <code>/history</code> を再試行し、両方失敗時だけ停止します。</div>
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
 <div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
@@ -4913,8 +4942,105 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   function parseSpResult13(html, id, date){
     const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
     const pageFlat = flat13(doc.body?.innerText || doc.body?.textContent || '');
-    if (!/結果払戻|結果・払戻|払戻金/.test(pageFlat) || !/人気/.test(pageFlat) || !/倍/.test(pageFlat)){
-      throw new Error(`SP結果本文ではありません markers=${/払戻/.test(pageFlat)?1:0}/${/人気/.test(pageFlat)?1:0}/${/倍/.test(pageFlat)?1:0}`);
+
+    function commonMeta(){
+      let start=null;
+      let tm = pageFlat.match(/(?:発走(?:時刻)?\s*[:：]?\s*)?(\d{1,2}):(\d{2})\s*発走?/);
+      if(!tm) tm = pageFlat.match(/(?:^|\s)(\d{1,2}):(\d{2})\s+(?:芝|ダ|障)/);
+      if (tm) start=[Number(tm[1]),Number(tm[2])];
+      const title = clean13(doc.querySelector('h1.RaceName,.RaceName,h1,.race_name,[class*="RaceName"]')?.textContent || '') || `${tracks13[id.slice(4,6)]||'JRA'}${Number(id.slice(10,12))}R`;
+      return {start,title};
+    }
+
+    function tableHeaderMap(table){
+      let hs=[...table.querySelectorAll('thead th')];
+      if(!hs.length) hs=[...table.querySelectorAll('tr:first-child th')];
+      const labs=hs.map(x=>flat13(x.textContent));
+      const idx=(keys)=>labs.findIndex(x=>keys.some(k=>x.includes(k)));
+      return {
+        rank:idx(['着順']), no:idx(['馬番']), name:idx(['馬名']),
+        odds:idx(['単勝','オッズ']), pop:idx(['人気'])
+      };
+    }
+
+    function resultTable(){
+      const direct=[
+        doc.querySelector('#All_Result_Table'),
+        doc.querySelector('table.RaceTable01'),
+        doc.querySelector('table.race_table_01')
+      ].filter(Boolean);
+      for(const t of direct) return t;
+      for(const t of doc.querySelectorAll('table')){
+        const h=flat13(t.querySelector('thead')?.textContent || t.querySelector('tr')?.textContent || '');
+        if(/着順/.test(h) && /馬番/.test(h) && /馬名/.test(h)) return t;
+      }
+      return null;
+    }
+
+    function cellAt(cells, i){ return i>=0 && i<cells.length ? cells[i] : null; }
+    function numFromText(s, min=0, max=Infinity){
+      const m=half13(clean13(s)).match(/-?\d+(?:\.\d+)?/);
+      const n=m?Number(m[0]):NaN;
+      return Number.isFinite(n)&&n>=min&&n<=max?n:0;
+    }
+
+    // FIXED37: PC版 result.html は最終単勝を「3.2」のように表示し、
+    // SP版のような「3.2倍」文字列を持たない。そのため表ヘッダ/列で解析する。
+    const table=resultTable();
+    if(table){
+      const hm=tableHeaderMap(table);
+      const horses=[];
+      const finish=[];
+      const seen=new Set();
+      const rows=[...table.querySelectorAll('tbody tr')];
+      const useRows=rows.length?rows:[...table.querySelectorAll('tr')].slice(1);
+      for(const tr of useRows){
+        const cells=[...tr.querySelectorAll('td')];
+        if(cells.length<3) continue;
+        const a=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');
+        const name=clean13(a?.textContent || cellAt(cells,hm.name)?.textContent || '');
+        if(!name || name.length>50) continue;
+
+        let rank=numFromText(tr.querySelector('.Result_Num,[class*="Result_Num"],[class*="Rank"],[class*="rank"]')?.textContent || cellAt(cells,hm.rank)?.textContent || '',1,50);
+        let no=numFromText(tr.querySelector('.Umaban,[class*="Umaban"],[class*="umaban"],[class*="HorseNum"],[class*="horse_num"],td.Num')?.textContent || cellAt(cells,hm.no)?.textContent || '',1,18);
+        if(!(no>=1&&no<=18)){
+          const before=(a?[...cells].slice(0,Math.max(0,cells.findIndex(c=>c===a||c.contains(a)))):cells.slice(0,4));
+          const ints=before.map(c=>numFromText(c.textContent,1,18)).filter(Boolean);
+          if(ints.length) no=ints[ints.length-1];
+        }
+        if(!(no>=1&&no<=18) || seen.has(no)) continue;
+
+        let odds=numFromText(tr.querySelector('td.Odds,[class~="Odds"],[class*="Odds"]')?.textContent || cellAt(cells,hm.odds)?.textContent || '',1,9999.9);
+        // Some layouts do not expose an Odds class. Use the header-indexed decimal first,
+        // then a conservative scan of cells after the horse name.
+        if(!(odds>=1)){
+          for(const c of cells){
+            const t=half13(clean13(c.textContent));
+            if(/^\d{1,4}\.\d$/.test(t)){
+              const v=Number(t); if(v>=1&&v<=9999.9){ odds=v; break; }
+            }
+          }
+        }
+        if(!(odds>=1)) continue;
+
+        let pop=numFromText(tr.querySelector('.Popularity,[class*="Popularity"],.Popular,[class*="Popular"],[class*="Ninki"],[class*="ninki"]')?.textContent || cellAt(cells,hm.pop)?.textContent || '',1,18);
+        seen.add(no);
+        horses.push({no,name,odds:Math.round(odds*10)/10,pop:(pop>=1&&pop<=18)?pop:0});
+        if(rank>=1&&rank<=50) finish.push({rank,no,name});
+      }
+
+      horses.slice().sort((a,b)=>a.odds-b.odds||a.no-b.no).forEach((h,i)=>{ if(!h.pop)h.pop=i+1; });
+      finish.sort((a,b)=>a.rank-b.rank);
+      const top3=finish.slice(0,3).map(x=>x.no);
+      if(horses.length>=5 && top3.length>=3){
+        const meta=commonMeta();
+        return {horses,finish,top3,start:meta.start,title:meta.title,payouts:parsePayouts13(doc),layout:'PC_RESULT_TABLE'};
+      }
+    }
+
+    // SP版 / compact layout fallback.
+    if (!/結果|払戻/.test(pageFlat) || !/人気/.test(pageFlat)){
+      throw new Error(`JRA結果本文ではありません markers=${/結果|払戻/.test(pageFlat)?1:0}/${/人気/.test(pageFlat)?1:0}`);
     }
 
     const anchors = [...doc.querySelectorAll(
@@ -4930,7 +5056,8 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       const block = smallestResultBlock13(a);
       if (!block) continue;
       const text = flat13(block.innerText || block.textContent || '');
-      const om = text.match(/(\d{1,4}(?:\.\d+)?)\s*倍/);
+      let om = text.match(/(\d{1,4}(?:\.\d+)?)\s*倍/);
+      if(!om) om = text.match(/(?:単勝|オッズ)\s*(\d{1,4}(?:\.\d+)?)/);
       const pm = text.match(/(?:^|\s)([1-9]|1[0-8])\s*人気(?:\s|$)/);
       const odds = om ? Number(om[1]) : 0;
       const pop = pm ? Number(pm[1]) : 0;
@@ -4941,31 +5068,41 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       if (rp.rank>=1 && rp.rank<=50) finish.push({ rank:rp.rank, no:rp.no, name });
     }
 
-    // 人気欠損は最終単勝オッズ順から再生成。
     horses.slice().sort((a,b)=>a.odds-b.odds||a.no-b.no).forEach((h,i)=>{ if(!h.pop) h.pop=i+1; });
     finish.sort((a,b)=>a.rank-b.rank);
     const top3 = finish.slice(0,3).map(x=>x.no);
-
     if (horses.length < 5 || top3.length < 3){
-      throw new Error(`SP解析不足 horses=${horses.length} finish=${finish.length} links=${anchors.length} html=${String(html||'').length}`);
+      throw new Error(`結果解析不足 pcTable=${table?1:0} horses=${horses.length} finish=${finish.length} links=${anchors.length} html=${String(html||'').length}`);
     }
-
-    let start=null;
-    const tm = pageFlat.match(/(?:^|\s)(\d{1,2}):(\d{2})\s+(?:芝|ダ|障)/);
-    if (tm) start=[Number(tm[1]),Number(tm[2])];
-    const title = clean13(doc.querySelector('h1,.RaceName,.race_name,[class*="RaceName"]')?.textContent || '') || `${tracks13[id.slice(4,6)]||'JRA'}${Number(id.slice(10,12))}R`;
-    return { horses, finish, top3, start, title, payouts:parsePayouts13(doc) };
+    const meta=commonMeta();
+    return { horses, finish, top3, start:meta.start, title:meta.title, payouts:parsePayouts13(doc), layout:'SP_RESULT' };
   }
 
   async function loadRace13(date, id){
-    const r = await bridgeFirst13([
+    const urls=[
       `https://race.netkeiba.com/race/result.html?race_id=${id}`,
       `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_submenu`,
-      `https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}&rf=race_toggle_menu`,
       `https://db.netkeiba.com/race/${id}/`
-    ], html => /払戻|結果/.test(html) && /人気/.test(html) && /倍/.test(html));
+    ];
+    const errors=[];
+    let p=null;
+    let used=null;
+    for(const url of urls){
+      try{
+        const r=await bridgeGet13(url);
+        try{
+          p=parseSpResult13(r.text,id,date);
+          used={url,via:r.finalUrl||url,layout:p.layout||'unknown'};
+          break;
+        }catch(pe){
+          errors.push(`${new URL(url).hostname}:解析 ${pe?.message||pe}`);
+        }
+      }catch(e){
+        errors.push(`${new URL(url).hostname}:取得 ${e?.message||e}`);
+      }
+    }
+    if(!p) throw new Error(errors.slice(0,6).join(' | '));
 
-    const p = parseSpResult13(r.text, id, date);
     const track = tracks13[id.slice(4,6)] || 'JRA';
     const no = Number(id.slice(10,12));
     const startTime = p.start ? `${date}T${String(p.start[0]).padStart(2,'0')}:${String(p.start[1]).padStart(2,'0')}:00+09:00` : null;
@@ -4973,7 +5110,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
       id,date,org:'JRA',track,no,
       title:p.title,startTime,oddsTiming:'FINAL',horses:p.horses,
       result:{ winner:p.top3[0], top3:p.top3, finish:p.finish, payouts:p.payouts },
-      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / SP-result mobile-parser-v1.4`,
+      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / ${used?.layout||'result'} / desktop-first FIXED37`,
       historySafe:true
     };
   }
@@ -5068,9 +5205,9 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     }
     return {
       ok:true,date,org:'JRA',oddsTiming:'FINAL',races,count:races.length,
-      diagnostics:{meetingSource:'worker-plan+bridge-sp-mobile-parser-v1.4',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,errors:errors.slice(0,20)},
-      diagnosticSummary:{meetingSource:'bridge-sp-mobile-parser-v1.3',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,firstErrors:errors.slice(0,5)},
-      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / SP-result mobile-parser-v1.3`
+      diagnostics:{meetingSource:'worker-plan+bridge-desktop-result-v1.5',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,errors:errors.slice(0,20)},
+      diagnosticSummary:{meetingSource:'bridge-desktop-result-v1.5',requestedRaces:ids.length,loadedRaces:races.length,failedRaces:errors.length,firstErrors:errors.slice(0,5)},
+      source:`Bridge ${window.__narBridgeVersion||'1.7.x'} / desktop-result parser v1.5`
     };
   }
 
@@ -5078,7 +5215,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
   fetchHistoryDay = async function(date, org, options={}){
     const kind=String(org||'').toUpperCase();
     if(kind==='JRA' && bridgeReady13()){
-      UI?.addLog?.(`JRA ${date}: Worker開催計画 + Bridge-SP mobile parser v1.4 を使用`,'ok');
+      UI?.addLog?.(`JRA ${date}: Worker開催計画 + 住宅IP Bridge desktop-result parser v1.5 を使用`,'ok');
       try{
         const d=await historyBridge13(date);
         UI?.addLog?.(`JRA ${date}: Bridge取得成功 ${d.races.length}レース`,'ok');
@@ -5132,10 +5269,10 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
 
   setTimeout(()=>{
     const old=document.getElementById('jraBridgeSpV12Badge');
-    if(old) old.textContent=`JRA取得: Worker-plan + Bridge-SP parser v1.4 / ${window.__narBridgeVersion||'Bridge待機'}`;
+    if(old) old.textContent=`JRA取得: Worker-plan + Desktop result parser v1.5 / ${window.__narBridgeVersion||'Bridge待機'}`;
   },700);
 
-  console.log('✅ JRA WORKER-PLAN + BRIDGE-SP FIX v1.4 loaded');
+  console.log('✅ JRA WORKER-PLAN + DESKTOP RESULT FIXED37 v1.5 loaded');
 })();
 
 </script>
