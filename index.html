@@ -181,7 +181,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 <div class="notice" style="border-color:#2e7d32;background:#102b18"><b>FIXED23</b> — JRAオッズは netkeiba JSON API を最優先し、全券種オッズ取得時にも本体の馬一覧へ単勝オッズ＋実馬名を同期します。RESULT API は race_id/type 形式へ対応。#2等の仮表示を実馬名として扱いません。</div>
 
-<div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED28 AUTO 5秒</b> — LIVEオッズは選択中レースの発走前に5秒ごと自動再取得。全券種を原子的に入れ替え、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップし、発走後は停止します。</div>
+<div class="notice" style="border-color:#1f8f4a;background:#0d2a18"><b>FIXED29 NEXT RACE + AUTO 5秒</b> — 結果待ちの過去レースは裏で精算を継続し、画面とLIVEオッズ更新は次の未発走レースへ自動移動します。発走前は5秒ごとに全券種を原子的に再取得し、単勝を中央馬一覧へ同期して想定確率・EVを再計算します。通信中は重複取得をスキップします。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -1820,8 +1820,10 @@ class SimulationEngine{
       }
     }
 
-    // 次レースへ自動フォーカス
-    const next=activeRaces.find(r=>!r.settled);
+    // FIXED29: 結果待ちの過去レースに画面を拘束しない。
+    // 精算処理は上のループで継続しつつ、表示・オッズ更新対象は最も近い未発走レースを優先する。
+    const nextFuture=activeRaces.find(r=>!r.settled && new Date(r.startTime).getTime()>now);
+    const next=nextFuture || activeRaces.find(r=>!r.settled);
     if(next) this.selected=next;
 
     if(!acted){
@@ -8446,7 +8448,7 @@ function hook(){
   return true;
 }
 
-// FIXED28: LIVE odds atomic auto refresh every 5 seconds.
+// FIXED29: next-upcoming-race focus + LIVE odds atomic auto refresh every 5 seconds.
 // Keeps the previous table visible while the next snapshot is fetched, then swaps all ticket rows at once.
 // If a refresh is still running, the next tick is skipped to avoid overlapping requests on iPad/Safari.
 const LIVE_ODDS_AUTO_MS_V28=5000;
@@ -8465,14 +8467,30 @@ function blankOddsStateV28(r){
   return {id,loaded:false,loading:false,allLoading:false,
     rows:Object.fromEntries(TYPES.map(t=>[t,[]])),source:'',sourceByType:{},at:null,atByType:{},error:'',errorByType:{}};
 }
+function nextUpcomingRaceV29(){
+  try{
+    const e=(typeof engine!=='undefined'&&engine)?engine:uiRef()?.engine;
+    const now=Date.now();
+    const arr=(e?.races||[])
+      .filter(x=>!x?.settled && new Date(x?.startTime).getTime()>now && raceId(x))
+      .sort((a,b)=>new Date(a.startTime)-new Date(b.startTime));
+    return arr[0]||null;
+  }catch(_){return null}
+}
 async function refreshLiveOddsV28(reason='timer'){
-  const r=currentRace;
+  // FIXED29: currentRace が結果待ちの過去レースなら、次の未発走レースを自動対象にする。
+  let r=currentRace;
+  if(!liveRaceRefreshableV28(r)) r=nextUpcomingRaceV29();
   if(!r)return false;
-  if(!liveRaceRefreshableV28(r)){
-    const t=new Date(r.startTime).getTime();
-    if(Number.isFinite(t)&&Date.now()>=t)setStatus('発走済み / オッズ自動更新停止');
-    return false;
+  if(r!==currentRace){
+    currentRace=r;
+    try{
+      if(typeof engine!=='undefined'&&engine) engine.selected=r;
+      const ui=uiRef();
+      if(typeof engine!=='undefined'&&ui?.renderCurrent) ui.renderCurrent(engine);
+    }catch(_){ }
   }
+  if(!liveRaceRefreshableV28(r))return false;
   if(liveOddsAutoBusyV28)return false;
   const rid=raceId(r);
   liveOddsAutoBusyV28=true;
@@ -8528,7 +8546,7 @@ function startLiveOddsAutoV28(){
 
 window.__oddsBoard={onRace,render:renderOrLoad,cache,hook,refreshNow:refreshLiveOddsV28,autoMs:LIVE_ODDS_AUTO_MS_V28};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
-console.log('✅ FIXED28 EV RANGE + ATOMIC AUTO 5SEC LIVE ODDS loaded');
+console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
 })();
 </script>
 
