@@ -11238,5 +11238,217 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   console.log('✅ FIXED51 period battle web auto-acquire JRA+NAR loaded');
 })();
 </script>
+
+<script>
+/* =========================================================
+   FIXED52 — AUTO PLAYER JOINS PERIOD CHARACTER BATTLE
+   2026-09-14
+   AUTO contract:
+   - For EACH ticket market whose historical decision price is actually present,
+     take exactly the single highest EV ticket when EV >= 1.10.
+   - Stake = 100 yen per selected ticket type.
+   - Selection is result-blind. Finish/payout are settlement-only.
+   - Never synthesize missing historical odds from refunds/results.
+   - With the current WEB history contract, WIN is always supported; PLACE is
+     supported when placeOddsLow exists; pair/trio markets are used only when
+     the race record contains their market odds explicitly.
+   ========================================================= */
+(()=>{
+  'use strict';
+  if(window.__FIXED52_AUTO_PERIOD_BATTLE__)return;
+  window.__FIXED52_AUTO_PERIOD_BATTLE__=true;
+
+  const AUTO='AUTOプレイヤー';
+  const TYPE52=[
+    {type:'単勝',bucket:'win',aliases:['win','単勝'],ordered:false},
+    {type:'複勝',bucket:'place',aliases:['place','複勝'],ordered:false,ranged:true},
+    {type:'ワイド',bucket:'wide',aliases:['wide','ワイド'],ordered:false,ranged:true},
+    {type:'馬連',bucket:'quinella',aliases:['quinella','馬連'],ordered:false},
+    {type:'馬単',bucket:'exacta',aliases:['exacta','馬単'],ordered:true},
+    {type:'3連複',bucket:'trio',aliases:['trio','3連複','三連複'],ordered:false},
+    {type:'3連単',bucket:'trifecta',aliases:['trifecta','3連単','三連単'],ordered:true}
+  ];
+  const n=v=>Number(v);
+  const finite=v=>Number.isFinite(n(v));
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const initial=()=>Number(window.engine?.settings?.initialBankroll||100000);
+  const makeAuto=()=>{const x=initial();return {id:'auto-player-period',name:AUTO,avatar:'🤖',ticket:'auto',minEV:1.10,staking:'fixed100',bankroll:x,initial:x,invested:0,returned:0,wins:0,bets:0,skips:0,peak:x,maxDD:0,maxWin:0,dayInvested:0,history:[x],byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}},periodAuto52:true}};
+
+  function cleanSel(type,sel){
+    const xs=String(sel??'').match(/\d+/g)?.map(Number)||[];
+    if(type==='単勝'||type==='複勝')return xs.length?String(xs[0]):'';
+    if(type==='3連複')return xs.slice(0,3).sort((a,b)=>a-b).join('-');
+    if(type==='馬連'||type==='ワイド')return xs.slice(0,2).sort((a,b)=>a-b).join('-');
+    if(type==='馬単')return xs.slice(0,2).join('-');
+    if(type==='3連単')return xs.slice(0,3).join('-');
+    return String(sel??'');
+  }
+
+  function normalizeRows(src,type){
+    const out=[];
+    if(Array.isArray(src)){
+      for(const r of src){
+        if(r==null)continue;
+        if(typeof r!=='object')continue;
+        const sel=cleanSel(type,r.selection??r.sel??r.combo??r.key??r.number??r.no);
+        const low=n(r.oddsLow??r.odds_low??r.low??r.minOdds??r.min_odds);
+        const high=n(r.oddsHigh??r.odds_high??r.high??r.maxOdds??r.max_odds);
+        const mid=n(r.odds??r.oddsMid??r.odds_mid??r.price??r.value);
+        const odds=finite(low)?low:(finite(mid)?mid:(finite(high)?high:NaN));
+        if(sel&&odds>=1)out.push({selection:sel,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
+      }
+    }else if(src&&typeof src==='object'){
+      for(const [k,v] of Object.entries(src)){
+        if(v==null)continue;
+        const obj=typeof v==='object'?v:{odds:v};
+        const sel=cleanSel(type,obj.selection??obj.sel??obj.combo??obj.key??k);
+        const low=n(obj.oddsLow??obj.odds_low??obj.low??obj.minOdds??obj.min_odds);
+        const high=n(obj.oddsHigh??obj.odds_high??obj.high??obj.maxOdds??obj.max_odds);
+        const mid=n(obj.odds??obj.oddsMid??obj.odds_mid??obj.price??obj.value??v);
+        const odds=finite(low)?low:(finite(mid)?mid:(finite(high)?high:NaN));
+        if(sel&&odds>=1)out.push({selection:sel,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
+      }
+    }
+    return out;
+  }
+
+  function marketRows(race,meta){
+    // WIN: canonical historical horse odds.
+    if(meta.type==='単勝')return (race?.horses||[]).filter(h=>n(h?.odds)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.odds),oddsLow:n(h.odds),oddsHigh:n(h.odds)}));
+    // PLACE: use explicit historical lower bound only; never infer from refund.
+    if(meta.type==='複勝'){
+      const rows=(race?.horses||[]).filter(h=>n(h?.placeOddsLow)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.placeOddsLow),oddsLow:n(h.placeOddsLow),oddsHigh:n(h.placeOddsHigh??h.placeOddsLow)}));
+      if(rows.length)return rows;
+    }
+    const containers=[race?.ticketOdds,race?.ticket_odds,race?.oddsByType,race?.odds_by_type,race?.marketOdds,race?.market_odds,race?.markets,race?.finalOddsByType,race?.final_odds_by_type];
+    for(const box of containers){
+      if(!box||typeof box!=='object')continue;
+      for(const key of [meta.type,...meta.aliases]){
+        const rows=normalizeRows(box[key],meta.type);
+        if(rows.length)return rows;
+      }
+    }
+    return [];
+  }
+
+  function prob52(meta,sel,race){
+    if(meta.type==='単勝'){
+      const h=(race?.horses||[]).find(x=>Number(x.no)===Number(sel));return n(h?.modelProb);
+    }
+    if(meta.type==='複勝'){
+      const h=(race?.horses||[]).find(x=>Number(x.no)===Number(sel));
+      if(finite(h?.placeProb))return n(h.placeProb);
+    }
+    try{if(typeof calcProb==='function')return n(calcProb(meta.type,sel,race))}catch(_){ }
+    return NaN;
+  }
+
+  function choose52(race){
+    const picked=[];
+    for(const meta of TYPE52){
+      const candidates=marketRows(race,meta).map(x=>{
+        const p=prob52(meta,x.selection,race),ev=p*n(x.odds);
+        return {...x,p,ev,meta};
+      }).filter(x=>finite(x.p)&&x.p>0&&finite(x.ev)&&x.ev>=1.10);
+      candidates.sort((a,b)=>b.ev-a.ev||b.p-a.p||a.odds-b.odds||String(a.selection).localeCompare(String(b.selection)));
+      if(candidates[0])picked.push(candidates[0]);
+    }
+    return picked;
+  }
+
+  function payoutKey52(type,sel){return cleanSel(type,sel)}
+  function settle52(auto,race,pick){
+    const bucket=race?.result?.payouts?.[pick.meta.bucket];
+    // If the entire official settlement bucket is absent, do not fabricate a result.
+    if(!bucket||typeof bucket!=='object'||!Object.keys(bucket).length){auto.skips++;return {scored:false,reason:'NO_SETTLEMENT_BUCKET'}}
+    const key=payoutKey52(pick.meta.type,pick.selection),raw=bucket[key];
+    const hit=raw!=null;
+    let mult=0,refund=0;
+    if(hit){
+      try{mult=typeof btPayoutMultiplier==='function'?Number(btPayoutMultiplier(raw)):Number(raw)}catch(_){mult=Number(raw)}
+      if(!Number.isFinite(mult)||mult<0){auto.skips++;return {scored:false,reason:'BAD_SETTLEMENT'}}
+      refund=Math.round(100*mult);
+    }
+    auto.invested+=100;auto.bankroll-=100;auto.bets++;
+    if(hit){auto.returned+=refund;auto.bankroll+=refund;auto.wins++;auto.maxWin=Math.max(auto.maxWin,refund-100)}
+    const org=String(race?.org||'').toUpperCase();if(auto.byOrg[org]){auto.byOrg[org].inv+=100;if(hit)auto.byOrg[org].ret+=refund}
+    auto.peak=Math.max(auto.peak,auto.bankroll);auto.maxDD=Math.max(auto.maxDD,(auto.peak-auto.bankroll)/Math.max(1,auto.peak));
+    return {scored:true,hit,raw,mult,refund,profit:refund-100,key};
+  }
+
+  function rid52(r){return String(r?.id||r?.raceId||r?.race_id||`${r?.date||''}-${r?.org||''}-${r?.track||''}-${r?.no||''}`)}
+
+  if(typeof runBacktestOnHistory==='function'){
+    const prevRun52=runBacktestOnHistory;
+    runBacktestOnHistory=async function(historyBlocks,onProgress){
+      const result=await prevRun52(historyBlocks,onProgress);
+      try{
+        const auto=makeAuto(),races=[];
+        for(const block of historyBlocks||[]){
+          const v=typeof btValidateBlock==='function'?btValidateBlock(block):{valid:block?.races||[]};
+          for(const r of v.valid||[])races.push({...r,org:r.org||block.org,date:r.date||block.date});
+        }
+        races.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.startTime||'').localeCompare(b.startTime||'')||Number(a.no||0)-Number(b.no||0));
+        const autoAudit=[],timelineMap=new Map();
+        timelineMap.set('START',{bankroll:auto.bankroll,profit:0});
+        for(const raw of races){
+          if(auto.bankroll<100){auto.history.push(auto.bankroll);timelineMap.set(rid52(raw),{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial});continue}
+          const hs=typeof btProbabilities==='function'?btProbabilities((raw.horses||[]).map(h=>({...h}))):(raw.horses||[]).map(h=>({...h}));
+          const race={...raw,horses:hs};
+          const picks=choose52(race);
+          if(!picks.length)auto.skips++;
+          for(const p of picks){
+            if(auto.bankroll<100)break;
+            const s=settle52(auto,race,p);
+            if(!s.scored)continue;
+            autoAudit.push({
+              date:race.date||'',track:race.track||'',no:race.no||'',character:AUTO,
+              ticket:p.meta.type,selection:p.selection,stake:100,rawPayout:s.raw??null,multiplier:s.mult,
+              refund:s.refund,profit:s.profit,odds:p.odds,prob:p.p,ev:p.ev,
+              status:s.hit?'的中':'不的中',rawJson:JSON.stringify(race.result?.payouts||{}),
+              result_used_for_selection:false,selection_locked_before_result:true,
+              auto_contract:'EV>=1.10 / highest EV per available ticket type / 100 yen'
+            });
+          }
+          auto.history.push(auto.bankroll);timelineMap.set(rid52(raw),{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial});
+        }
+        result.characters=(result.characters||[]).filter(c=>String(c?.name||'')!==AUTO);result.characters.unshift(auto);
+        result.audit=[...(result.audit||[]),...autoAudit];
+        if(Array.isArray(result.timeline)&&result.timeline.length){
+          result.timeline[0].bankroll={...(result.timeline[0].bankroll||{}),[AUTO]:auto.initial};
+          result.timeline[0].profit={...(result.timeline[0].profit||{}),[AUTO]:0};
+          let idx=0;
+          for(let i=1;i<result.timeline.length;i++){
+            const r=races[idx++];if(!r)break;const x=timelineMap.get(rid52(r))||{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial};
+            result.timeline[i].bankroll={...(result.timeline[i].bankroll||{}),[AUTO]:x.bankroll};
+            result.timeline[i].profit={...(result.timeline[i].profit||{}),[AUTO]:x.profit};
+          }
+        }
+        result.autoPlayerContract52={enabled:true,minEV:1.10,stake:100,rule:'highest EV once per available ticket type',resultBlind:true,missingMarketOdds:'skip',tickets:TYPE52.map(x=>x.type)};
+      }catch(e){console.error('FIXED52 AUTO period simulation',e);try{window.UI?.addLog?.('FIXED52 AUTO対戦エラー: '+String(e?.message||e),'error')}catch(_){}}
+      return result;
+    };
+    try{window.runBacktestOnHistory=runBacktestOnHistory}catch(_){ }
+  }
+
+  function addUi52(){
+    const box=document.getElementById('periodBattle48');
+    if(box&&!document.getElementById('fixed52AutoLine')){
+      const line=document.createElement('div');line.id='fixed52AutoLine';line.style.marginTop='6px';
+      line.innerHTML='<b>🤖 AUTOプレイヤー参加:</b> 各券種でEV110%以上なら、その券種の最高EVを1点だけ100円。履歴に意思決定用の市場オッズが無い券種は見送り、払戻・着順からオッズを逆算しません。';
+      box.appendChild(line);
+    }
+    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
+    if(host&&!document.getElementById('fixed52AutoBadge')){
+      const e=document.createElement('div');e.id='fixed52AutoBadge';e.className='muted';e.style.marginTop='4px';
+      e.textContent='FIXED52 AUTO参加: 各券種 EV>=1.10 → 最高EV1点×100円 / 結果ブラインド / 市場オッズ未取得券種は見送り';
+      host.insertAdjacentElement('afterend',e);
+    }
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(addUi52,2500),{once:true});else setTimeout(addUi52,2500);
+  console.log('✅ FIXED52 AUTO player joins period battle — per available ticket type');
+})();
+</script>
+
 </body>
 </html>
