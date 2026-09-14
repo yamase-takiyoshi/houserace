@@ -314,7 +314,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
     <div class="muted" style="margin-bottom:8px">JSON/CSVは対応ブラウザでは保存先を指定できます。iPhone/iPad Safariでは通常のダウンロードに自動切替します。</div>
     <div class="controls">
     <button id="exportCsv">CSV</button>
-    <button id="exportJson">JSON</button>
+    <button id="exportJson">JSON 名前をつけて保存</button>
     <button id="exportXlsx">XLSX</button>
     <label>過去データ<input id="backtestFile" type="file" accept=".json,.csv"></label>
     <button id="runBacktest">BACKTEST実行</button>
@@ -335,7 +335,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
         <select id="histOrg"><option value="NAR">NAR</option><option value="JRA">JRA</option><option value="BOTH">JRA+NAR</option></select>
       </label>
       <button id="fetchHistory" class="primary">WEBから取得</button>
-      <button id="exportHistoryJson">過去JSON</button>
+      <button id="exportHistoryJson">過去JSON 名前をつけて保存</button>
       <button id="clearHistory">過去データ消去</button>
     </div>
     <div id="histStatus" class="muted" style="margin-top:10px">未取得</div>
@@ -381,7 +381,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
     </div>
     <div class="controls" style="margin-top:10px">
       <button id="chooseBtJsonFolder" class="primary">バックテストJSON保存先フォルダを選択</button>
-      <button id="exportBtJson">バックテストJSONを保存</button>
+      <button id="exportBtJson">バックテストJSON 名前をつけて保存</button>
       <span id="btJsonFolderStatus" class="muted">バックテストJSON保存先: 未指定</span>
       <button id="graphBtDirect" class="primary">結果を直接グラフ化</button>
       <button id="resetBt">結果リセット</button>
@@ -603,7 +603,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
     </div>
     <div class="controls" style="margin-top:10px">
       <button id="legacyChooseFolder">保存フォルダを選択</button>
-      <button id="legacyNamedSave" class="primary">フォルダ指定・名前付き保存</button>
+      <button id="legacyNamedSave" class="primary">名前をつけて保存</button>
       <button id="legacyOverwrite">同じJSONへ上書き</button>
       <button id="legacyShareSave">📤 iPad共有で保存</button>
       <button id="legacyLoadJson">JSON読込</button>
@@ -836,7 +836,21 @@ const cr=eventRows(cal,T),tr=eventRows(test,T),groups={};for(const type of TYPES
 const model={id:VERSION+'|'+org+'|'+Date.now(),version:VERSION,org,temperature:T,createdAt:Date.now(),trainEnd:Math.max(...train.map(e=>e.resultAt)),calibrationEnd:Math.max(...cal.map(e=>e.resultAt)),testEnd:Math.max(...test.map(e=>e.resultAt)),periods:{train:[days[0],d1],calibration:[d1,d2],test:[d2,days.at(-1)]},groups};await write('models',model);state.models.push(model);reports.push({org,status:'温度係数 '+T+' / 使用可能帯 '+Object.values(groups).filter(g=>g.validated).length+'。最終評価は選別未使用の将来期間で継続。',model:model.id,comparison:compareEvents(test,model)});}
 state.report={createdAt:Date.now(),reports,note:'ここでの後続期間はモデル採用判定用。回収率改善の最終実証は作成後の前向き記録で行います。'};await write('meta',{id:'report',...state.report});render();return state.report}
 function compareEvents(events,model){const run=(old)=>{let bankroll=100000,peak=bankroll,dd=0,inv=0,ret=0,n=0,skips=0,unknown=0,maxPayout=0,dayUsed={};for(const e of [...events].sort((a,b)=>a.decisionAt-b.decisionAt)){const raw=old?null:evaluate(e.race,e.rows,e.decisionAt,model);let picks;if(old){const m=new Map();for(const x of e.rows){const ev=x.legacyEV==null?NaN:Number(x.legacyEV);if(!Number.isFinite(ev))continue;if(ev>=1.1&&(!m.has(x.ticket)||ev>m.get(x.ticket).ev))m.set(x.ticket,{...x,ev})}picks=[...m.values()];if(!e.rows.some(x=>Number.isFinite(x.legacyEV))){unknown++;continue}}else picks=choose(raw,{maxRace:5000,maxDay:30000},bankroll,0,dayUsed[e.race.date]||0);if(!picks.length)skips++;for(const x of picks){const record=e.rows.find(r=>r.ticket===x.ticket&&r.selection===x.selection);if(record?.status!=='SETTLED'){unknown++;continue}if(bankroll<100||(dayUsed[e.race.date]||0)+100>30000)break;const payout=100*record.refund;inv+=100;ret+=payout;n++;maxPayout=Math.max(maxPayout,payout);bankroll+=payout-100;dayUsed[e.race.date]=(dayUsed[e.race.date]||0)+100}peak=Math.max(peak,bankroll);dd=Math.max(dd,(peak-bankroll)/peak)}return {initial:100000,bankroll,invested:inv,returned:ret,profit:ret-inv,roi:inv?100*ret/inv:null,bets:n,skippedRaces:skips,excluded:unknown,maxDD:dd,largestPayout:maxPayout,largestPayoutShare:ret?maxPayout/ret:null}};return {old:run(true),new:run(false),note:'旧方式は当時固定済みlegacyEVのある記録だけ。欠損時は比較不能。乱数を後から再生成しません。評価期間を使ったモデル採用判定なので最終実証ではありません。'}}
-function exportData(csv=false){let content,name,mime;if(csv){const heads=['race_id','date','org','ticket','selection','decision_at','odds_at','source','marketTime','marketTimeVerified','odds','rawProbability','calibratedProbability','probabilityLower','ev','conservativeEV','modelVersion','sampleSize','uncertaintyMethod','reason','selected','stake','status','outcome','refund'];const rows=state.events.flatMap(e=>e.rows.map(x=>[e.id,e.race.date,e.race.org,x.ticket,x.selection,iso(e.decisionAt),x.oddsAt?iso(x.oddsAt):'',x.source,x.marketTime,x.marketTimeVerified,x.odds,x.rawProbability,x.calibratedProbability,x.probabilityLower,x.ev,x.conservativeEV,x.modelVersion,x.sampleSize,x.uncertaintyMethod,x.reason,x.selected,x.stake,x.status,x.outcome,x.refund]));content='\ufeff'+[heads,...rows].map(a=>a.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');name='AUTO54-audit.csv';mime='text/csv'}else{content=JSON.stringify({version:VERSION,events:state.events,models:state.models,report:state.report,settings:state.settings,legacyAccount:typeof engine!=='undefined'?{characters:engine.characters,bets:engine.bets}:null},null,2);name='AUTO54-audit.json';mime='application/json'}const u=URL.createObjectURL(new Blob([content],{type:mime})),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),2000)}
+async function exportData(csv=false){
+  let content,name,mime;
+  if(csv){
+    const heads=['race_id','date','org','ticket','selection','decision_at','odds_at','source','marketTime','marketTimeVerified','odds','rawProbability','calibratedProbability','probabilityLower','ev','conservativeEV','modelVersion','sampleSize','uncertaintyMethod','reason','selected','stake','status','outcome','refund'];
+    const rows=state.events.flatMap(e=>e.rows.map(x=>[e.id,e.race.date,e.race.org,x.ticket,x.selection,iso(e.decisionAt),x.oddsAt?iso(x.oddsAt):'',x.source,x.marketTime,x.marketTimeVerified,x.odds,x.rawProbability,x.calibratedProbability,x.probabilityLower,x.ev,x.conservativeEV,x.modelVersion,x.sampleSize,x.uncertaintyMethod,x.reason,x.selected,x.stake,x.status,x.outcome,x.refund]));
+    content='\ufeff'+[heads,...rows].map(a=>a.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
+    name='AUTO54-audit.csv';mime='text/csv';
+    const u=URL.createObjectURL(new Blob([content],{type:mime})),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),2000);
+    return;
+  }
+  content=JSON.stringify({version:VERSION,events:state.events,models:state.models,report:state.report,settings:state.settings,legacyAccount:typeof engine!=='undefined'?{characters:engine.characters,bets:engine.bets}:null},null,2);
+  name=`AUTO54-audit_${new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Tokyo'}).replaceAll('-','')}.json`;
+  if(typeof window.saveJsonAs56==='function')return await window.saveJsonAs56(name,content,'AUTO検証・観測 JSON');
+  const u=URL.createObjectURL(new Blob([content],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),2000);
+}
 async function importData(file){const d=JSON.parse(await file.text());if(d.version!==VERSION||!Array.isArray(d.events))throw Error('AUTO54書出しJSONを指定してください');await ready;for(const e of d.events){if(!e.id||!e.race||!Array.isArray(e.rows)||!Number.isFinite(e.decisionAt)||e.rows.some(x=>!TYPES.includes(x.ticket)))throw Error('記録形式不正');if(!state.events.some(x=>x.id===e.id))await reserve(e)}for(const m of d.models||[]){if(m.version!==VERSION||!Number.isFinite(m.createdAt)||!m.groups)continue;if(!state.models.some(x=>x.id===m.id)){await write('models',m);state.models.push(m)}}render()}
 function render(){const el=document.getElementById('audit54status');if(!el)return;const rows=state.events.flatMap(e=>e.rows.map(x=>({...x,p:x.calibratedProbability,org:e.race.org,day:e.race.date}))),done=rows.filter(x=>x.status==='SETTLED');el.textContent=state.error||`市場ベース / ${state.settings.observation?'観測モード（購入なし）':'検証済み帯のみAUTO'} / 記録 ${state.events.length}レース・${rows.length}候補 / 精算済み ${done.length} / モデル ${state.models.length}件`;
 const tbody=document.getElementById('audit54bins');let out=[];for(const org of ['JRA','NAR'])for(const type of TYPES){for(const b of ['0-.01','.01-.03','.03-.10','.10-.20','.20-.40','.40-1']){const a=done.filter(x=>x.org===org&&x.ticket===type&&bin(x.p)===b);if(!a.length)continue;const m=metrics(a);out.push(`<tr><td>${org}</td><td>${type}</td><td>${b}</td><td>${m.n}</td><td>${(100*m.p).toFixed(2)}%</td><td>${(100*m.actual).toFixed(2)}%</td><td>${m.brier.toFixed(4)}</td><td>${m.logloss.toFixed(4)}</td></tr>`)}}
@@ -844,7 +858,7 @@ tbody.innerHTML=out.join('')||'<tr><td colspan="8">検証データがありま�
 const svg=document.getElementById('audit54curve'),points=[];for(const b of ['0-.01','.01-.03','.03-.10','.10-.20','.20-.40','.40-1']){const m=metrics(done.filter(x=>bin(x.p)===b));if(m.n)points.push(`<circle cx="${30+240*m.p}" cy="${270-240*m.actual}" r="4" fill="#b5eb83"><title>${b}: n=${m.n}</title></circle>`)}svg.innerHTML='<path d="M30 30V270H270 M30 270L270 30" stroke="#869c93" fill="none"/><text x="100" y="296" fill="white">平均予測確率 →</text><text x="30" y="20" fill="white">実際の的中率 ↑（全体参考）</text>'+points.join('');
 const why={};for(const x of rows)if(x.reason)why[x.reason]=(why[x.reason]||0)+1;document.getElementById('audit54reason').textContent=Object.entries(why).map(([k,v])=>k+': '+v).join(' / ')||'判定記録なし';document.getElementById('audit54report').textContent=state.report?JSON.stringify(state.report,null,2):'回収率改善は未検証です。実データでの期間分割評価はまだ実行していません。';
 const fw=document.getElementById('audit54forward'),bs=typeof engine!=='undefined'?engine.bets.filter(b=>b.character==='AUTOプレイヤー'):[],versions=[...new Set(bs.map(b=>b.modelVersion||'旧方式：モデル記録なし'))];if(fw)fw.innerHTML=versions.map(v=>{const m=stats(bs.filter(b=>(b.modelVersion||'旧方式：モデル記録なし')===v));return `<tr><td>${esc(v)}</td><td>${m.n}</td><td>${m.inv}</td><td>${m.ret}</td><td>${m.roi==null?'未確定':m.roi.toFixed(1)+'%'}</td><td>${m.profit}</td><td>${m.open}件 / ${m.openAmount}円</td></tr>`}).join('')||'<tr><td colspan="7">新方式の仮想購入はありません。回収率改善は未検証です。</td></tr>';const ob=document.getElementById('audit54odds');const groups={};for(const x of done){const b=x.odds<5?'1–5':x.odds<20?'5–20':x.odds<100?'20–100':'100以上',k=x.org+' / '+x.ticket+' / '+b;(groups[k]||=[]).push(x)}ob.innerHTML=Object.entries(groups).map(([k,a])=>{const m=metrics(a);return `<tr><td>${esc(k)}</td><td>${m.n}</td><td>${(m.p*100).toFixed(2)}%</td><td>${(m.actual*100).toFixed(2)}%</td><td>${m.brier.toFixed(4)}</td><td>${m.logloss.toFixed(4)}</td></tr>`}).join('')||'<tr><td>記録なし</td></tr>'}
-function mount(){if(document.getElementById('audit54panel'))return;const section=document.createElement('section');section.id='audit54panel';section.className='card';section.style.margin='16px';section.innerHTML=`<h3>AUTO 検証・観測 v54</h3><div class="body"><p id="audit54status">記録領域を準備中…</p><p>市場ベースの温度補正モデル。未検証の帯は購入しません。保守EVは経験的な評価値で、利益や95%下限を保証しません。</p><div class="row" style="flex-wrap:wrap;gap:8px"><label><input id="audit54observe" type="checkbox"> 観測のみ</label><select id="audit54policy"><option value="perTicket">各券種最大1点・各100円</option><option value="single">全券種から1レース1点・100円</option></select><button id="audit54fit">蓄積データを時系列検証</button><button id="audit54json">JSON保存</button><button id="audit54csv">CSV保存</button><label>観測JSON読込 <input id="audit54import" type="file" accept=".json"></label></div><p>判定は発売締切3分前。遅延許容15秒・取得後30秒以内。発走3分前とは異なります。取得時刻と市場時刻を別記録し、市場時刻不明は未検証と表示します。</p><p id="audit54reason"></p><details><summary>確率帯別の照合（全期間の記述統計）</summary><div style="overflow:auto"><table><thead><tr><th>区分</th><th>券種</th><th>確率帯</th><th>件数</th><th>予測</th><th>実績</th><th>Brier</th><th>log loss</th></tr></thead><tbody id="audit54bins"></tbody></table></div><svg id="audit54curve" viewBox="0 0 300 305" style="width:300px;max-width:100%" role="img" aria-label="確率校正曲線"></svg></details><details><summary>オッズ帯別</summary><div style="overflow:auto"><table><thead><tr><th>区分 / 券種 / 倍率帯</th><th>件数</th><th>予測</th><th>実績</th><th>Brier</th><th>log loss</th></tr></thead><tbody id="audit54odds"></tbody></table></div></details><details><summary>仮想購入履歴：モデル別の前向き成績</summary><div style="overflow:auto"><table><thead><tr><th>方式</th><th>精算</th><th>購入額</th><th>払戻</th><th>確定回収率</th><th>確定損益</th><th>結果待ち</th></tr></thead><tbody id="audit54forward"></tbody></table></div></details><details><summary>期間検証結果・制約</summary><pre id="audit54report" style="white-space:pre-wrap"></pre></details><details><summary>この版の変更点・確認範囲</summary><p>根拠のない勝率補正を撤去し、市場ベースの共通モデル、観測記録、期間分割による温度補正、保守EV判定を追加しました。旧履歴を消去せず、口座は一括保存します。</p><p>合成データによる20項目の回帰テストを実施：全31スクリプトの構文、予測再現、券種確率合計、少頭数複勝・発売時頭数、枠連、未検証・古いオッズの除外、1点100円・予算上限、未来モデル遮断、未精算除外、払戻単位、同着・返還、締切時刻、観測時の資金維持、重複購入、非同期後の期限確認、二重精算、履歴判断の再現、データ不足時の未学習表示、学習・校正・採用評価の分離。</p><p>未確認：ブラウザでの実画面（確認環境のローカルファイル制限）、iPad実機、ライブAPIの疎通、実データによる回収率改善。合成テストは回収率改善の証拠ではありません。</p><p>旧方式との同条件比較には当時の固定EVが必要です。記録がない場合は比較不能。モデル採用に用いた期間の成績は最終実証とせず、作成後の前向き成績を別に確認してください。記録は利用中のブラウザ内に保存されるため、移動前にJSONを書き出してください。</p></details><p>複勝条件：<a href="https://www.jra.go.jp/kouza/baken/index.html" target="_blank" rel="noopener">JRA公式</a> / <a href="https://www.keiba.go.jp/beginner/step3.html" target="_blank" rel="noopener">NAR公式</a>。発売開始時頭数が不明で取消がある場合は複勝確率を未算定とします。</p></div>`;const grid=document.querySelector('main > .grid');if(grid)grid.after(section);else document.querySelector('main')?.append(section);document.getElementById('audit54observe').checked=state.settings.observation;document.getElementById('audit54policy').value=state.settings.policy;for(const [id,k] of [['audit54observe','observation'],['audit54policy','policy']])document.getElementById(id).onchange=e=>{state.settings[k]=k==='observation'?e.target.checked:e.target.value;localStorage.setItem('auto54.settings',JSON.stringify(state.settings));render()};document.getElementById('audit54fit').onclick=async e=>{e.target.disabled=true;try{await fit()}catch(err){state.error=String(err)}finally{e.target.disabled=false;render()}};document.getElementById('audit54json').onclick=()=>exportData();document.getElementById('audit54csv').onclick=()=>exportData(true);document.getElementById('audit54import').onchange=async e=>{try{if(e.target.files[0])await importData(e.target.files[0])}catch(err){state.error=String(err);render()}};ready.then(render)}
+function mount(){if(document.getElementById('audit54panel'))return;const section=document.createElement('section');section.id='audit54panel';section.className='card';section.style.margin='16px';section.innerHTML=`<h3>AUTO 検証・観測 v54</h3><div class="body"><p id="audit54status">記録領域を準備中…</p><p>市場ベースの温度補正モデル。未検証の帯は購入しません。保守EVは経験的な評価値で、利益や95%下限を保証しません。</p><div class="row" style="flex-wrap:wrap;gap:8px"><label><input id="audit54observe" type="checkbox"> 観測のみ</label><select id="audit54policy"><option value="perTicket">各券種最大1点・各100円</option><option value="single">全券種から1レース1点・100円</option></select><button id="audit54fit">蓄積データを時系列検証</button><button id="audit54json">JSON 名前をつけて保存</button><button id="audit54csv">CSV保存</button><label>観測JSON読込 <input id="audit54import" type="file" accept=".json"></label></div><p>判定は発売締切3分前。遅延許容15秒・取得後30秒以内。発走3分前とは異なります。取得時刻と市場時刻を別記録し、市場時刻不明は未検証と表示します。</p><p id="audit54reason"></p><details><summary>確率帯別の照合（全期間の記述統計）</summary><div style="overflow:auto"><table><thead><tr><th>区分</th><th>券種</th><th>確率帯</th><th>件数</th><th>予測</th><th>実績</th><th>Brier</th><th>log loss</th></tr></thead><tbody id="audit54bins"></tbody></table></div><svg id="audit54curve" viewBox="0 0 300 305" style="width:300px;max-width:100%" role="img" aria-label="確率校正曲線"></svg></details><details><summary>オッズ帯別</summary><div style="overflow:auto"><table><thead><tr><th>区分 / 券種 / 倍率帯</th><th>件数</th><th>予測</th><th>実績</th><th>Brier</th><th>log loss</th></tr></thead><tbody id="audit54odds"></tbody></table></div></details><details><summary>仮想購入履歴：モデル別の前向き成績</summary><div style="overflow:auto"><table><thead><tr><th>方式</th><th>精算</th><th>購入額</th><th>払戻</th><th>確定回収率</th><th>確定損益</th><th>結果待ち</th></tr></thead><tbody id="audit54forward"></tbody></table></div></details><details><summary>期間検証結果・制約</summary><pre id="audit54report" style="white-space:pre-wrap"></pre></details><details><summary>この版の変更点・確認範囲</summary><p>根拠のない勝率補正を撤去し、市場ベースの共通モデル、観測記録、期間分割による温度補正、保守EV判定を追加しました。旧履歴を消去せず、口座は一括保存します。</p><p>合成データによる20項目の回帰テストを実施：全31スクリプトの構文、予測再現、券種確率合計、少頭数複勝・発売時頭数、枠連、未検証・古いオッズの除外、1点100円・予算上限、未来モデル遮断、未精算除外、払戻単位、同着・返還、締切時刻、観測時の資金維持、重複購入、非同期後の期限確認、二重精算、履歴判断の再現、データ不足時の未学習表示、学習・校正・採用評価の分離。</p><p>未確認：ブラウザでの実画面（確認環境のローカルファイル制限）、iPad実機、ライブAPIの疎通、実データによる回収率改善。合成テストは回収率改善の証拠ではありません。</p><p>旧方式との同条件比較には当時の固定EVが必要です。記録がない場合は比較不能。モデル採用に用いた期間の成績は最終実証とせず、作成後の前向き成績を別に確認してください。記録は利用中のブラウザ内に保存されるため、移動前にJSONを書き出してください。</p></details><p>複勝条件：<a href="https://www.jra.go.jp/kouza/baken/index.html" target="_blank" rel="noopener">JRA公式</a> / <a href="https://www.keiba.go.jp/beginner/step3.html" target="_blank" rel="noopener">NAR公式</a>。発売開始時頭数が不明で取消がある場合は複勝確率を未算定とします。</p></div>`;const grid=document.querySelector('main > .grid');if(grid)grid.after(section);else document.querySelector('main')?.append(section);document.getElementById('audit54observe').checked=state.settings.observation;document.getElementById('audit54policy').value=state.settings.policy;for(const [id,k] of [['audit54observe','observation'],['audit54policy','policy']])document.getElementById(id).onchange=e=>{state.settings[k]=k==='observation'?e.target.checked:e.target.value;localStorage.setItem('auto54.settings',JSON.stringify(state.settings));render()};document.getElementById('audit54fit').onclick=async e=>{e.target.disabled=true;try{await fit()}catch(err){state.error=String(err)}finally{e.target.disabled=false;render()}};document.getElementById('audit54json').onclick=()=>exportData();document.getElementById('audit54csv').onclick=()=>exportData(true);document.getElementById('audit54import').onchange=async e=>{try{if(e.target.files[0])await importData(e.target.files[0])}catch(err){state.error=String(err);render()}};ready.then(render)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});else setTimeout(mount,0);
 return {VERSION,TYPES,state,ready,key,safe,close,cutoff,slots,weights,distribution,modelAt,evaluate,choose,reserve,update,settleObservation,stats,payout,outcome,metrics,fit,render,canon,esc,historicalPicks,runHistoricalAuto,wallet};
 })();
@@ -2414,6 +2428,62 @@ async function saveJsonToChosenFolder(filename,obj){
   return await saveTextFile(filename,text,"application/json");
 }
 
+function sanitizeSaveAsFilename56(value,defaultName="data.json"){
+  let s=String(value??"").trim();
+  if(!s)s=String(defaultName||"data.json");
+  s=s.replace(/[\\/:*?"<>|\u0000-\u001f]/g,"_").replace(/[. ]+$/g,"");
+  if(!s)s="data";
+  if(!/\.json$/i.test(s))s+=".json";
+  return s;
+}
+function askJsonFilename56(suggestedName){
+  const def=sanitizeSaveAsFilename56(suggestedName||"data.json");
+  const stem=def.replace(/\.json$/i,"");
+  const entered=window.prompt("保存するJSONファイル名を入力してください（.json は自動で付きます）",stem);
+  if(entered===null)return null;
+  return sanitizeSaveAsFilename56(entered,def);
+}
+async function saveJsonAs56(suggestedName,content,shareTitle="競馬シミュレーション JSON"){
+  const filename=askJsonFilename56(suggestedName);
+  if(!filename)return {saved:false,cancelled:true};
+  const text=typeof content==="string"?content:JSON.stringify(content,null,2);
+
+  if("showSaveFilePicker" in window){
+    try{
+      const handle=await window.showSaveFilePicker({
+        suggestedName:filename,
+        types:[{description:"JSON file",accept:{"application/json":[".json"]}}]
+      });
+      const writable=await handle.createWritable();
+      await writable.write(new Blob([text],{type:"application/json"}));
+      await writable.close();
+      return {saved:true,method:"picker",filename:handle.name||filename};
+    }catch(e){
+      if(e?.name==="AbortError")return {saved:false,cancelled:true};
+      console.warn("JSON Save As picker failed",e);
+    }
+  }
+
+  // iPhone/iPad Safari: filename is chosen in-app, then Files destination is chosen from Share Sheet.
+  try{
+    const file=new File([text],filename,{type:"application/json"});
+    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
+      await navigator.share({files:[file],title:shareTitle});
+      return {saved:true,method:"share",filename};
+    }
+  }catch(e){
+    if(e?.name==="AbortError")return {saved:false,cancelled:true};
+    console.warn("JSON share save failed; falling back to download",e);
+  }
+
+  const url=URL.createObjectURL(new Blob([text],{type:"application/json"}));
+  const a=document.createElement("a");
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+  return {saved:true,method:"download",filename};
+}
+window.saveJsonAs56=saveJsonAs56;
+
 async function saveTextFile(name,content,type){
   // Chromium系では保存先をユーザーが指定可能
   if("showSaveFilePicker" in window){
@@ -2494,9 +2564,9 @@ $("#saveSettings").onclick=()=>{
   if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
 };
 $("#exportJson").onclick=async()=>{
-  const r=await saveTextFile(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"application/json");
+  const r=await saveJsonAs56(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"購入履歴 JSON");
   if(r?.cancelled)return;
-  UI.addLog(`JSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`);
+  UI.addLog(`JSONを名前付き保存しました: ${r.filename||""}${r.method==="share"?"（ファイルに保存で保存先を選択）":""}`);
 };
 $("#exportCsv").onclick=async()=>{
   const rows=betRows();
@@ -2616,13 +2686,13 @@ $("#fetchHistory").onclick=async()=>{
 };
 $("#exportHistoryJson").onclick=async()=>{
   if(!webHistory.length)return alert("過去データがありません");
-  const r=await saveTextFile(`keiba_history_${today()}.json`,JSON.stringify({
+  const r=await saveJsonAs56(`keiba_history_${today()}.json`,JSON.stringify({
     format:"KEIBA_HISTORY_V1",
     note:"Historical WEB odds are FINAL ODDS, not close-minus-3-minute odds.",
     data:webHistory
-  },null,2),"application/json");
+  },null,2),"過去レース JSON");
   if(r?.cancelled)return;
-  $("#histStatus").textContent=`過去JSONを書き出しました（${r.method==="picker"?"保存先指定":"ダウンロード"}）`;
+  $("#histStatus").textContent=`過去JSONを名前付き保存しました: ${r.filename||""}${r.method==="share"?" / 『ファイルに保存』で保存先を選択":""}`;
 };
 $("#clearHistory").onclick=()=>{
   if(confirm("WEB取得した過去データを消去しますか？")){
@@ -3609,48 +3679,58 @@ updateBtJsonFolderStatus();
 $("#exportBtJson").onclick=async()=>{
   if(!btResult)return alert("バックテスト結果がありません");
 
-  const filename=`keiba_backtest_${today()}.json`;
+  const defaultName=`keiba_backtest_${today()}.json`;
+  const filename=askJsonFilename56(defaultName);
+  if(!filename)return;
   let r=null;
 
-  // 対応ブラウザでは、未選択なら保存時に必ずフォルダ選択画面を出す。
-  if("showDirectoryPicker" in window){
-    if(!btJsonDirectoryHandle){
-      const h=await chooseBtJsonSaveFolder();
-      if(!h)return;
-    }
+  // 既にフォルダを選択済みなら、そのフォルダへ指定名で保存。
+  if(btJsonDirectoryHandle){
     try{
       r=await writeBacktestJsonToFolder(btJsonDirectoryHandle,filename,btResult);
+      r.filename=filename;
     }catch(e){
-      alert("バックテストJSON保存エラー: "+e.message);
-      return;
-    }
-  }
-  // iPad/iPhone Safari: Web API上、事前にフォルダ権限を保持できないため
-  // 共有シートの「ファイルに保存」でフォルダを選ぶ。
-  else{
-    try{
-      const file=new File([JSON.stringify(btResult,null,2)],filename,{type:"application/json"});
-      if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
-        await navigator.share({files:[file],title:"競馬バックテストJSON"});
-        r={saved:true,method:"share"};
-      }else{
-        r=await saveTextFile(filename,JSON.stringify(btResult,null,2),"application/json");
-      }
-    }catch(e){
-      if(e?.name==="AbortError")return;
-      console.warn("iOS共有保存失敗",e);
-      r=await saveTextFile(filename,JSON.stringify(btResult,null,2),"application/json");
+      console.warn("フォルダ保存失敗。名前をつけて保存へ切替",e);
+      r=null;
     }
   }
 
-  if(r?.cancelled)return;
+  // フォルダ未選択または保存失敗時は、保存先指定 / iPad共有へ。
+  if(!r){
+    // saveJsonAs56 自体でも名前を聞くため、ここでは二重質問を避けて直接保存する。
+    const text=JSON.stringify(btResult,null,2);
+    if("showSaveFilePicker" in window){
+      try{
+        const fh=await window.showSaveFilePicker({suggestedName:filename,types:[{description:"JSON file",accept:{"application/json":[".json"]}}]});
+        const w=await fh.createWritable();await w.write(new Blob([text],{type:"application/json"}));await w.close();
+        r={saved:true,method:"picker",filename:fh.name||filename};
+      }catch(e){
+        if(e?.name==="AbortError")return;
+      }
+    }
+    if(!r){
+      try{
+        const file=new File([text],filename,{type:"application/json"});
+        if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
+          await navigator.share({files:[file],title:"競馬バックテスト JSON"});
+          r={saved:true,method:"share",filename};
+        }
+      }catch(e){if(e?.name==="AbortError")return;}
+    }
+    if(!r){
+      const u=URL.createObjectURL(new Blob([text],{type:"application/json"})),a=document.createElement("a");
+      a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500);
+      r={saved:true,method:"download",filename};
+    }
+  }
+
   if(r?.method==="folder"){
-    $("#btProgress").textContent=`バックテストJSON保存完了 / フォルダ: ${r.folder}`;
+    $("#btProgress").textContent=`バックテストJSON保存完了: ${r.folder}/${r.filename}`;
     updateBtJsonFolderStatus();
   }else if(r?.method==="share"){
-    $("#btProgress").textContent="『ファイルに保存』で保存先フォルダを選択してください";
+    $("#btProgress").textContent=`${r.filename} / 『ファイルに保存』で保存先フォルダを選択してください`;
   }else{
-    $("#btProgress").textContent="バックテストJSONを保存しました";
+    $("#btProgress").textContent=`バックテストJSONを名前付き保存しました: ${r.filename||filename}`;
   }
 };
 $("#resetBt").onclick=()=>{
@@ -11410,6 +11490,13 @@ window.SpeedModel55={VERSION,state,applyRace:applyRace55,enrichRace:enrichRace55
 console.log('✅ FIXED55 real speed-index + learned softmax model loaded');
 })();
 
+</script>
+<script>
+// FIXED56: JSON保存をすべて「名前をつけて保存」へ統一
+setTimeout(()=>{
+  const el=document.getElementById("legacyJsonName");
+  if(el && (!el.value || el.value==="keiba_sim")) el.value=`keiba_sim_${today()}`;
+},0);
 </script>
 </body>
 </html>
