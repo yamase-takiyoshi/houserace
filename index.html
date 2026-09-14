@@ -187,6 +187,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#a36f2f;background:#2a1f0d"><b>FIXED32 NAR公式オッズ優先</b> — NARのnetkeiba遮断/HTTP 400時は、地方競馬情報サイト（keiba.go.jp）の単複・枠連・馬連・ワイド・馬単・3連複・3連単へ自動フォールバックします。水沢などの競馬場コードはrace_idから復元します。</div>
 <div class="notice" style="border-color:#8b5cf6;background:#1d1630"><b>FIXED40 NAR 3連単・前回値保持</b> — NAR公式SP/PC/IPATの人気順URLを拡張し、3連単の取得0件を補強。更新失敗時は前回の正常オッズを消さず保持し、0件時に別券種の取得元を誤表示しません。</div>
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
+<div class="notice" style="border-color:#2dd4bf;background:#0b2926"><b>FIXED56 馬名・性齢 + NAR単複列ずれ修正</b> — NAR公式出馬表（S_DebaTable / DebaTable）から馬番→馬名/性齢を同期。牡5/牝5/セン6を馬名として扱わず、斤量56.0や馬番1/2/3を単複オッズとして誤読する経路を遮断します。単勝・複勝は公式表の「馬番/馬名/オッズ」列を確認できた場合だけ採用します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -220,7 +221,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>馬番</th><th>馬名</th><th>人気</th><th>単勝</th><th>3分前</th>
+            <th>馬番</th><th>馬名</th><th>性齢</th><th>人気</th><th>単勝</th><th>3分前</th>
             <th>想定勝率</th><th>市場確率</th><th>適正</th><th>EV</th><th>乖離</th><th>評価</th>
           </tr></thead>
           <tbody id="horseBody"></tbody>
@@ -1333,6 +1334,8 @@ function liveCleanHorseNameV22(value,no=0){
     s=s.replace(new RegExp(`^(?:#\s*)?${n}(?:\s+|$)`),'').trim();
   }
   s=s.replace(/^(?:馬名|選択|印)\s*/,'').trim();
+  // FIXED56: 「牡5 / 牝5 / セン6 / 騙7」など性齢を馬名として採用しない。
+  if(/^(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}$/.test(s)) return '';
   if(!s || /^#?\d+$/.test(s) || /^Horse\s*\d+$/i.test(s) || /^[\d.\-–—―]+$/.test(s)) return '';
   if(s.length>40) return '';
   return s;
@@ -1382,6 +1385,157 @@ function liveParseEntryNamesV21(html){
     if(no>=1&&no<=18 && name && !map.has(no)) map.set(no,name);
   }
   return map;
+}
+
+/* ============================================================
+   FIXED56 NAR HORSE NAME + SEX/AGE RECOVERY
+   - keiba.go.jp 公式出馬表 S_DebaTable / DebaTable を最優先
+   - 馬番をキーに「馬名」と「性齢」を結合し、斤量/性齢の列ずれを遮断
+   - オッズ未発売でも出馬表から馬名を表示できる
+   ============================================================ */
+const LIVE_NAR_ENTRY_CACHE_V56=new Map();
+const LIVE_NAR_ENTRY_FAIL_V56=new Map();
+const LIVE_NAR_BABA_V56={
+  '帯広':'3','帯広ば':'3','ばんえい':'3','門別':'36','盛岡':'10','水沢':'11',
+  '浦和':'18','船橋':'19','大井':'20','川崎':'21','金沢':'22','笠松':'23',
+  '名古屋':'24','園田':'27','姫路':'28','高知':'31','佐賀':'32'
+};
+
+function liveNormalizeSexAgeV56(v){
+  const s=String(v??'').replace(/[\u00a0　\s]+/g,'').trim();
+  const m=s.match(/^(牡|牝|騙|セン|せん|セ)(\d{1,2})$/);
+  if(!m)return '';
+  const sex=(m[1]==='せん'||m[1]==='セ')?'セン':m[1];
+  return `${sex}${Number(m[2])}`;
+}
+function liveHorseSexAgeFromAnyV56(h){
+  if(!h||typeof h!=='object')return '';
+  for(const v of [h.sexAge,h.sex_age,h.sexage,h.genderAge,h.gender_age,h.ageSex,h['性齢'],h.name]){
+    const x=liveNormalizeSexAgeV56(v); if(x)return x;
+  }
+  const sex=String(h.sex??h.gender??'').trim();
+  const age=Number(h.age);
+  if(sex && Number.isFinite(age)&&age>0){
+    const x=liveNormalizeSexAgeV56(`${sex}${age}`); if(x)return x;
+  }
+  return '';
+}
+function liveNarDateYmdV56(race){
+  let s=String(race?.date||race?.raceDate||'').replace(/[^0-9]/g,'').slice(0,8);
+  if(/^20\d{6}$/.test(s))return s;
+  const raw=race?.startTime||race?.start_time||race?.postTime||'';
+  if(raw){
+    try{
+      const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(raw));
+      const o=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+      s=`${o.year}${o.month}${o.day}`;
+      if(/^20\d{6}$/.test(s))return s;
+    }catch(_){}
+  }
+  return '';
+}
+function liveNarEntryMetaV56(race,id=''){
+  const track=String(race?.track||race?.venue||race?.course||'').replace(/[\u00a0　\s]+/g,'');
+  let baba='';
+  const k=Object.keys(LIVE_NAR_BABA_V56).find(x=>track===x||track.includes(x));
+  if(k)baba=LIVE_NAR_BABA_V56[k];
+  const rid=String(id||race?.netkeibaRaceId||race?.raceId||race?.race_id||race?.id||'').match(/(20\d{10})/)?.[1]||'';
+  if(!baba&&rid){
+    const nkToBaba={'30':'36','35':'10','36':'11','42':'18','43':'19','44':'20','45':'21','46':'22','47':'23','48':'24','50':'27','51':'28','54':'31','55':'32','65':'3'};
+    baba=nkToBaba[rid.slice(4,6)]||'';
+  }
+  let ymd=liveNarDateYmdV56(race);
+  if(!ymd&&rid)ymd=rid.slice(0,4)+rid.slice(6,10);
+  let no=Number(race?.no??race?.raceNo??race?.race_no??race?.r??0);
+  if(!(no>=1&&no<=12)&&rid)no=Number(rid.slice(10,12));
+  if(!baba||!/^20\d{6}$/.test(ymd)||!(no>=1&&no<=12))return null;
+  return {baba,ymd,no,date:`${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}`};
+}
+function liveParseNarDebaV56(html){
+  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+  const out=new Map();
+
+  for(const tb of doc.querySelectorAll('table')){
+    const rows=[...tb.querySelectorAll('tr')];
+    let noIdx=-1,nameIdx=-1,sexIdx=-1;
+    for(const tr of rows){
+      const tx=[...tr.querySelectorAll('th,td')].map(c=>String(c.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim());
+      const hx=tx.map(x=>x.replace(/\s+/g,''));
+      const ni=hx.findIndex(x=>/^馬番$/.test(x));
+      const nmi=hx.findIndex(x=>/^馬名/.test(x));
+      if(ni>=0&&nmi>=0){
+        noIdx=ni; nameIdx=nmi; sexIdx=hx.findIndex(x=>/^性齢/.test(x)); break;
+      }
+    }
+    if(noIdx<0||nameIdx<0)continue;
+
+    for(const tr of rows){
+      const cells=[...tr.querySelectorAll('th,td')]; if(cells.length<=Math.max(noIdx,nameIdx))continue;
+      const tx=cells.map(c=>String(c.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim());
+      const nm=String(tx[noIdx]||'').match(/^([1-9]|1[0-8])$/); if(!nm)continue;
+      const no=Number(nm[1]);
+
+      let raw=String(tx[nameIdx]||'').trim();
+      let name='';
+      const a=cells[nameIdx]?.querySelector?.('a[href*="Horse"],a[href*="horse"],a[href*="Uma"],a[href*="uma"]');
+      if(a)name=liveCleanHorseNameV22(a.textContent,no);
+
+      let sexAge=sexIdx>=0&&sexIdx<tx.length?liveNormalizeSexAgeV56(tx[sexIdx]):'';
+      if(!name){
+        const m=raw.match(/^(.+?)\s+(牡|牝|騙|セン|せん|セ)\s*(\d{1,2})(?:\s|$)/);
+        if(m){
+          name=liveCleanHorseNameV22(m[1],no);
+          sexAge=sexAge||liveNormalizeSexAgeV56(`${m[2]}${m[3]}`);
+        }else{
+          name=liveCleanHorseNameV22(raw,no);
+        }
+      }
+      if(name){
+        out.set(no,{name,sexAge});
+      }
+    }
+  }
+  return out;
+}
+async function liveNarEntryNamesV56(id,race){
+  const meta=liveNarEntryMetaV56(race,id);
+  if(!meta)return new Map();
+  const key=`${meta.baba}|${meta.ymd}|${meta.no}`;
+  const cached=LIVE_NAR_ENTRY_CACHE_V56.get(key);
+  if(cached?.entries instanceof Map && cached.entries.size>=2)return new Map([...cached.entries].map(([n,v])=>[n,v.name]));
+
+  const lastFail=Number(LIVE_NAR_ENTRY_FAIL_V56.get(key)||0);
+  if(lastFail&&Date.now()-lastFail<60000)return new Map();
+
+  const q=`k_babaCode=${encodeURIComponent(meta.baba)}&k_raceDate=${encodeURIComponent(meta.date)}&k_raceNo=${meta.no}`;
+  const urls=[
+    `https://www.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_DebaTable?${q}`,
+    `https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_DebaTable?${q}`,
+    `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?${q}`
+  ];
+  let best=new Map(),lastErr=null;
+  for(const u of urls){
+    try{
+      const x=await liveHtmlViaProxyOrBridge(u);
+      const m=liveParseNarDebaV56(x.text);
+      if(m.size>best.size)best=m;
+      const expected=(race?.horses||[]).map(h=>Number(h?.no)).filter(n=>n>=1&&n<=18);
+      if((expected.length>=2&&expected.every(n=>m.has(n)))||m.size>=8)break;
+    }catch(e){lastErr=e}
+  }
+  if(best.size){
+    LIVE_NAR_ENTRY_CACHE_V56.set(key,{entries:new Map(best),at:Date.now()});
+    LIVE_NAR_ENTRY_FAIL_V56.delete(key);
+    return new Map([...best].map(([n,v])=>[n,v.name]));
+  }
+  LIVE_NAR_ENTRY_FAIL_V56.set(key,Date.now());
+  if(lastErr)console.warn('FIXED56 NAR horse names',lastErr);
+  return new Map();
+}
+function liveNarSexAgeV56(id,race,no){
+  const meta=liveNarEntryMetaV56(race,id); if(!meta)return '';
+  const key=`${meta.baba}|${meta.ymd}|${meta.no}`;
+  return LIVE_NAR_ENTRY_CACHE_V56.get(key)?.entries?.get(Number(no))?.sexAge||'';
 }
 async function liveJraEntryNamesV21(id,race){
   const rid=String(id||'');
@@ -1759,11 +1913,28 @@ class HttpProvider{
       }
       if(hs.length){
         const oldNames=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveCleanHorseNameV22(h?.name,h?.no)]).filter(x=>x[0]>=1&&x[1]));
+        const oldSexAge=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveHorseSexAgeFromAnyV56(h)]).filter(x=>x[0]>=1&&x[1]));
         race.horses=hs.map((h,i)=>{
           const no=Number(h?.no??h?.horseNo??h?.horse_no??(i+1));
           const own=liveCleanHorseNameV22(h?.name??h?.horseName??h?.horse_name,no);
-          return {...h,no,name:own||oldNames.get(no)||''};
+          const sexAge=liveHorseSexAgeFromAnyV56(h)||oldSexAge.get(no)||'';
+          return {...h,no,name:own||oldNames.get(no)||'',sexAge};
         }).filter(h=>h.no>=1&&h.no<=18);
+
+        // FIXED56: NARは公式出馬表から馬番→馬名/性齢を補完する。
+        if(isNar44){
+          try{
+            const names=await liveNarEntryNamesV56(rid,race);
+            for(const h of race.horses){
+              const nm=liveCleanHorseNameV22(names.get(Number(h.no))||h.name,h.no);
+              h.name=nm||`馬名未取得(${h.no})`;
+              h.sexAge=h.sexAge||liveNarSexAgeV56(rid,race,h.no)||'';
+            }
+          }catch(e){
+            console.warn('FIXED56 NAR horse name recovery',e);
+            for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
+          }
+        }
 
         // FIXED22: Workerがオッズだけ返す、または #2 等を返しても、JRAは出馬表から実馬名を補完する。
         if(String(race?.org||'').toUpperCase()==='JRA'){
@@ -1788,8 +1959,22 @@ class HttpProvider{
     }catch(e){errors.push("Worker /odds: "+(e?.message||e))}
     try{
       const x=await liveGetWinOddsViaNetkeibaV20(race);
-      race.horses=x.horses.map(h=>({...h,name:liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`}));
-      return x;
+      race.horses=x.horses.map(h=>({...h,sexAge:liveHorseSexAgeFromAnyV56(h),name:liveCleanHorseNameV22(h.name,h.no)||''}));
+      if(String(race?.org||'').toUpperCase()==='NAR'){
+        try{
+          const rid=window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||String(race?.id||'');
+          const names=await liveNarEntryNamesV56(rid,race);
+          for(const h of race.horses){
+            h.name=liveCleanHorseNameV22(names.get(Number(h.no))||h.name,h.no)||`馬名未取得(${h.no})`;
+            h.sexAge=h.sexAge||liveNarSexAgeV56(rid,race,h.no)||'';
+          }
+        }catch(_){
+          for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
+        }
+      }else{
+        for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
+      }
+      return {...x,horses:race.horses};
     }catch(e){errors.push("Mobile Bridge: "+(e?.message||e))}
     throw new Error(errors.join(" / "));
   }
@@ -2350,7 +2535,7 @@ const UI={
     $("#horseBody").innerHTML=(r.horses||[]).map(h=>{
       const label=ExpectedValueEngine.label(h.ev||0,e.settings),cls=label.toLowerCase().replace(" ","");
       return `<tr class="${cls}">
-      <td>${h.no}</td><td>${h.name||""}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
+      <td>${h.no}</td><td>${h.name||""}</td><td>${h.sexAge||h.sex_age||h.sexage||"-"}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
       <td>${pct(h.modelProb||0)}</td><td>${pct(h.marketProb||0)}</td><td>${(h.fairOdds||0).toFixed(2)}</td>
       <td><b>${(h.ev||0).toFixed(2)}</b></td><td>${pct(h.edge||0)}</td><td><span class="tag ${cls}">${label}</span></td></tr>`
     }).join("");
@@ -8398,19 +8583,27 @@ async function syncMainHorsesFromWinRowsV23(r,st){
     const seed=winRows.map(x=>{
       const no=Number(x.selection), prev=old.get(no)||{};
       const prevNoise=Number(prev.modelNoise);
+      let prevName='';
+      try{prevName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(prev.name,no):String(prev.name||'').trim()}catch(_){prevName=String(prev.name||'').trim()}
+      const rowName=String(x.horseName||'').trim();
+      const sexAge=(typeof liveHorseSexAgeFromAnyV56==='function'?liveHorseSexAgeFromAnyV56(prev):'')||'';
       return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0,
-        name:String(prev.name||x.horseName||'').trim(),
+        name:prevName||rowName,sexAge,
         modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(raceId(r),no)};
     });
     let names=new Map();
-    if(String(r.org||'').toUpperCase()==='JRA' && typeof liveJraEntryNamesV21==='function'){
-      try{names=await liveJraEntryNamesV21(raceId(r),{...r,horses:seed})}catch(e){console.warn('FIXED23 horse names',e)}
+    const org=String(r.org||'').toUpperCase(),rid=raceId(r);
+    if(org==='JRA' && typeof liveJraEntryNamesV21==='function'){
+      try{names=await liveJraEntryNamesV21(rid,{...r,horses:seed})}catch(e){console.warn('FIXED23 horse names',e)}
+    }else if(org==='NAR' && typeof liveNarEntryNamesV56==='function'){
+      try{names=await liveNarEntryNamesV56(rid,{...r,horses:seed})}catch(e){console.warn('FIXED56 NAR horse names',e)}
     }
     r.horses=seed.map(h=>{
       const no=Number(h.no);
       let nm='';
       try{nm=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(names.get(no)||h.name,no):String(names.get(no)||h.name||'').trim()}catch(_){nm=String(names.get(no)||h.name||'').trim()}
-      return {...h,name:nm||`馬名未取得(${no})`};
+      const sexAge=h.sexAge||(org==='NAR'&&typeof liveNarSexAgeV56==='function'?liveNarSexAgeV56(rid,r,no):'')||'';
+      return {...h,name:nm||`馬名未取得(${no})`,sexAge};
     }).sort((a,b)=>a.no-b.no);
     try{const pe=probabilityRef();if(pe?.model)pe.model(r.horses)}catch(_){ }
     try{
@@ -8425,10 +8618,22 @@ async function syncMainHorsesFromWinRowsV23(r,st){
 }
 function displaySelectionV23(type,selection,r){
   const raw=String(selection??'');
-  if(type!=='単勝'&&type!=='複勝')return raw;
-  const no=Number(raw.match(/\d{1,2}/)?.[0]||0),h=horseMap(r).get(no);
-  const name=String(h?.name||'').trim();
-  return name?`${no} ${name}`:raw;
+  if(type==='枠連')return raw;
+  const ns=raw.match(/\d{1,2}/g)?.map(Number)||[];
+  if(!ns.length)return raw;
+  const hm=horseMap(r);
+  const part=n=>{
+    const h=hm.get(Number(n));
+    let name='';
+    try{name=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(h?.name,n):String(h?.name||'').trim()}catch(_){name=String(h?.name||'').trim()}
+    return name?`${n} ${name}`:String(n);
+  };
+  if(type==='単勝'||type==='複勝')return part(ns[0]);
+  if(['ワイド','馬連','馬単','3連複','3連単'].includes(type)){
+    const sep=(type==='馬単'||type==='3連単')?' → ':' - ';
+    return ns.map(part).join(sep);
+  }
+  return raw;
 }
 function pWin(h){return Math.max(0,Math.min(.999999,Number(h?.modelProb)||0))}
 function pl2(a,b){const pa=pWin(a),pb=pWin(b);return pa*pb/Math.max(1e-9,1-pa)}
@@ -8838,47 +9043,57 @@ function parseNarOfficialSp35(html,type,st){
   const maxNo=type==='枠連'?8:18;
   const need=(type==='3連複'||type==='3連単')?3:2;
 
-  // 単勝・複勝：SP版は 馬番｜馬名｜オッズ、人気順では 順位｜馬番｜馬名｜オッズ。
+  // FIXED56: 単勝・複勝は「馬番 / 馬名 / オッズ」のヘッダ列位置を確定してから読む。
+  // 斤量56.0・性齢・順位・馬番をオッズとして拾う旧ヒューリスティックは禁止。
   if(type==='単勝'||type==='複勝'){
     let seq=0;
     for(const tb of tables){
-      for(const tr of tb.querySelectorAll('tr')){
+      const rows=[...tb.querySelectorAll('tr')];
+      let noIdx=-1,nameIdx=-1,oddsIdx=-1,rankIdx=-1;
+      for(const tr of rows){
+        const tx=[...tr.querySelectorAll('th,td')].map(c=>officialText32(c.textContent));
+        const hx=tx.map(x=>x.replace(/\s+/g,''));
+        const ni=hx.findIndex(x=>/^馬番$/.test(x));
+        const nmi=hx.findIndex(x=>/^馬名/.test(x));
+        if(ni<0||nmi<0)continue;
+        let oi=-1;
+        if(type==='単勝')oi=hx.findIndex(x=>/単勝.*オッズ|^単勝$/.test(x));
+        else oi=hx.findIndex(x=>/複勝.*オッズ|^複勝$/.test(x));
+        // SP単独ページでは列名が単に「オッズ」。
+        if(oi<0)oi=hx.findIndex(x=>/^オッズ$/.test(x));
+        if(oi<0)continue;
+        noIdx=ni;nameIdx=nmi;oddsIdx=oi;rankIdx=hx.findIndex(x=>/^(?:順位|順)$/.test(x));
+        break;
+      }
+      if(noIdx<0||nameIdx<0||oddsIdx<0)continue;
+
+      for(const tr of rows){
         const cells=[...tr.querySelectorAll('th,td')];
-        if(cells.length<3)continue;
-        const texts=cells.map(c=>officialText32(c.textContent));
-        const joined=texts.join('|');
-        if(/馬番/.test(joined)&&/馬名/.test(joined)&&/オッズ/.test(joined))continue;
+        if(cells.length<=Math.max(noIdx,nameIdx,oddsIdx))continue;
+        const tx=cells.map(c=>officialText32(c.textContent));
+        const nm=String(tx[noIdx]||'').match(/^([1-9]|1[0-8])$/); if(!nm)continue;
+        const no=Number(nm[1]);
 
-        let nameIndex=-1;
-        for(let i=0;i<texts.length;i++){
-          const x=texts[i];
-          if(!x||/^(?:人気順|馬番順|順位|順|位|馬番|馬名|オッズ)$/.test(x))continue;
-          if(/[ぁ-んァ-ヶ一-龠A-Za-z]/.test(x) && !/^\d/.test(x)){nameIndex=i;break}
-        }
-        if(nameIndex<0)continue;
+        let horseName=String(tx[nameIdx]||'').trim();
+        const sx=horseName.match(/^(.+?)\s+(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}(?:\s|$)/);
+        if(sx)horseName=sx[1];
+        try{horseName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(horseName,no):horseName}catch(_){}
+        if(!horseName||/^(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}$/.test(horseName))continue;
 
-        let no=0;
-        for(let i=nameIndex-1;i>=0;i--){
-          if(/^\d{1,2}$/.test(texts[i])){
-            const n=Number(texts[i]);
-            if(n>=1&&n<=18){no=n;break}
-          }
-        }
-        if(!no)continue;
-
-        let oddsText='';
-        for(let i=nameIndex+1;i<texts.length;i++){
-          const x=texts[i].replace(/,/g,'').replace(/\s+/g,'');
-          if(/^\d{1,5}(?:\.\d+)?(?:[-－–—―]\d{1,5}(?:\.\d+)?)?$/.test(x)){
-            oddsText=x.replace(/[－–—―]/g,'-');break;
-          }
-        }
-        if(!oddsText)continue;
-
+        const oddsText=String(tx[oddsIdx]||'').replace(/,/g,'').replace(/\s+/g,'').replace(/[－–—―]/g,'-');
+        if(type==='単勝'&&!/^\d{1,5}(?:\.\d+)?$/.test(oddsText))continue;
+        if(type==='複勝'&&!/^\d{1,5}(?:\.\d+)?(?:-\d{1,5}(?:\.\d+)?)?$/.test(oddsText))continue;
         const rg=range(oddsText);
-        if(!rg||rg.mid<1)continue;
-        seq++;
-        addRow(st,type,String(no),rg.text,seq);
+        if(!rg||rg.low<1||rg.high<1||rg.high>=10000)continue;
+
+        let rank=++seq;
+        if(rankIdx>=0&&rankIdx<tx.length){
+          const rm=String(tx[rankIdx]||'').match(/^\d{1,4}$/);
+          if(rm&&Number(rm[0])>=1)rank=Number(rm[0]);
+        }
+        addRow(st,type,String(no),type==='単勝'?String(rg.mid):rg.text,rank);
+        const row=st.rows[type].find(x=>x.key===`${type}|${no}`);
+        if(row)row.horseName=horseName;
       }
     }
     return (st.rows[type]?.length||0)-before;
@@ -8983,9 +9198,9 @@ function parseNarOfficialPopularRowsV40(html,type,st){
 function parseNarOfficialIntoRows32(html,type,st){
   const spAdded=parseNarOfficialSp35(html,type,st);
   if(spAdded>0)return spAdded;
-  if(type==='単勝'||type==='複勝'){
-    const r=parseNarOfficialSingle32(html,st);return type==='単勝'?r.win:r.place;
-  }
+  // FIXED56: 単勝・複勝は公式ヘッダ列を確認できないページを採用しない。
+  // 旧fallbackは斤量(56.0等)や馬番(1,2,3...)をオッズと誤認するため fail-closed。
+  if(type==='単勝'||type==='複勝')return 0;
   const looseAdded=parseNarOfficialPopularRowsV40(html,type,st);
   if(looseAdded>0)return looseAdded;
   return parseNarOfficialCombos32(html,type,st);
@@ -9052,7 +9267,7 @@ async function fetchNarOfficial32(r,id,type,st){
       const txt=String(x.text||'');
       if(txt.length<300||!/オッズ|地方競馬情報サイト|Odds/i.test(txt))throw new Error(`公式HTML不正 ${txt.length}字`);
       let added=parseNarOfficialIntoRows32(txt,type,st);
-      if(!(added>0 || st.rows[type]?.length)) added+=parseNarOfficialTextFallback39(txt,type,st);
+      if(!(added>0 || st.rows[type]?.length) && type!=='単勝' && type!=='複勝') added+=parseNarOfficialTextFallback39(txt,type,st);
       if(added>0 || st.rows[type]?.length)return {added,url:x.url||u,via:x.via||'bridge'};
       errs.push(`${new URL(u).pathname}: DOM/本文とも解析0件`);
     }catch(e){errs.push(`${new URL(u).pathname}: ${e?.message||e}`)}
@@ -9364,11 +9579,14 @@ function ensureModelFromWinRowsV26(r,st){
   const seed=winRows.map(x=>{
     const no=Number(x.selection), prev=old.get(no)||{};
     const prevNoise=Number(prev.modelNoise);
+    let prevName='';
+    try{prevName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(prev.name,no):String(prev.name||'').trim()}catch(_){prevName=String(prev.name||'').trim()}
     return {...prev,
       no,
       odds:Number(x.odds),
       pop:Number(x.rank)||Number(prev.pop)||0,
-      name:String(prev.name||x.horseName||'').trim(),
+      name:prevName||String(x.horseName||'').trim(),
+      sexAge:(typeof liveHorseSexAgeFromAnyV56==='function'?liveHorseSexAgeFromAnyV56(prev):'')||prev.sexAge||'',
       modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(rid,no)
     };
   });
@@ -12173,6 +12391,14 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot,6200);setInterval(update,5000)},{once:true});
   else{setTimeout(boot,6200);setInterval(update,5000)}
   console.log('✅ FIXED55 Cloudflare quota saver loaded');
+})();
+</script>
+
+<script id="fixed56HorseIdentityDiag">
+(()=>{
+  try{
+    console.log('✅ FIXED56 NAR horse name/sex-age + strict single/place odds parser loaded');
+  }catch(_){}
 })();
 </script>
 
