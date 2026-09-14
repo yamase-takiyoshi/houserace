@@ -190,6 +190,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
 <div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED52 人気順位補正</b> — 単勝の「人気」が馬番/取得順になっていた経路を修正。LIVE単勝オッズを昇順に再順位付けし、中央の人気表示・人気依存ロジック・単勝オッズ表を同じ順位へ同期します。</div>
 <div class="notice" style="border-color:#06b6d4;background:#08242a"><b>FIXED54 AUTO 検証・観測</b> — 根拠のない勝率補正を撤去。初期状態は観測のみ。検証モデルのある帯だけ保守EV1.10以上で判定します。精算済み回収率と結果待ちを分離。</div>
+<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED55 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -224,7 +225,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
         <table>
           <thead><tr>
             <th>馬番</th><th>馬名</th><th>人気</th><th>単勝</th><th>3分前</th>
-            <th>市場ベース勝率</th><th>市場確率</th><th>適正</th><th>EV</th><th>乖離</th><th>評価</th>
+            <th>SI</th><th>想定勝率</th><th>市場確率</th><th>適正</th><th>EV</th><th>乖離</th><th>根拠</th><th>評価</th>
           </tr></thead>
           <tbody id="horseBody"></tbody>
         </table>
@@ -907,7 +908,7 @@ class DemoProvider{
   }
   async getResult(race){
     if(race.result)return race.result;
-    ProbabilityEngine.model(race.horses);
+    ProbabilityEngine.model(race.horses,race);
     const pool=race.horses.map(h=>({...h}));
     const top3=[];
     for(let pos=0;pos<3 && pool.length;pos++){
@@ -2014,7 +2015,7 @@ class SimulationEngine{
         try{
           const od=await this.provider.getOdds(this.selected);
           if(this.selected.horses?.length){
-            ProbabilityEngine.model(this.selected.horses);
+            ProbabilityEngine.model(this.selected.horses,this.selected);
             this.lastOddsAt=Date.now();
             this.log(`${this.selected.title} 初回オッズ ${this.selected.horses.length}頭取得${od?.source?` / ${od.source}`:""}`);
           }
@@ -2156,7 +2157,7 @@ class SimulationEngine{
     try{
       const d=await this.provider.getOdds(race);
       this.lastOddsAt=Date.now();this.setDataBadge(d.status||"LIVE");
-      ProbabilityEngine.model(race.horses);
+      ProbabilityEngine.model(race.horses,race);
       this.log(`${race.title} オッズ更新`);
     }catch(e){this.setDataBadge("ERROR");this.log(`${race.title} オッズ取得失敗: ${e.message}`,"error")}
   }
@@ -2318,14 +2319,21 @@ const UI={
     $("#raceMeta").textContent=`発走 ${new Date(r.startTime).toLocaleTimeString("ja-JP")} / 締切 ${closeAt.toLocaleTimeString("ja-JP")} / 勝負判定 ${decideAt.toLocaleTimeString("ja-JP")} / ${r.horses?.length||0}頭`;
     if(r.horses?.length){
       try{ if(typeof normalizeHorsePopularityV52==='function') normalizeHorsePopularityV52(r.horses); }catch(_){ }
-      ProbabilityEngine.model(r.horses);
+      ProbabilityEngine.model(r.horses,r);
     }
     $("#horseBody").innerHTML=(r.horses||[]).map(h=>{
-      const label=ExpectedValueEngine.label(h.ev||0,e.settings),cls=label.toLowerCase().replace(" ","");
+      const displayProb=Number.isFinite(Number(h.displayModelProb55))?Number(h.displayModelProb55):Number(h.modelProb||0);
+      const displayEv=Number.isFinite(Number(h.modelEV55))?Number(h.modelEV55):Number(h.ev||0);
+      const speedObserved=Number.isFinite(Number(h.speedProb55));
+      const validated=!!h.probabilityValidated55;
+      const label=speedObserved&&!validated?"OBSERVE":ExpectedValueEngine.label(displayEv||0,e.settings),cls=label.toLowerCase().replace(" ","");
+      const fair=displayProb>0?1/displayProb:0,edge=displayProb-Number(h.marketProb||0);
+      const si=Number.isFinite(Number(h.speedIndex55))?Number(h.speedIndex55).toFixed(1):"-";
+      const src=window.escapeHtml?window.escapeHtml(h.probabilitySource||""):String(h.probabilitySource||"");
       return `<tr class="${cls}">
       <td>${h.no}</td><td>${h.name||""}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
-      <td>${pct(h.modelProb||0)}</td><td>${pct(h.marketProb||0)}</td><td>${(h.fairOdds||0).toFixed(2)}</td>
-      <td><b>${(h.ev||0).toFixed(2)}</b></td><td>${pct(h.edge||0)}</td><td><span class="tag ${cls}">${label}</span></td></tr>`
+      <td>${si}</td><td>${pct(displayProb||0)}${speedObserved&&!validated?' <small>(参考)</small>':''}</td><td>${pct(h.marketProb||0)}</td><td>${fair.toFixed(2)}</td>
+      <td><b>${displayEv.toFixed(2)}</b>${speedObserved&&!validated?' <small>参考</small>':''}</td><td>${pct(edge||0)}</td><td style="text-align:left;max-width:260px;white-space:normal">${src}</td><td><span class="tag ${cls}">${label}</span></td></tr>`
     }).join("");
   },
   renderPeople(e){
@@ -2656,9 +2664,9 @@ function freshBtCharacters(){
  chars.push({id:'auto-player',name:'AUTOプレイヤー',avatar:'🤖',desc:'共通AUTO54・未検証は見送り',ticket:'all',minEV:1.10,staking:'fixed100'});
  return chars.map(c=>({...c,bankroll:engine.settings.initialBankroll,initial:engine.settings.initialBankroll,invested:0,returned:0,wins:0,bets:0,skips:0,peak:engine.settings.initialBankroll,maxDD:0,maxWin:0,dayInvested:0,history:[engine.settings.initialBankroll],byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}}}));
 }
-function btProbabilities(horses){
+function btProbabilities(horses,race=null){
  const hs=horses.filter(h=>Number(h?.odds)>=1&&!h.scratched&&!h.cancelled).map(h=>({...h,no:Number(h.no),odds:Number(h.odds)}));
- ProbabilityEngine.model(hs);const dp=AutoAudit54.distribution({horses:hs});hs.forEach(h=>h.placeProb=dp('複勝',String(h.no)));[...hs].sort((a,b)=>a.odds-b.odds||a.no-b.no).forEach((h,i)=>h.pop=i+1);return hs;
+ ProbabilityEngine.model(hs,race);const rr=race?{...race,horses:hs}:{horses:hs};const dp=AutoAudit54.distribution(rr);hs.forEach(h=>h.placeProb=dp('複勝',String(h.no)));[...hs].sort((a,b)=>a.odds-b.odds||a.no-b.no).forEach((h,i)=>h.pop=i+1);return hs;
 }
 
 function btStake(c,h,settings){
@@ -2903,7 +2911,7 @@ async function runBacktestOnHistory(historyBlocks,onProgress){
   let processed=0;
 
   for(const raw of races){
-    const hs=btProbabilities(raw.horses||[]);
+    const hs=btProbabilities(raw.horses||[],raw);
     if(hs.length&&raw.result){
       const race={...raw,horses:hs};
       const rawPayoutJson=JSON.stringify(raw.result?.payouts||{});
@@ -6715,7 +6723,7 @@ console.log("✅ FIXED8 CORS-SAFE HISTORY FETCH loaded: custom request headers r
     let processed=0;
 
     for(const raw of races){
-      const hs=btProbabilities(raw.horses||[]);
+      const hs=btProbabilities(raw.horses||[],raw);
       if(hs.length&&raw.result){
         const race={...raw,horses:hs};
         const rawPayoutJson=JSON.stringify(raw.result?.payouts||{});
@@ -8333,7 +8341,7 @@ async function syncMainHorsesFromWinRowsV23(r,st){
       return {...h,name:nm||`馬名未取得(${no})`};
     }).sort((a,b)=>a.no-b.no);
     normalizeHorsePopularityV52(r.horses);
-    try{const pe=probabilityRef();if(pe?.model)pe.model(r.horses)}catch(_){ }
+    try{const pe=probabilityRef();if(pe?.model)pe.model(r.horses,r)}catch(_){ }
     try{
       const ui=uiRef();
       if(typeof engine!=='undefined'&&ui?.renderCurrent&&engine?.selected===r){
@@ -9292,7 +9300,7 @@ function ensureModelFromWinRowsV26(r,st){
     };
   });
   const pe=probabilityRef();
-  try{if(pe?.model)pe.model(seed)}catch(e){console.warn('FIXED26 probability bootstrap',e)}
+  try{if(pe?.model)pe.model(seed,r)}catch(e){console.warn('FIXED26 probability bootstrap',e)}
   r.horses=seed.sort((a,b)=>a.no-b.no);
   normalizeHorsePopularityV52(r.horses);
   return r.horses.some(h=>Number.isFinite(Number(h.modelProb))&&Number(h.modelProb)>0);
@@ -9434,7 +9442,7 @@ function onRace(r){
   currentRace=r;
   if(window.__fixed23RenderGuard){ renderRows(); return; }
   const pe=probabilityRef();
-  if(r?.horses?.length&&pe?.model)try{pe.model(r.horses)}catch(_){}
+  if(r?.horses?.length&&pe?.model)try{pe.model(r.horses,r)}catch(_){}
   renderOrLoad(false,false);
 }
 function hook(){
@@ -9516,7 +9524,7 @@ async function refreshLiveOddsV28(reason='timer'){
     try{
       if(typeof engine!=='undefined'&&engine){
         engine.lastOddsAt=Date.now();
-        const pe=probabilityRef();if(r?.horses?.length&&pe?.model)pe.model(r.horses);
+        const pe=probabilityRef();if(r?.horses?.length&&pe?.model)pe.model(r.horses,r);
       }
     }catch(_){ }
     renderRows();
@@ -9551,7 +9559,7 @@ async function getAutoCandidatesV37(r,minEv=1.10,force=true){
  ensureModelFromWinRowsV26(r,st);
  const win=new Map((st.rows?.['単勝']||[]).map(x=>[Number(x.selection),Number(x.odds)]));
  const hs=(r.horses||[]).map(h=>({...h,odds:win.get(Number(h.no))??NaN}));
- r.horses=hs;ProbabilityEngine.model(r.horses);
+ r.horses=hs;ProbabilityEngine.model(r.horses,r);
  const out=[],seen=new Set();
  for(const type of TYPES)for(const x of st.rows[type]||[]){
    const selection=AutoAudit54.canon(type,x.selection),k=type+'|'+selection;if(seen.has(k))continue;seen.add(k);
@@ -10401,7 +10409,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   }
 
   function decisionRows(r,market){
-    const safe=safeRace(r,market);const hs=typeof btProbabilities==='function'?btProbabilities(safe.horses):safe.horses;safe.horses=hs;
+    const safe=safeRace(r,market);const hs=typeof btProbabilities==='function'?btProbabilities(safe.horses,safe):safe.horses;safe.horses=hs;
     const chars=typeof freshBtCharacters==='function'?freshBtCharacters():[];
     const rows=[];
     for(const c of chars){
@@ -11139,6 +11147,269 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   else setTimeout(boot,3900);
   console.log('✅ FIXED51 period battle web auto-acquire JRA+NAR loaded');
 })();
+</script>
+<script id="fixed55SpeedProbability">
+/* =========================================================
+   FIXED55 — REAL SPEED INDEX -> LEARNED SOFTMAX PROBABILITY
+   2026-09-14
+   - Formal SI when all components are supplied:
+       SI=(Tbase + Dtrack + Crace - Thorse + 50) * K
+       K: turf=1.00, dirt=0.70, jump=0.40, banei=0.09
+   - If published/reference components are unavailable, never invent them.
+     A separately labelled EMPIRICAL_PARTIAL SI may be built from actual
+     past race times and a data-derived baseline; Crace remains 0 and is
+     explicitly marked unavailable.
+   - R_i = sum(exp(-lambda*d)*SI)/sum(exp(-lambda*d))
+   - Score_i = beta*x_i; P_i = exp(Score_i/tau)/sum_j exp(Score_j/tau)
+   - beta, lambda and tau are learned only from settled, pre-race records.
+   - Until the speed model passes chronological holdout validation, AUTO
+     continues to use the existing validated market model; no unvalidated
+     speed probability is used for purchases.
+   ========================================================= */
+(()=>{
+'use strict';
+if(window.__FIXED55_SPEED_SOFTMAX__)return;
+window.__FIXED55_SPEED_SOFTMAX__=true;
+
+const VERSION='SPEED-SOFTMAX-55.1';
+const STATE_KEY='keiba.speed55.state.v1';
+const CACHE_KEY='keiba.speed55.raceCache.v1';
+const CORPUS_KEY='keiba.speed55.corpus.v1';
+const FEATURES=['recent','best','distance','course','going','weightDelta','pace'];
+const JRA_TRACKS=new Set(['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉']);
+const TRACK_K={芝:1.00,ダート:0.70,障害:0.40,ばんえい:0.09};
+const clamp55=(v,a,b)=>Math.max(a,Math.min(b,v));
+const num55=v=>{const n=Number(v);return Number.isFinite(n)?n:NaN};
+const clean55=s=>String(s??'').replace(/[\u00a0　\s]+/g,' ').trim();
+const median55=a=>{const x=a.filter(Number.isFinite).sort((a,b)=>a-b);if(!x.length)return NaN;const m=Math.floor(x.length/2);return x.length%2?x[m]:(x[m-1]+x[m])/2};
+const mean55=a=>{const x=a.filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:NaN};
+const esc55=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function softmax55(logits,tau=1){const t=Math.max(.05,Number(tau)||1),z=logits.map(v=>v/t),mx=Math.max(...z),ex=z.map(v=>Math.exp(clamp55(v-mx,-60,60))),s=ex.reduce((a,b)=>a+b,0);return s>0?ex.map(v=>v/s):ex.map(()=>1/ex.length)}
+function market55(horses){const hs=(horses||[]).filter(h=>!h.scratched&&!h.cancelled&&!h.excluded&&num55(h.odds)>=1);const vals=hs.map(h=>1/num55(h.odds)),s=vals.reduce((a,b)=>a+b,0);const m=new Map();hs.forEach((h,i)=>m.set(Number(h.no),s>0?vals[i]/s:0));return m}
+function toSec55(v){if(Number.isFinite(Number(v)))return Number(v);const s=clean55(v);let m=s.match(/^(\d+):(\d{1,2}(?:\.\d+)?)$/);if(m)return Number(m[1])*60+Number(m[2]);m=s.match(/^(\d{1,3})\.(\d)$/);return m?Number(m[1])+Number('0.'+m[2]):NaN}
+function normSurface55(v,track=''){let s=clean55(v);if(/帯広|ばんえい/.test(track))return 'ばんえい';if(/^芝|turf/i.test(s))return '芝';if(/^ダ|dirt/i.test(s))return 'ダート';if(/^障|jump/i.test(s))return '障害';return ''}
+function normGoing55(v){const s=clean55(v);if(/不良|\b不\b/.test(s))return '不良';if(/稍重|稍/.test(s))return '稍重';if(/重/.test(s))return '重';if(/良/.test(s))return '良';return ''}
+function dateMs55(s){const x=String(s||'').replace(/[.\/]/g,'-');const t=Date.parse(x+'T00:00:00+09:00');return Number.isFinite(t)?t:NaN}
+function orgForTrack55(track){return JRA_TRACKS.has(clean55(track))?'JRA':'NAR'}
+function raceId55(r){try{if(typeof raceId==='function'){const x=raceId(r);if(x)return String(x)}}catch(_){ }for(const v of [r?.raceId,r?.race_id,r?.netkeibaRaceId,r?.id]){const m=String(v??'').match(/20\d{10}/);if(m)return m[0]}return String(r?.id||`${r?.date||''}-${r?.track||''}-${r?.no||''}`)}
+
+function loadJson55(k,d){try{return JSON.parse(localStorage.getItem(k)||'null')??d}catch(_){return d}}
+function saveJson55(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.warn('FIXED55 storage',e)}}
+const state=loadJson55(STATE_KEY,{version:VERSION,model:null,lastFit:null});
+if(state.version!==VERSION){state.version=VERSION;state.model=null;state.lastFit=null}
+let raceCache=loadJson55(CACHE_KEY,{}),corpus=loadJson55(CORPUS_KEY,[]);
+if(!Array.isArray(corpus))corpus=[];
+const inflight=new Map();
+
+function parseTargetMeta55(doc,r){
+  const body=clean55(doc?.body?.innerText||doc?.body?.textContent||'');
+  let surface='',distance=NaN,going='',weather='';
+  const m=body.match(/発走\s*\/\s*(芝|ダ|障)(\d{3,4})m[^\/]*\/[^\/]*?(?:天候[:：]\s*([^\/\s]+))?[^\/]*馬場[:：]\s*(良|稍重?|重|不良)/);
+  if(m){surface=normSurface55(m[1],r?.track);distance=Number(m[2]);weather=clean55(m[3]);going=normGoing55(m[4])}
+  if(!surface){const x=body.match(/(?:^|\s)(芝|ダ|障)(\d{3,4})m/);if(x){surface=normSurface55(x[1],r?.track);distance=Number(x[2])}}
+  if(!going){const x=body.match(/馬場[:：]\s*(良|稍重?|重|不良)/);if(x)going=normGoing55(x[1])}
+  if(/帯広|ばんえい/.test(String(r?.track||'')))surface='ばんえい';
+  return {track:clean55(r?.track),org:String(r?.org||orgForTrack55(r?.track)),surface,distance,going,weather,date:String(r?.date||'')};
+}
+function parsePastText55(text){
+  const t=clean55(text);if(!t||/初出走|休養|兄 |姉 |母 |父 /.test(t)&&!/^20\d{2}/.test(t))return null;
+  const dm=t.match(/(20\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})/);if(!dm)return null;
+  const date=`${dm[1]}-${String(dm[2]).padStart(2,'0')}-${String(dm[3]).padStart(2,'0')}`;
+  const rest=t.slice((dm.index||0)+dm[0].length).trim();
+  const tm=rest.match(/^([^\d\s]+)\s+(\d{1,2})\s+/);if(!tm)return null;
+  const track=tm[1],finish=Number(tm[2]);
+  const sd=rest.match(/(芝|ダ|障)(\d{3,4})/);if(!sd)return null;
+  const surface=normSurface55(sd[1],track),distance=Number(sd[2]);
+  const after=rest.slice((sd.index||0)+sd[0].length);
+  const tt=after.match(/(\d+):(\d{2}\.\d)|(?<!\d)(\d{1,2}\.\d)(?=\s*(?:良|稍|重|不))/);
+  if(!tt)return null;
+  const timeSec=tt[1]!=null?Number(tt[1])*60+Number(tt[2]):Number(tt[3]);
+  const going=normGoing55(after.slice((tt.index||0)+tt[0].length, (tt.index||0)+tt[0].length+12));
+  const field=after.match(/(\d{1,2})頭/),pop=after.match(/(\d{1,2})人/);
+  const final3=after.match(/\((\d{2}\.\d)\)/);
+  const allPar=[...after.matchAll(/\(([+-]?\d+(?:\.\d+)?)\)/g)].map(x=>Number(x[1]));
+  const margin=allPar.length?allPar[allPar.length-1]:NaN;
+  const positions=(after.match(/(?:^|\s)(\d{1,2}(?:-\d{1,2}){0,3})(?=\s*\()/)||[])[1];
+  const pos=positions?positions.split('-').map(Number).filter(Number.isFinite):[];
+  const decimals=[...after.matchAll(/(?<!\d)([4-6]\d\.\d)(?!\d)/g)].map(x=>Number(x[1]));
+  const carriedWeight=decimals.length?decimals[decimals.length-1]:NaN;
+  const classPart=clean55(rest.slice(tm[0].length,sd.index||0));
+  return {date,track,org:orgForTrack55(track),finish,className:classPart,surface,distance,timeSec,going,fieldSize:field?Number(field[1]):NaN,popularity:pop?Number(pop[1]):NaN,carriedWeight,final3f:final3?Number(final3[1]):NaN,margin:Number.isFinite(margin)?margin:NaN,positions:pos,source:'netkeiba-shutuba-past'};
+}
+function parsePastPage55(doc,r){
+  const meta=parseTargetMeta55(doc,r),byNo={};
+  for(const tr of [...doc.querySelectorAll('tr')]){
+    const cells=[...tr.querySelectorAll(':scope > th,:scope > td')];if(cells.length<6)continue;
+    const pastIdx=[];for(let i=0;i<cells.length;i++){const tx=clean55(cells[i].textContent);if(/^20\d{2}[.\/-]\d{1,2}[.\/-]\d{1,2}/.test(tx)||/^初出走/.test(tx)||/休養/.test(tx))pastIdx.push(i)}
+    if(!pastIdx.length)continue;
+    let no=NaN;for(const i of [1,0,2]){const m=clean55(cells[i]?.textContent).match(/^\d{1,2}$/);if(m){no=Number(m[0]);if(no>=1&&no<=18)break}}
+    if(!Number.isFinite(no))continue;
+    const first=pastIdx[0],pre=clean55(cells[Math.max(0,first-1)]?.textContent);
+    const wm=[...pre.matchAll(/(?<!\d)([4-6]\d\.\d)(?!\d)/g)].map(x=>Number(x[1]));
+    const currentWeight=wm.length?wm[wm.length-1]:NaN;
+    const runs=[];for(const i of pastIdx){const x=parsePastText55(cells[i].textContent);if(x)runs.push(x)}
+    byNo[no]={runs,currentWeight};
+  }
+  return {meta,byNo,source:'netkeiba-shutuba-past',fetchedAt:new Date().toISOString()};
+}
+function structuredRuns55(h){
+  const a=h?.pastRuns55||h?.pastRuns||h?.recentRuns||h?.runs||h?.past||[];if(!Array.isArray(a))return [];
+  return a.map(x=>{
+    if(x?.source==='netkeiba-shutuba-past'&&Number.isFinite(num55(x.timeSec)))return {...x};
+    const track=clean55(x?.track??x?.venue??x?.course),surface=normSurface55(x?.surface??x?.trackType??x?.type,track),distance=num55(x?.distance??x?.distanceM),timeSec=toSec55(x?.timeSec??x?.time??x?.finishTime),date=clean55(x?.date??x?.raceDate).slice(0,10);
+    if(!date||!track||!surface||!Number.isFinite(distance)||!Number.isFinite(timeSec))return null;
+    return {date,track,org:String(x?.org||orgForTrack55(track)),finish:num55(x?.finish??x?.rank),className:clean55(x?.className??x?.raceClass),surface,distance,timeSec,going:normGoing55(x?.going??x?.trackCondition),fieldSize:num55(x?.fieldSize),popularity:num55(x?.popularity),carriedWeight:num55(x?.carriedWeight??x?.assignedWeight??x?.load),final3f:num55(x?.final3f??x?.last3f),margin:num55(x?.margin),positions:Array.isArray(x?.positions)?x.positions.map(Number):[],baseTime:num55(x?.baseTime??x?.Tbase),trackDiff:num55(x?.trackDiff??x?.Dtrack),raceCorrection:num55(x?.raceCorrection??x?.Crace),source:clean55(x?.source||'structured-api')};
+  }).filter(Boolean);
+}
+function dedupeRuns55(a){const m=new Map();for(const r of a||[]){const k=[r.date,r.track,r.surface,r.distance,Number(r.timeSec).toFixed(1),r.finish].join('|');if(!m.has(k))m.set(k,r)}return [...m.values()].sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,12)}
+function winnerEquivalent55(r){if(!Number.isFinite(r.timeSec))return NaN;if(Number(r.finish)>1&&Number.isFinite(r.margin)&&r.margin>=0&&r.margin<15)return r.timeSec-r.margin;return r.timeSec}
+function corpusKey55(r,course=true){const org=r.org||orgForTrack55(r.track);return course?`${org}|${r.track}|${r.surface}|${r.distance}`:`${org}|*|${r.surface}|${r.distance}`}
+function addCorpus55(runs){
+  const map=new Map(corpus.map(x=>[[x.date,x.track,x.surface,x.distance,Number(x.timeSec).toFixed(1),x.finish].join('|'),x]));
+  for(const r of runs||[]){if(!Number.isFinite(r.timeSec)||!r.track||!r.surface||!Number.isFinite(r.distance))continue;const x={date:r.date,track:r.track,org:r.org||orgForTrack55(r.track),surface:r.surface,distance:r.distance,timeSec:r.timeSec,finish:r.finish,margin:r.margin,going:r.going,className:r.className};const k=[x.date,x.track,x.surface,x.distance,Number(x.timeSec).toFixed(1),x.finish].join('|');map.set(k,x)}
+  corpus=[...map.values()].sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,4000);saveJson55(CORPUS_KEY,corpus);
+}
+function ref55(run){
+  const course=corpus.filter(x=>corpusKey55(x,true)===corpusKey55(run,true)),wide=corpus.filter(x=>corpusKey55(x,false)===corpusKey55(run,false));
+  let pool=course.length>=5?course:wide,scope=course.length>=5?'COURSE':'ORG_DISTANCE';
+  if(pool.length<5)return null;
+  const base=median55(pool.map(winnerEquivalent55));if(!Number.isFinite(base))return null;
+  const gp=run.going?pool.filter(x=>x.going===run.going):[];const gbase=gp.length>=3?median55(gp.map(winnerEquivalent55)):NaN;
+  const d=Number.isFinite(gbase)?gbase-base:0;
+  return {baseTime:base,trackDiff:d,raceCorrection:0,n:pool.length,goingN:gp.length,scope,raceCorrectionAvailable:false,trackDiffAvailable:gp.length>=3};
+}
+function computeSI55(run){
+  const K=TRACK_K[run.surface];if(!Number.isFinite(K)||!Number.isFinite(run.timeSec))return null;
+  if(Number.isFinite(run.baseTime)&&Number.isFinite(run.trackDiff)&&Number.isFinite(run.raceCorrection)){
+    return {si:(run.baseTime+run.trackDiff+run.raceCorrection-run.timeSec+50)*K,kind:'FORMAL_COMPONENTS',K,baseTime:run.baseTime,trackDiff:run.trackDiff,raceCorrection:run.raceCorrection,referenceN:null};
+  }
+  const rf=ref55(run);if(!rf)return null;
+  return {si:(rf.baseTime+rf.trackDiff-rf.raceCorrection-run.timeSec+50)*K,kind:'EMPIRICAL_PARTIAL',K,baseTime:rf.baseTime,trackDiff:rf.trackDiff,raceCorrection:0,referenceN:rf.n,goingN:rf.goingN,scope:rf.scope,note:'C_race未取得のため0。公開式そのものの再現値ではなく実タイム由来推定SI'};
+}
+function refreshHorseSI55(h){const runs=dedupeRuns55(structuredRuns55(h));for(const r of runs){const z=computeSI55(r);if(z)Object.assign(r,{si55:z.si,siKind55:z.kind,siRef55:z})}h.speedRuns55=runs;return runs}
+function daysBetween55(target,runDate){const a=dateMs55(target),b=dateMs55(runDate);return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,(a-b)/86400000):0}
+function weightedRecent55(runs,targetDate,lambda){let sw=0,s=0;for(const r of runs){if(!Number.isFinite(r.si55))continue;const w=Math.exp(-Math.max(0,lambda||0)*daysBetween55(targetDate,r.date));s+=w*r.si55;sw+=w}return sw?s/sw:NaN}
+function pace55(runs){const a=[];for(const r of runs){if(!Array.isArray(r.positions)||!r.positions.length||!(r.fieldSize>=2))continue;const p=r.positions[0];if(Number.isFinite(p))a.push(1-(p-1)/(r.fieldSize-1))}return mean55(a)}
+function targetMeta55(r){return r?.speedMeta55||{track:clean55(r?.track),org:String(r?.org||''),surface:normSurface55(r?.surface??r?.trackType,r?.track),distance:num55(r?.distance??r?.distanceM),going:normGoing55(r?.going??r?.trackCondition),date:String(r?.date||'')};}
+function rawFeatures55(h,r,lambda){
+  const t=targetMeta55(r),runs=(h.speedRuns55||[]).filter(x=>Number.isFinite(x.si55));
+  const sameSurface=t.surface?runs.filter(x=>x.surface===t.surface):runs;
+  const recent=weightedRecent55(sameSurface,t.date||r?.date,lambda);
+  const cutoff=Number.isFinite(dateMs55(t.date||r?.date))?dateMs55(t.date||r?.date)-365*86400000:NaN;
+  const yr=sameSurface.filter(x=>!Number.isFinite(cutoff)||dateMs55(x.date)>=cutoff);
+  const best=yr.length?Math.max(...yr.map(x=>x.si55)):NaN;
+  const dist=yr.filter(x=>Number(x.distance)===Number(t.distance));
+  const course=dist.filter(x=>x.track===t.track);
+  const going=yr.filter(x=>t.going&&x.going===t.going);
+  const pastWeights=sameSurface.map(x=>x.carriedWeight).filter(Number.isFinite),current=num55(h.carriedWeight55??h.assignedWeight??h.load);
+  return {recent,best,distance:dist.length?Math.max(...dist.map(x=>x.si55)):NaN,course:course.length?Math.max(...course.map(x=>x.si55)):NaN,going:going.length?Math.max(...going.map(x=>x.si55)):NaN,weightDelta:Number.isFinite(current)&&pastWeights.length?current-mean55(pastWeights):NaN,pace:pace55(sameSurface),runCount:sameSurface.length};
+}
+function matrix55(horses,r,lambda){
+  const raws=horses.map(h=>rawFeatures55(h,r,lambda)),n=horses.length,X=Array.from({length:n},()=>Array(FEATURES.length).fill(0)),active=[];
+  FEATURES.forEach((f,k)=>{const vals=raws.map(x=>x[f]);if(vals.every(Number.isFinite)){const mu=mean55(vals),sd=Math.sqrt(mean55(vals.map(v=>(v-mu)**2)));if(sd>1e-9){for(let i=0;i<n;i++)X[i][k]=clamp55((vals[i]-mu)/sd,-4,4);active.push(f)}}});
+  return {X,raws,active};
+}
+function dot55(a,b){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function modelProb55(horses,r,model){if(!model?.beta||!Array.isArray(model.beta))return null;const m=matrix55(horses,r,Number(model.lambda)||0);if(!m.raws.every(x=>Number.isFinite(x.recent)))return null;const logits=m.X.map(x=>dot55(model.beta,x)),p=softmax55(logits,model.tau);return {p,m,logits}}
+function applyRace55(r){
+  if(!r?.horses?.length)return false;
+  const cached=raceCache[raceId55(r)];if(cached){r.speedMeta55=r.speedMeta55||cached.meta;for(const h of r.horses){const z=cached.byNo?.[String(h.no)]||cached.byNo?.[Number(h.no)];if(z){h.pastRuns55=dedupeRuns55([...(h.pastRuns55||[]),...(z.runs||[])]);if(Number.isFinite(num55(z.currentWeight)))h.carriedWeight55=num55(z.currentWeight)}}}
+  for(const h of r.horses)refreshHorseSI55(h);
+  const mm=market55(r.horses);for(const h of r.horses)h.marketProb=mm.get(Number(h.no))||0;
+  const coverage=r.horses.filter(h=>Number.isFinite(rawFeatures55(h,r,state.model?.lambda||0).recent)).length/Math.max(1,r.horses.length);
+  const calc=state.model?modelProb55(r.horses,r,state.model):null;
+  const canDisplay=!!calc&&coverage===1,validated=canDisplay&&!!state.model?.validated;
+  r.speedModel55={version:VERSION,coverage,probabilityReady:canDisplay,validated,modelId:state.model?.id||null,source:canDisplay?(validated?'LEARNED_SOFTMAX_VALIDATED':'LEARNED_SOFTMAX_UNVALIDATED'):'NO_CALIBRATED_SPEED_PROB'};
+  r.horses.forEach((h,i)=>{
+    const raw=rawFeatures55(h,r,state.model?.lambda||0),last=h.speedRuns55?.find(x=>Number.isFinite(x.si55));
+    h.speedIndex55=Number.isFinite(raw.recent)?raw.recent:(last?.si55??NaN);h.speedIndexKind55=last?.siKind55||'';h.speedFeatures55=raw;
+    h.speedProb55=canDisplay?calc.p[i]:NaN;h.displayModelProb55=canDisplay?calc.p[i]:h.marketProb;h.modelEV55=canDisplay?calc.p[i]*Number(h.odds):h.marketProb*Number(h.odds);
+    h.probabilityValidated55=validated;
+    if(validated){h.modelProb=calc.p[i];h.ev=h.modelEV55;h.edge=h.modelProb-h.marketProb;h.fairOdds=h.modelProb>0?1/h.modelProb:null;h.valueRatio=h.marketProb>0?h.modelProb/h.marketProb:null;h.oddsEdge=h.ev;h.probabilitySource=`スピード指数→学習Softmax ${state.model.id}`}
+    else{h.modelProb=h.marketProb;h.ev=h.marketProb*Number(h.odds);h.edge=0;h.fairOdds=h.marketProb>0?1/h.marketProb:null;h.valueRatio=1;h.oddsEdge=h.ev;h.probabilitySource=canDisplay?'SI勝率は未検証（AUTOは市場モデル継続）':(Number.isFinite(h.speedIndex55)?'SI算出済・β/λ/τ未学習（市場fallback）':'実測SI不足（市場fallback）')}
+  });
+  render55();return true;
+}
+
+async function fetchPast55(r){
+  const id=raceId55(r);if(!id||!/^20\d{10}$/.test(id))throw new Error('netkeiba race_idを確定できません');
+  if(raceCache[id])return raceCache[id];if(inflight.has(id))return inflight.get(id);
+  const job=(async()=>{
+    const org=String(r.org||'').toUpperCase(),url=org==='NAR'?`https://nar.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`:`https://race.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`;
+    if(typeof liveHtmlViaProxyOrBridge!=='function')throw new Error('HTML取得Bridge/Proxyが利用できません');
+    const res=await liveHtmlViaProxyOrBridge(url),doc=new DOMParser().parseFromString(res.text,'text/html'),parsed=parsePastPage55(doc,r);parsed.via=res.via;
+    const all=Object.values(parsed.byNo||{}).flatMap(x=>x.runs||[]);addCorpus55(all);
+    raceCache[id]=parsed;const keys=Object.keys(raceCache);if(keys.length>30)for(const k of keys.slice(0,keys.length-30))delete raceCache[k];saveJson55(CACHE_KEY,raceCache);return parsed;
+  })().finally(()=>inflight.delete(id));inflight.set(id,job);return job;
+}
+async function enrichRace55(r){
+  if(!r?.horses?.length)return false;const id=raceId55(r);
+  try{if(!raceCache[id])await fetchPast55(r);applyRace55(r);try{if(typeof UI!=='undefined'&&typeof engine!=='undefined'&&engine?.selected===r)UI.renderCurrent(engine)}catch(_){ }return true}catch(e){r.speedModel55={version:VERSION,coverage:0,probabilityReady:false,validated:false,error:String(e?.message||e)};applyRace55(r);render55();return false}
+}
+function schedule55(r){if(!r?.horses?.length)return;applyRace55(r);const id=raceId55(r);if(!raceCache[id]&&!inflight.has(id))setTimeout(()=>enrichRace55(r),0)}
+
+function safeCloneHorse55(h){return {no:Number(h.no),name:String(h.name||''),odds:num55(h.odds),frame:num55(h.frame??h.frameNo??h.waku??h.wakuban),scratched:!!(h.scratched||h.cancelled||h.excluded),marketProb:num55(h.marketProb),modelProb:num55(h.modelProb),speedProb55:num55(h.speedProb55),speedIndex55:num55(h.speedIndex55),carriedWeight55:num55(h.carriedWeight55),speedRuns55:(h.speedRuns55||[]).slice(0,12).map(x=>({...x,siRef55:undefined})),speedFeatures55:h.speedFeatures55?{...h.speedFeatures55}:null};}
+function distributionFromProb55(r){
+  const hs=(r.horses||[]).filter(h=>!h.scratched&&!h.cancelled&&!h.excluded&&Number.isFinite(num55(h.modelProb))&&num55(h.modelProb)>0).map(h=>({...h,no:Number(h.no),p:num55(h.modelProb)}));const sum=hs.reduce((s,h)=>s+h.p,0);if(!(sum>0))return ()=>NaN;hs.forEach(h=>h.p/=sum);const map=new Map(hs.map(h=>[h.no,h])),cache=new Map();
+  const canon=(type,selection)=>AutoAudit54.canon(type,selection),slots=()=>AutoAudit54.slots(r),p2=(a,b)=>a.p*b.p/Math.max(1e-12,1-a.p),p3=(a,b,c)=>p2(a,b)*c.p/Math.max(1e-12,1-a.p-b.p);
+  return function(type,selection){type=String(type||'').replace(/^三連/,'3連');const s=canon(type,selection),ck=type+'|'+s;if(cache.has(ck))return cache.get(ck);const ns=s.split('-').map(Number),need=['単勝','複勝'].includes(type)?1:['3連複','3連単'].includes(type)?3:2;let p=NaN;if(ns.length!==need)return NaN;
+    if(type==='枠連'){if(hs.some(h=>!(num55(h.frame)>=1&&num55(h.frame)<=8)))return NaN;p=0;for(const a of hs)for(const b of hs)if(a!==b&&canon(type,`${a.frame}-${b.frame}`)===s)p+=p2(a,b)}
+    else{const x=ns.map(n=>map.get(n));if(x.some(v=>!v))return NaN;const [a,b,c]=x;if(type==='単勝')p=a.p;if(type==='馬単')p=p2(a,b);if(type==='馬連')p=p2(a,b)+p2(b,a);if(type==='3連単')p=p3(a,b,c);if(type==='3連複')p=p3(a,b,c)+p3(a,c,b)+p3(b,a,c)+p3(b,c,a)+p3(c,a,b)+p3(c,b,a);if(type==='複勝'){const k=slots();if(!k)return NaN;p=a.p;for(const q of hs)if(q!==a){p+=p2(q,a);if(k===3)for(const z of hs)if(z!==a&&z!==q)p+=p3(q,z,a)}}if(type==='ワイド'){p=0;for(const z of hs)if(z!==a&&z!==b)p+=p3(a,b,z)+p3(a,z,b)+p3(b,a,z)+p3(b,z,a)+p3(z,a,b)+p3(z,b,a)}}
+    if(Number.isFinite(p))p=clamp55(p,0,1);cache.set(ck,p);return p;
+  }
+}
+
+function trainingSamples55(){
+  const events=window.AutoAudit54?.state?.events||[],out=[];
+  for(const e of events){if(!e?.complete||!(e.resultAt>e.decisionAt)||!e.race?.horses?.length)continue;const win=(e.rows||[]).find(x=>x.ticket==='単勝'&&x.status==='SETTLED'&&x.outcome===1);if(!win)continue;const horses=e.race.horses.map(h=>({...h,speedRuns55:(h.speedRuns55||[]).filter(x=>Number.isFinite(x.si55))}));if(horses.length<2||horses.some(h=>!h.speedRuns55.length))continue;const market=market55(horses),winnerNo=Number(win.selection);if(!horses.some(h=>Number(h.no)===winnerNo))continue;out.push({at:e.decisionAt,date:e.race.date,race:{...e.race,horses,speedMeta55:e.race.speedMeta55||null},horses,winnerNo,market})
+  }
+  return out.sort((a,b)=>a.at-b.at);
+}
+function sampleMatrix55(s,lambda){const m=matrix55(s.horses,s.race,lambda),wi=s.horses.findIndex(h=>Number(h.no)===Number(s.winnerNo));return wi>=0&&m.raws.every(x=>Number.isFinite(x.recent))?{...m,wi}:null}
+function fitBeta55(samples,lambda){let beta=Array(FEATURES.length).fill(0);const l2=.02;for(let ep=0;ep<180;ep++){const g=beta.map(v=>l2*v);let n=0;for(const s of samples){const m=sampleMatrix55(s,lambda);if(!m)continue;const p=softmax55(m.X.map(x=>dot55(beta,x)),1);for(let i=0;i<m.X.length;i++){const d=p[i]-(i===m.wi?1:0);for(let k=0;k<beta.length;k++)g[k]+=d*m.X[i][k]}n++}if(!n)break;const lr=.08/Math.sqrt(1+ep/25);for(let k=0;k<beta.length;k++)beta[k]-=lr*g[k]/n}return beta}
+function metrics55(samples,beta,lambda,tau){let ll=0,br=0,mll=0,mbr=0,n=0;for(const s of samples){const m=sampleMatrix55(s,lambda);if(!m)continue;const p=softmax55(m.X.map(x=>dot55(beta,x)),tau),mp=s.horses.map(h=>s.market.get(Number(h.no))||0),pw=clamp55(p[m.wi],1e-12,1),mw=clamp55(mp[m.wi],1e-12,1);ll-=Math.log(pw);mll-=Math.log(mw);br+=p.reduce((z,v,i)=>z+(v-(i===m.wi?1:0))**2,0)/p.length;mbr+=mp.reduce((z,v,i)=>z+(v-(i===m.wi?1:0))**2,0)/mp.length;n++}return {n,logloss:n?ll/n:null,brier:n?br/n:null,marketLogloss:n?mll/n:null,marketBrier:n?mbr/n:null}}
+async function fit55(){
+  const samples=trainingSamples55();if(samples.length<60)throw new Error(`SI付き精算済みレースが${samples.length}件です。時系列学習には60件以上必要です。`);
+  const n=samples.length,n1=Math.floor(n*.6),n2=Math.floor(n*.8),train=samples.slice(0,n1),val=samples.slice(n1,n2),test=samples.slice(n2);const lambdas=[0,Math.log(2)/365,Math.log(2)/180,Math.log(2)/90,Math.log(2)/60,Math.log(2)/30],taus=[.5,.75,1,1.25,1.5,2,3];let best=null;
+  for(const lambda of lambdas){const beta=fitBeta55(train,lambda);for(const tau of taus){const m=metrics55(val,beta,lambda,tau);if(m.n&&(!best||m.logloss<best.val.logloss))best={lambda,beta,tau,val:m}}await new Promise(r=>setTimeout(r,0))}
+  if(!best)throw new Error('学習可能なSI特徴量が不足しています');const tst=metrics55(test,best.beta,best.lambda,best.tau),validated=tst.n>=12&&tst.logloss<tst.marketLogloss&&tst.brier<=tst.marketBrier;
+  const model={id:`${VERSION}|${Date.now()}`,version:VERSION,createdAt:Date.now(),lambda:best.lambda,tau:best.tau,beta:best.beta,features:FEATURES,trainRaces:train.length,validationRaces:val.length,testRaces:test.length,validation:best.val,test:tst,validated,note:'train 60% / validation 20% / chronological holdout test 20%; no result data used in forecast features'};
+  state.model=model;state.lastFit={at:Date.now(),samples:n};saveJson55(STATE_KEY,state);try{if(typeof engine!=='undefined'&&engine?.selected)applyRace55(engine.selected)}catch(_){ }render55();return model;
+}
+
+function installProbability55(){
+  try{
+    if(typeof ProbabilityEngine!=='undefined'&&!ProbabilityEngine.__fixed55){
+      ProbabilityEngine.__fixed55=true;
+      ProbabilityEngine.model=function(horses,race=null){let r=race;try{if(!r&&typeof engine!=='undefined')r=engine?.races?.find(x=>x.horses===horses)||null}catch(_){ }if(r){applyRace55(r);return horses}const mm=market55(horses);for(const h of horses||[]){h.marketProb=mm.get(Number(h.no))||0;h.modelProb=h.marketProb;h.fairOdds=h.modelProb>0?1/h.modelProb:null;h.ev=h.modelProb*Number(h.odds);h.edge=0;h.valueRatio=1;h.oddsEdge=h.ev;h.probabilitySource='市場ベース（race contextなし）'}return horses};
+    }
+  }catch(e){console.warn('FIXED55 ProbabilityEngine',e)}
+}
+function installAudit55(){
+  if(!window.AutoAudit54||AutoAudit54.__fixed55)return;AutoAudit54.__fixed55=true;const oldSafe=AutoAudit54.safe,oldEval=AutoAudit54.evaluate,oldDist=AutoAudit54.distribution,oldHist=AutoAudit54.historicalPicks;
+  AutoAudit54.safe=function(r){const s=oldSafe(r);s.speedMeta55=r?.speedMeta55?{...r.speedMeta55}:null;s.speedModel55=r?.speedModel55?{...r.speedModel55}:null;s.horses=(r?.horses||[]).map(safeCloneHorse55);return s};
+  AutoAudit54.distribution=function(r,T=1){if(r?.speedModel55?.validated&&r?.horses?.every(h=>Number.isFinite(num55(h.modelProb))&&num55(h.modelProb)>0))return distributionFromProb55(r);return oldDist(r,T)};
+  AutoAudit54.evaluate=function(r,rows,at=Date.now(),override=null){
+    const hist=(rows||[]).some(x=>x?.historical);const mdl=state.model;const use=!!(mdl?.validated&&r?.speedModel55?.validated&&(!hist||mdl.createdAt<at));if(!use)return oldEval(r,rows,at,override);
+    const prob=distributionFromProb55(r),st=AutoAudit54.state.settings;
+    return (rows||[]).map(x=>{const type=String(x.ticket||x.type||'').replace(/^三連/,'3連'),selection=AutoAudit54.canon(type,x.selection),p=prob(type,selection),odds=num55(['複勝','ワイド'].includes(type)?x.oddsLow??x.odds:x.oddsMid??x.odds),tm=typeof x.oddsAt==='number'?x.oddsAt:Date.parse(x.oddsAt||x.at);let reason='';if(!Number.isFinite(p)||!Number.isFinite(odds)||odds<1)reason='SI確率・オッズ情報不足';else if(x.error||x.stale||!x.source||(!x.historical&&(!Number.isFinite(tm)||tm>at||at-tm>st.maxAge*1000)))reason='オッズ鮮度・取得元を確認できない';const ev=p*odds;if(!reason&&ev<1.10)reason='SIモデルEV1.10未満';return {...x,ticket:type,selection,odds,modelProb:p,rawProbability:p,calibratedProbability:p,probabilityLower:p,oddsDriftFactor:1,ev,conservativeEV:ev,reason,modelVersion:mdl.id,sampleSize:mdl.testRaces,calibrationDays:null,uncertaintyMethod:'時系列holdout検証済み。確率下限を保証するものではない',marketTime:x.marketTime||null,marketTimeVerified:!!x.marketTimeVerified,oddsAt:Number.isFinite(tm)?tm:null}})
+  };
+  AutoAudit54.historicalPicks=function(r,c,settings={}){if(!(state.model?.validated&&state.model.createdAt<new Date(r?.date||0).getTime()))return oldHist(r,c,settings);const input=AutoAudit54.safe(r),rows=[];for(const h of r.horses||[])rows.push({ticket:'単勝',selection:String(h.no),odds:Number(h.odds),source:'履歴単勝',oddsAt:h._oddsMarketTime26||null,historical:true,historicalMode:String(r._oddsSnapshotType26||'FINAL')});const at=AutoAudit54.cutoff(input,settings),ev=AutoAudit54.evaluate(input,rows,at);return AutoAudit54.choose(ev,settings,Number(c.bankroll),0,0).map(x=>({...x,no:Number(x.selection),label:x.selection,prob:x.modelProb}))};
+}
+
+function ensurePanel55(){
+  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED55 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。揃わない走は実走タイムから作る EMPIRICAL_PARTIAL と明示し、C_raceを能力値で捏造しません。β・λ・τは精算済み予測を時系列分割して学習し、holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
+}
+function render55(){const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail');if(!el)return;let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length;el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / SIカバー ${sm?Math.round(sm.coverage*100):0}% / 学習用精算 ${samples}R / モデル ${mdl?(mdl.validated?'検証済':'未検証'):'未学習'}`;if(det){const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));det.textContent=JSON.stringify({model:mdl,current:cur},null,2)}}
+function installUI55(){
+  try{if(typeof UI!=='undefined'&&!UI.__speed55Wrapped){UI.__speed55Wrapped=true;const old=UI.renderCurrent;UI.renderCurrent=function(e){const v=old.apply(this,arguments);try{schedule55(e?.selected||e?.races?.[0])}catch(_){ }return v}}}catch(e){console.warn('FIXED55 UI hook',e)}
+}
+function boot55(){installProbability55();installAudit55();ensurePanel55();installUI55();try{if(typeof engine!=='undefined'&&engine?.selected)schedule55(engine.selected)}catch(_){ }render55()}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot55,5200),{once:true});else setTimeout(boot55,5200);
+window.SpeedModel55={VERSION,state,applyRace:applyRace55,enrichRace:enrichRace55,fit:fit55,trainingSamples:trainingSamples55,formalSI:(Tbase,Dtrack,Crace,Thorse,K)=>(Number(Tbase)+Number(Dtrack)+Number(Crace)-Number(Thorse)+50)*Number(K),weightedRecent:weightedRecent55};
+console.log('✅ FIXED55 real speed-index + learned softmax model loaded');
+})();
+
 </script>
 </body>
 </html>
