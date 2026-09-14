@@ -190,8 +190,8 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
 <div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED52 人気順位補正</b> — 単勝の「人気」が馬番/取得順になっていた経路を修正。LIVE単勝オッズを昇順に再順位付けし、中央の人気表示・人気依存ロジック・単勝オッズ表を同じ順位へ同期します。</div>
 <div class="notice" style="border-color:#06b6d4;background:#08242a"><b>FIXED54 AUTO 検証・観測</b> — 根拠のない勝率補正を撤去。初期状態は観測のみ。検証モデルのある帯だけ保守EV1.10以上で判定します。精算済み回収率と結果待ちを分離。</div>
-<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED57 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
-<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED57 SIカバー改善</b> — 3歳未勝利・中央→地方転入のように過去距離/芝ダートが混在するレースでも、実走時計を距離回帰で基準化してSIを算出します。同一芝ダート歴を必須にせず、適性は別特徴量として保持。過去走0件の空レスポンスはキャッシュせず取得エラーを表示します。</div>
+<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED58 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
+<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED58 過去5走 502/ばんえい修正</b> — NAR過去5走は netkeiba が502でも OddsPark / 直接取得 / テキスト中継へ自動フォールバック。帯広ばんえいの2桁日付・水分量・ダ200/直200表記を解析します。空レスポンスはキャッシュせず、取得経路とエラーを表示します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -11252,10 +11252,10 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
 if(window.__FIXED55_SPEED_SOFTMAX__)return;
 window.__FIXED55_SPEED_SOFTMAX__=true;
 
-const VERSION='SPEED-SOFTMAX-57.0';
-const STATE_KEY='keiba.speed57.state.v1';
-const CACHE_KEY='keiba.speed57.raceCache.v2';
-const CORPUS_KEY='keiba.speed57.corpus.v2';
+const VERSION='SPEED-SOFTMAX-58.0';
+const STATE_KEY='keiba.speed58.state.v1';
+const CACHE_KEY='keiba.speed58.raceCache.v1';
+const CORPUS_KEY='keiba.speed58.corpus.v1';
 const FEATURES=['recent','best','distance','course','going','weightDelta','pace'];
 const JRA_TRACKS=new Set(['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉']);
 const TRACK_K={芝:1.00,ダート:0.70,障害:0.40,ばんえい:0.09};
@@ -11284,16 +11284,51 @@ const inflight=new Map();
 
 function parseTargetMeta55(doc,r){
   const body=clean55(doc?.body?.innerText||doc?.body?.textContent||'');
-  let surface='',distance=NaN,going='',weather='';
+  let surface='',distance=NaN,going='',weather='',moisture=NaN;
   const m=body.match(/発走\s*\/\s*(芝|ダ|障)(\d{3,4})m[^\/]*\/[^\/]*?(?:天候[:：]\s*([^\/\s]+))?[^\/]*馬場[:：]\s*(良|稍重?|重|不良)/);
   if(m){surface=normSurface55(m[1],r?.track);distance=Number(m[2]);weather=clean55(m[3]);going=normGoing55(m[4])}
   if(!surface){const x=body.match(/(?:^|\s)(芝|ダ|障)(\d{3,4})m/);if(x){surface=normSurface55(x[1],r?.track);distance=Number(x[2])}}
   if(!going){const x=body.match(/馬場[:：]\s*(良|稍重?|重|不良)/);if(x)going=normGoing55(x[1])}
-  if(/帯広|ばんえい/.test(String(r?.track||'')))surface='ばんえい';
-  return {track:clean55(r?.track),org:String(r?.org||orgForTrack55(r?.track)),surface,distance,going,weather,date:String(r?.date||'')};
+  if(/帯広|ばんえい/.test(String(r?.track||''))){
+    surface='ばんえい';
+    const dx=body.match(/(?:直|ダ)?\s*(200)m?/)||body.match(/距離[:：]?\s*(200)/);
+    if(dx)distance=Number(dx[1]||dx[0].match(/200/)?.[0]);
+    if(!Number.isFinite(distance))distance=200;
+    const wx=body.match(/(?:水分量?|馬場水分)[:：\s]*([0-9]+(?:\.[0-9]+)?)\s*%/)||body.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
+    if(wx)moisture=Number(wx[1]);
+  }
+  return {track:clean55(r?.track),org:String(r?.org||orgForTrack55(r?.track)),surface,distance,going,weather,moisture,date:String(r?.date||'')};
 }
+function parseOddsParkPastText55(text,trackHint=''){
+  const t=clean55(text);if(!t)return null;
+  // OddsPark NAR cells are commonly: "5 帯広 26.09.05 2.1% ... ダ200 ... 1:57.8 ..."
+  const dm=t.match(/(?:^|\s)(\d{2}|20\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})(?=\s)/);if(!dm)return null;
+  const yy=Number(dm[1]),year=yy<100?2000+yy:yy;
+  const date=`${year}-${String(dm[2]).padStart(2,'0')}-${String(dm[3]).padStart(2,'0')}`;
+  const before=clean55(t.slice(0,dm.index));
+  const bf=before.match(/(?:^|\s)(取止|中止|除外|\d{1,2})\s+([^\s]+)\s*$/);
+  const finish=bf&&/^\d+$/.test(bf[1])?Number(bf[1]):NaN,track=clean55(bf?.[2]||trackHint);
+  const after=t.slice((dm.index||0)+dm[0].length);
+  const moistureM=after.match(/([0-9]+(?:\.[0-9]+)?)\s*%/),moisture=moistureM?Number(moistureM[1]):NaN;
+  const sd=after.match(/(?:^|\s)(芝|ダ|障|直)\s*(\d{3,4})m?/);if(!sd)return null;
+  const surface=/帯広|ばんえい/.test(track)?'ばんえい':normSurface55(sd[1],track),distance=Number(sd[2]);
+  const tail=after.slice((sd.index||0)+sd[0].length);
+  const tt=tail.match(/(?:^|\s)(\d+):(\d{2}\.\d)(?=\s|$)/)||tail.match(/(?:^|\s)(\d{1,3}\.\d)(?=\s|$)/);if(!tt)return null;
+  const timeSec=tt[2]!=null?Number(tt[1])*60+Number(tt[2]):Number(tt[1]);
+  const preTime=tail.slice(0,tt.index||0);
+  const field=(preTime.match(/(\d{1,2})頭/)||[])[1],pop=(preTime.match(/(\d{1,2})人/)||[])[1];
+  const nums=[...preTime.matchAll(/(?<!\d)([5-7]\d{2})(?!\d)/g)].map(x=>Number(x[1]));
+  const carriedWeight=nums.length?nums[nums.length-1]:NaN;
+  const post=tail.slice((tt.index||0)+tt[0].length);
+  const mar=(post.match(/\(([+-]?\d+(?:\.\d+)?)\)/)||[])[1];
+  const classPart=clean55(after.slice(0,sd.index||0).replace(/^[0-9.]+%\s*/,''));
+  return {date,track:track||trackHint,org:'NAR',finish,className:classPart,surface,distance,timeSec,going:'',moisture,fieldSize:field?Number(field):NaN,popularity:pop?Number(pop):NaN,carriedWeight,final3f:NaN,margin:mar!=null?Number(mar):NaN,positions:[],source:'oddspark-racelist'};
+}
+
 function parsePastText55(text){
-  const t=clean55(text);if(!t||/初出走|休養|兄 |姉 |母 |父 /.test(t)&&!/^20\d{2}/.test(t))return null;
+  const t=clean55(text);if(!t)return null;
+  if(/(?:^|\s)\d{2}[.\/-]\d{1,2}[.\/-]\d{1,2}(?=\s)/.test(t)){const op=parseOddsParkPastText55(t);if(op)return op}
+  if(/初出走|休養|兄 |姉 |母 |父 /.test(t)&&!/^20\d{2}/.test(t))return null;
   const dm=t.match(/(20\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})/);if(!dm)return null;
   const date=`${dm[1]}-${String(dm[2]).padStart(2,'0')}-${String(dm[3]).padStart(2,'0')}`;
   const rest=t.slice((dm.index||0)+dm[0].length).trim();
@@ -11317,21 +11352,43 @@ function parsePastText55(text){
   const classPart=clean55(rest.slice(tm[0].length,sd.index||0));
   return {date,track,org:orgForTrack55(track),finish,className:classPart,surface,distance,timeSec,going,fieldSize:field?Number(field[1]):NaN,popularity:pop?Number(pop[1]):NaN,carriedWeight,final3f:final3?Number(final3[1]):NaN,margin:Number.isFinite(margin)?margin:NaN,positions:pos,source:'netkeiba-shutuba-past'};
 }
-function parsePastPage55(doc,r){
+function parsePastPage55(doc,r,source='netkeiba-shutuba-past'){
   const meta=parseTargetMeta55(doc,r),byNo={};
   for(const tr of [...doc.querySelectorAll('tr')]){
-    const cells=[...tr.querySelectorAll(':scope > th,:scope > td')];if(cells.length<6)continue;
-    const pastIdx=[];for(let i=0;i<cells.length;i++){const tx=clean55(cells[i].textContent);if(/^20\d{2}[.\/-]\d{1,2}[.\/-]\d{1,2}/.test(tx)||/^初出走/.test(tx)||/休養/.test(tx))pastIdx.push(i)}
+    const cells=[...tr.querySelectorAll(':scope > th,:scope > td')];if(cells.length<4)continue;
+    const pastIdx=[];for(let i=0;i<cells.length;i++){const tx=clean55(cells[i].textContent);if(/(?:^|\s)(?:20\d{2}|\d{2})[.\/-]\d{1,2}[.\/-]\d{1,2}(?=\s|$)/.test(tx)||/^初出走/.test(tx)||/休養/.test(tx))pastIdx.push(i)}
     if(!pastIdx.length)continue;
-    let no=NaN;for(const i of [1,0,2]){const m=clean55(cells[i]?.textContent).match(/^\d{1,2}$/);if(m){no=Number(m[0]);if(no>=1&&no<=18)break}}
+    let no=NaN;for(const i of [1,0,2,3]){const m=clean55(cells[i]?.textContent).match(/^\d{1,2}$/);if(m){no=Number(m[0]);if(no>=1&&no<=18)break}}
     if(!Number.isFinite(no))continue;
-    const first=pastIdx[0],pre=clean55(cells[Math.max(0,first-1)]?.textContent);
-    const wm=[...pre.matchAll(/(?<!\d)([4-6]\d\.\d)(?!\d)/g)].map(x=>Number(x[1]));
-    const currentWeight=wm.length?wm[wm.length-1]:NaN;
-    const runs=[];for(const i of pastIdx){const x=parsePastText55(cells[i].textContent);if(x)runs.push(x)}
+    const first=pastIdx[0],pre=cells.slice(0,first).map(c=>clean55(c.textContent)).join(' ');
+    const dec=[...pre.matchAll(/(?<!\d)([4-6]\d\.\d)(?!\d)/g)].map(x=>Number(x[1]));
+    const intw=[...pre.matchAll(/(?<!\d)([5-7]\d{2})(?!\d)/g)].map(x=>Number(x[1]));
+    const currentWeight=dec.length?dec[dec.length-1]:(intw.length?intw[intw.length-1]:NaN);
+    const runs=[];for(const i of pastIdx){let x=parsePastText55(cells[i].textContent);if(!x&&source.startsWith('oddspark'))x=parseOddsParkPastText55(cells[i].textContent,r?.track);if(x){x.source=source;runs.push(x)}}
     byNo[no]={runs,currentWeight};
   }
-  return {meta,byNo,source:'netkeiba-shutuba-past',fetchedAt:new Date().toISOString()};
+  return {meta,byNo,source,fetchedAt:new Date().toISOString()};
+}
+
+const ODDS_TRACK55={
+  '帯広':'03','門別':'06','盛岡':'11','水沢':'12','浦和':'21','船橋':'22','大井':'23','川崎':'24',
+  '金沢':'41','笠松':'42','名古屋':'43','園田':'51','姫路':'52','高知':'54','佐賀':'55'
+};
+function ymd8_55(v){return String(v||'').replace(/[^0-9]/g,'').slice(0,8)}
+function oddsParkUrl55(r){const cd=ODDS_TRACK55[clean55(r?.track)],dy=ymd8_55(r?.date),no=Number(r?.no||0);return cd&&dy&&no?`https://www.oddspark.com/keiba/RaceList.do?opTrackCd=${cd}&raceDy=${dy}&raceNb=${no}`:''}
+function horseNameHit55(text,r){const body=clean55(text);const hs=(r?.horses||[]).filter(h=>clean55(h.name));return hs.length?hs.filter(h=>body.includes(clean55(h.name))).length/hs.length:0}
+async function directHtml55(url){const rr=await fetch(url,{cache:'no-store',mode:'cors',headers:{'Accept':'text/html,application/xhtml+xml'}});const text=await rr.text();if(!rr.ok||text.length<300)throw new Error(`direct HTTP ${rr.status}`);return {text,via:'direct-cors'}}
+async function readerText55(url){const reader='https://r.jina.ai/http://'+url.replace(/^https?:\/\//,'');const rr=await fetch(reader,{cache:'no-store',headers:{'Accept':'text/plain,text/markdown,*/*'}});const text=await rr.text();if(!rr.ok||text.length<300)throw new Error(`reader HTTP ${rr.status}`);return {text,via:'oddspark-reader'}}
+function parseOddsParkReader55(text,r){
+  const body=String(text||'').replace(/\r/g,'');const byNo={};const horses=[...(r?.horses||[])].sort((a,b)=>Number(a.no)-Number(b.no));
+  const positions=horses.map(h=>({h,pos:body.indexOf(clean55(h.name))})).filter(x=>x.pos>=0).sort((a,b)=>a.pos-b.pos);
+  for(let k=0;k<positions.length;k++){const {h,pos}=positions[k],end=k+1<positions.length?positions[k+1].pos:Math.min(body.length,pos+8000),seg=body.slice(pos,end);const runs=[];
+    const re=/(?:^|\n|\s)(取止|中止|除外|\d{1,2})\s+([^\s]+)\s+(\d{2}|20\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})\s+([0-9]+(?:\.[0-9]+)?)%([\s\S]{0,180}?)(芝|ダ|障|直)\s*(\d{3,4})m?([\s\S]{0,220}?)(\d+):(\d{2}\.\d)/g;let m;
+    while((m=re.exec(seg))&&runs.length<5){const yy=Number(m[3]),date=`${yy<100?2000+yy:yy}-${String(m[4]).padStart(2,'0')}-${String(m[5]).padStart(2,'0')}`,track=clean55(m[2]),surface=/帯広|ばんえい/.test(track)?'ばんえい':normSurface55(m[8],track),pre=m[10]||'',nums=[...pre.matchAll(/(?<!\d)([5-7]\d{2})(?!\d)/g)].map(x=>Number(x[1]));runs.push({date,track,org:'NAR',finish:/^\d+$/.test(m[1])?Number(m[1]):NaN,className:clean55((m[7]||'').slice(0,100)),surface,distance:Number(m[9]),timeSec:Number(m[11])*60+Number(m[12]),going:'',moisture:Number(m[6]),fieldSize:Number((pre.match(/(\d{1,2})頭/)||[])[1])||NaN,popularity:Number((pre.match(/(\d{1,2})人/)||[])[1])||NaN,carriedWeight:nums.length?nums[nums.length-1]:NaN,final3f:NaN,margin:Number((seg.slice(re.lastIndex,re.lastIndex+100).match(/\(([+-]?\d+(?:\.\d+)?)\)/)||[])[1])||NaN,positions:[],source:'oddspark-reader'});}
+    if(runs.length)byNo[Number(h.no)]={runs,currentWeight:NaN};
+  }
+  const meta={track:clean55(r?.track),org:'NAR',surface:/帯広|ばんえい/.test(String(r?.track||''))?'ばんえい':normSurface55(r?.surface??r?.trackType,r?.track),distance:/帯広|ばんえい/.test(String(r?.track||''))?200:num55(r?.distance??r?.distanceM),going:normGoing55(r?.going??r?.trackCondition),weather:'',moisture:NaN,date:String(r?.date||'')};
+  return {meta,byNo,source:'oddspark-reader',fetchedAt:new Date().toISOString()};
 }
 function structuredRuns55(h){
   const a=h?.pastRuns55||h?.pastRuns||h?.recentRuns||h?.runs||h?.past||[];if(!Array.isArray(a))return [];
@@ -11443,17 +11500,23 @@ function applyRace55(r){
 }
 
 async function fetchPast55(r){
-  const id=raceId55(r);if(!id||!/^20\d{10}$/.test(id))throw new Error('netkeiba race_idを確定できません');
-  if(raceCache[id])return raceCache[id];if(inflight.has(id))return inflight.get(id);
+  const id=raceId55(r),org=String(r.org||'').toUpperCase();
+  if(org==='JRA'&&(!id||!/^20\d{10}$/.test(id)))throw new Error('JRA netkeiba race_idを確定できません');
+  const cacheId=id||`${r?.date||''}-${r?.track||''}-${r?.no||''}`;
+  if(raceCache[cacheId])return raceCache[cacheId];if(inflight.has(cacheId))return inflight.get(cacheId);
   const job=(async()=>{
-    const org=String(r.org||'').toUpperCase(),url=org==='NAR'?`https://nar.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`:`https://race.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`;
-    if(typeof liveHtmlViaProxyOrBridge!=='function')throw new Error('HTML取得Bridge/Proxyが利用できません');
-    const res=await liveHtmlViaProxyOrBridge(url),doc=new DOMParser().parseFromString(res.text,'text/html'),parsed=parsePastPage55(doc,r);parsed.via=res.via;
-    const all=Object.values(parsed.byNo||{}).flatMap(x=>x.runs||[]);const horseCount=Object.values(parsed.byNo||{}).filter(x=>(x.runs||[]).length).length;
-    if(!all.length||!horseCount)throw new Error(`過去5走の解析が0件です（取得経路: ${res.via||'unknown'}）。空レスポンスはキャッシュしません`);
-    parsed.stats={horseCount,runCount:all.length,totalHorses:(r.horses||[]).length};addCorpus55(all);
-    raceCache[id]=parsed;const keys=Object.keys(raceCache);if(keys.length>30)for(const k of keys.slice(0,keys.length-30))delete raceCache[k];saveJson55(CACHE_KEY,raceCache);return parsed;
-  })().finally(()=>inflight.delete(id));inflight.set(id,job);return job;
+    const attempts=[],accept=async(parsed,via)=>{const all=Object.values(parsed.byNo||{}).flatMap(x=>x.runs||[]),horseCount=Object.values(parsed.byNo||{}).filter(x=>(x.runs||[]).length).length;if(!all.length||!horseCount)throw new Error('解析0件');parsed.via=via;parsed.stats={horseCount,runCount:all.length,totalHorses:(r.horses||[]).length};addCorpus55(all);raceCache[cacheId]=parsed;const keys=Object.keys(raceCache);if(keys.length>30)for(const k of keys.slice(0,keys.length-30))delete raceCache[k];saveJson55(CACHE_KEY,raceCache);return parsed};
+    const tryHtml=async(url,source,label)=>{if(!url)return null;try{const res=await liveHtmlViaProxyOrBridge(url),hit=horseNameHit55(res.text,r);if(hit<.25)throw new Error(`馬名一致${Math.round(hit*100)}%`);const doc=new DOMParser().parseFromString(res.text,'text/html');return await accept(parsePastPage55(doc,r,source),`${label}:${res.via}`)}catch(e){attempts.push(`${label} ${e?.message||e}`);return null}};
+    if(id&&/^20\d{10}$/.test(id)){const nk=org==='NAR'?`https://nar.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`:`https://race.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`;const x=await tryHtml(nk,'netkeiba-shutuba-past','netkeiba');if(x)return x}
+    if(org==='NAR'){
+      const op=oddsParkUrl55(r);
+      if(op){const x=await tryHtml(op,'oddspark-racelist','OddsPark proxy/Bridge');if(x)return x;
+        try{const res=await directHtml55(op),hit=horseNameHit55(res.text,r);if(hit<.25)throw new Error(`馬名一致${Math.round(hit*100)}%`);const doc=new DOMParser().parseFromString(res.text,'text/html'),x2=await accept(parsePastPage55(doc,r,'oddspark-racelist'),`OddsPark:${res.via}`);if(x2)return x2}catch(e){attempts.push(`OddsPark direct ${e?.message||e}`)}
+        try{const res=await readerText55(op),hit=horseNameHit55(res.text,r);if(hit<.25)throw new Error(`馬名一致${Math.round(hit*100)}%`);const x3=await accept(parseOddsParkReader55(res.text,r),`OddsPark:${res.via}`);if(x3)return x3}catch(e){attempts.push(`OddsPark reader ${e?.message||e}`)}
+      }else attempts.push(`OddsPark URL未対応 track=${r?.track||''}`);
+    }
+    throw new Error(`過去5走取得失敗: ${attempts.slice(0,6).join(' / ')}`);
+  })().finally(()=>inflight.delete(cacheId));inflight.set(cacheId,job);return job;
 }
 async function enrichRace55(r){
   if(!r?.horses?.length)return false;const id=raceId55(r);
@@ -11511,7 +11574,7 @@ function installAudit55(){
 }
 
 function ensurePanel55(){
-  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED57 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。完全一致の基準標本が不足する場合は、実走タイムだけを距離回帰して EMPIRICAL_DISTANCE_REGRESSION と明示します。今回と同じ芝/ダート歴が無い転入馬でも総合recent SIは算出し、芝/ダート・距離・コース適性は別特徴量として欠損のまま扱います。架空能力値は補完しません。β・λ・τは時系列検証を通過した場合だけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
+  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED58 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。完全一致の基準標本が不足する場合は、実走タイムだけを距離回帰して EMPIRICAL_DISTANCE_REGRESSION と明示します。今回と同じ芝/ダート歴が無い転入馬でも総合recent SIは算出し、芝/ダート・距離・コース適性は別特徴量として欠損のまま扱います。架空能力値は補完しません。β・λ・τは時系列検証を通過した場合だけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
 }
 function render55(){const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail');if(!el)return;let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length,fx=r?.speedFetch55;const fetchTxt=fx?(fx.ok?` / 過去走 ${fx.horseCount}/${r?.horses?.length||0}頭・${fx.runCount}走`:` / 過去走取得エラー: ${fx.error}`):'';el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / SIカバー ${sm?Math.round(sm.coverage*100):0}%${fetchTxt} / 学習用精算 ${samples}R / モデル ${mdl?(mdl.validated?'検証済':'未検証'):'未学習'}`;if(det){const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',runs:h.speedFeatures55?.runCount??0,surfaceRuns:h.speedFeatures55?.surfaceRunCount??0,speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));det.textContent=JSON.stringify({model:mdl,fetch:fx||null,current:cur},null,2)}}
 function installUI55(){
@@ -11520,7 +11583,7 @@ function installUI55(){
 function boot55(){installProbability55();installAudit55();ensurePanel55();installUI55();try{if(typeof engine!=='undefined'&&engine?.selected)schedule55(engine.selected)}catch(_){ }render55()}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot55,5200),{once:true});else setTimeout(boot55,5200);
 window.SpeedModel55={VERSION,state,applyRace:applyRace55,enrichRace:enrichRace55,fit:fit55,trainingSamples:trainingSamples55,formalSI:(Tbase,Dtrack,Crace,Thorse,K)=>(Number(Tbase)+Number(Dtrack)+Number(Crace)-Number(Thorse)+50)*Number(K),weightedRecent:weightedRecent55};
-console.log('✅ FIXED55 real speed-index + learned softmax model loaded');
+console.log('✅ FIXED58 speed-index + 502/OddsPark/banei fallback loaded');
 })();
 
 </script>
