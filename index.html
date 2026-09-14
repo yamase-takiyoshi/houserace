@@ -187,7 +187,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#a36f2f;background:#2a1f0d"><b>FIXED32 NAR公式オッズ優先</b> — NARのnetkeiba遮断/HTTP 400時は、地方競馬情報サイト（keiba.go.jp）の単複・枠連・馬連・ワイド・馬単・3連複・3連単へ自動フォールバックします。水沢などの競馬場コードはrace_idから復元します。</div>
 <div class="notice" style="border-color:#8b5cf6;background:#1d1630"><b>FIXED40 NAR 3連単・前回値保持</b> — NAR公式SP/PC/IPATの人気順URLを拡張し、3連単の取得0件を補強。更新失敗時は前回の正常オッズを消さず保持し、0件時に別券種の取得元を誤表示しません。</div>
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
-<div class="notice" style="border-color:#2dd4bf;background:#0b2926"><b>FIXED56 馬名・性齢 + NAR単複列ずれ修正</b> — NAR公式出馬表（S_DebaTable / DebaTable）から馬番→馬名/性齢を同期。牡5/牝5/セン6を馬名として扱わず、斤量56.0や馬番1/2/3を単複オッズとして誤読する経路を遮断します。単勝・複勝は公式表の「馬番/馬名/オッズ」列を確認できた場合だけ採用します。</div>
+<div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED52 人気順位補正</b> — 単勝の「人気」が馬番/取得順になっていた経路を修正。LIVE単勝オッズを昇順に再順位付けし、中央の人気表示・人気依存ロジック・単勝オッズ表を同じ順位へ同期します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -221,7 +221,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>馬番</th><th>馬名</th><th>性齢</th><th>人気</th><th>単勝</th><th>3分前</th>
+            <th>馬番</th><th>馬名</th><th>人気</th><th>単勝</th><th>3分前</th>
             <th>想定勝率</th><th>市場確率</th><th>適正</th><th>EV</th><th>乖離</th><th>評価</th>
           </tr></thead>
           <tbody id="horseBody"></tbody>
@@ -733,7 +733,7 @@ const racePhase=(race,settings,now=Date.now())=>{
 
 const DEFAULTS={
   mode:"live", betTiming:3, evPositive:1.00, evStrong:1.10,
-  initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:30,
+  initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
   netkeibaProxyUrl:"https://keiba-odds.nitta-katsuhiko.workers.dev",
   jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
@@ -1334,8 +1334,6 @@ function liveCleanHorseNameV22(value,no=0){
     s=s.replace(new RegExp(`^(?:#\s*)?${n}(?:\s+|$)`),'').trim();
   }
   s=s.replace(/^(?:馬名|選択|印)\s*/,'').trim();
-  // FIXED56: 「牡5 / 牝5 / セン6 / 騙7」など性齢を馬名として採用しない。
-  if(/^(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}$/.test(s)) return '';
   if(!s || /^#?\d+$/.test(s) || /^Horse\s*\d+$/i.test(s) || /^[\d.\-–—―]+$/.test(s)) return '';
   if(s.length>40) return '';
   return s;
@@ -1385,157 +1383,6 @@ function liveParseEntryNamesV21(html){
     if(no>=1&&no<=18 && name && !map.has(no)) map.set(no,name);
   }
   return map;
-}
-
-/* ============================================================
-   FIXED56 NAR HORSE NAME + SEX/AGE RECOVERY
-   - keiba.go.jp 公式出馬表 S_DebaTable / DebaTable を最優先
-   - 馬番をキーに「馬名」と「性齢」を結合し、斤量/性齢の列ずれを遮断
-   - オッズ未発売でも出馬表から馬名を表示できる
-   ============================================================ */
-const LIVE_NAR_ENTRY_CACHE_V56=new Map();
-const LIVE_NAR_ENTRY_FAIL_V56=new Map();
-const LIVE_NAR_BABA_V56={
-  '帯広':'3','帯広ば':'3','ばんえい':'3','門別':'36','盛岡':'10','水沢':'11',
-  '浦和':'18','船橋':'19','大井':'20','川崎':'21','金沢':'22','笠松':'23',
-  '名古屋':'24','園田':'27','姫路':'28','高知':'31','佐賀':'32'
-};
-
-function liveNormalizeSexAgeV56(v){
-  const s=String(v??'').replace(/[\u00a0　\s]+/g,'').trim();
-  const m=s.match(/^(牡|牝|騙|セン|せん|セ)(\d{1,2})$/);
-  if(!m)return '';
-  const sex=(m[1]==='せん'||m[1]==='セ')?'セン':m[1];
-  return `${sex}${Number(m[2])}`;
-}
-function liveHorseSexAgeFromAnyV56(h){
-  if(!h||typeof h!=='object')return '';
-  for(const v of [h.sexAge,h.sex_age,h.sexage,h.genderAge,h.gender_age,h.ageSex,h['性齢'],h.name]){
-    const x=liveNormalizeSexAgeV56(v); if(x)return x;
-  }
-  const sex=String(h.sex??h.gender??'').trim();
-  const age=Number(h.age);
-  if(sex && Number.isFinite(age)&&age>0){
-    const x=liveNormalizeSexAgeV56(`${sex}${age}`); if(x)return x;
-  }
-  return '';
-}
-function liveNarDateYmdV56(race){
-  let s=String(race?.date||race?.raceDate||'').replace(/[^0-9]/g,'').slice(0,8);
-  if(/^20\d{6}$/.test(s))return s;
-  const raw=race?.startTime||race?.start_time||race?.postTime||'';
-  if(raw){
-    try{
-      const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(raw));
-      const o=Object.fromEntries(parts.map(x=>[x.type,x.value]));
-      s=`${o.year}${o.month}${o.day}`;
-      if(/^20\d{6}$/.test(s))return s;
-    }catch(_){}
-  }
-  return '';
-}
-function liveNarEntryMetaV56(race,id=''){
-  const track=String(race?.track||race?.venue||race?.course||'').replace(/[\u00a0　\s]+/g,'');
-  let baba='';
-  const k=Object.keys(LIVE_NAR_BABA_V56).find(x=>track===x||track.includes(x));
-  if(k)baba=LIVE_NAR_BABA_V56[k];
-  const rid=String(id||race?.netkeibaRaceId||race?.raceId||race?.race_id||race?.id||'').match(/(20\d{10})/)?.[1]||'';
-  if(!baba&&rid){
-    const nkToBaba={'30':'36','35':'10','36':'11','42':'18','43':'19','44':'20','45':'21','46':'22','47':'23','48':'24','50':'27','51':'28','54':'31','55':'32','65':'3'};
-    baba=nkToBaba[rid.slice(4,6)]||'';
-  }
-  let ymd=liveNarDateYmdV56(race);
-  if(!ymd&&rid)ymd=rid.slice(0,4)+rid.slice(6,10);
-  let no=Number(race?.no??race?.raceNo??race?.race_no??race?.r??0);
-  if(!(no>=1&&no<=12)&&rid)no=Number(rid.slice(10,12));
-  if(!baba||!/^20\d{6}$/.test(ymd)||!(no>=1&&no<=12))return null;
-  return {baba,ymd,no,date:`${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}`};
-}
-function liveParseNarDebaV56(html){
-  const doc=new DOMParser().parseFromString(String(html||''),'text/html');
-  const out=new Map();
-
-  for(const tb of doc.querySelectorAll('table')){
-    const rows=[...tb.querySelectorAll('tr')];
-    let noIdx=-1,nameIdx=-1,sexIdx=-1;
-    for(const tr of rows){
-      const tx=[...tr.querySelectorAll('th,td')].map(c=>String(c.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim());
-      const hx=tx.map(x=>x.replace(/\s+/g,''));
-      const ni=hx.findIndex(x=>/^馬番$/.test(x));
-      const nmi=hx.findIndex(x=>/^馬名/.test(x));
-      if(ni>=0&&nmi>=0){
-        noIdx=ni; nameIdx=nmi; sexIdx=hx.findIndex(x=>/^性齢/.test(x)); break;
-      }
-    }
-    if(noIdx<0||nameIdx<0)continue;
-
-    for(const tr of rows){
-      const cells=[...tr.querySelectorAll('th,td')]; if(cells.length<=Math.max(noIdx,nameIdx))continue;
-      const tx=cells.map(c=>String(c.textContent||'').replace(/[\u00a0　\s]+/g,' ').trim());
-      const nm=String(tx[noIdx]||'').match(/^([1-9]|1[0-8])$/); if(!nm)continue;
-      const no=Number(nm[1]);
-
-      let raw=String(tx[nameIdx]||'').trim();
-      let name='';
-      const a=cells[nameIdx]?.querySelector?.('a[href*="Horse"],a[href*="horse"],a[href*="Uma"],a[href*="uma"]');
-      if(a)name=liveCleanHorseNameV22(a.textContent,no);
-
-      let sexAge=sexIdx>=0&&sexIdx<tx.length?liveNormalizeSexAgeV56(tx[sexIdx]):'';
-      if(!name){
-        const m=raw.match(/^(.+?)\s+(牡|牝|騙|セン|せん|セ)\s*(\d{1,2})(?:\s|$)/);
-        if(m){
-          name=liveCleanHorseNameV22(m[1],no);
-          sexAge=sexAge||liveNormalizeSexAgeV56(`${m[2]}${m[3]}`);
-        }else{
-          name=liveCleanHorseNameV22(raw,no);
-        }
-      }
-      if(name){
-        out.set(no,{name,sexAge});
-      }
-    }
-  }
-  return out;
-}
-async function liveNarEntryNamesV56(id,race){
-  const meta=liveNarEntryMetaV56(race,id);
-  if(!meta)return new Map();
-  const key=`${meta.baba}|${meta.ymd}|${meta.no}`;
-  const cached=LIVE_NAR_ENTRY_CACHE_V56.get(key);
-  if(cached?.entries instanceof Map && cached.entries.size>=2)return new Map([...cached.entries].map(([n,v])=>[n,v.name]));
-
-  const lastFail=Number(LIVE_NAR_ENTRY_FAIL_V56.get(key)||0);
-  if(lastFail&&Date.now()-lastFail<60000)return new Map();
-
-  const q=`k_babaCode=${encodeURIComponent(meta.baba)}&k_raceDate=${encodeURIComponent(meta.date)}&k_raceNo=${meta.no}`;
-  const urls=[
-    `https://www.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_DebaTable?${q}`,
-    `https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_DebaTable?${q}`,
-    `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?${q}`
-  ];
-  let best=new Map(),lastErr=null;
-  for(const u of urls){
-    try{
-      const x=await liveHtmlViaProxyOrBridge(u);
-      const m=liveParseNarDebaV56(x.text);
-      if(m.size>best.size)best=m;
-      const expected=(race?.horses||[]).map(h=>Number(h?.no)).filter(n=>n>=1&&n<=18);
-      if((expected.length>=2&&expected.every(n=>m.has(n)))||m.size>=8)break;
-    }catch(e){lastErr=e}
-  }
-  if(best.size){
-    LIVE_NAR_ENTRY_CACHE_V56.set(key,{entries:new Map(best),at:Date.now()});
-    LIVE_NAR_ENTRY_FAIL_V56.delete(key);
-    return new Map([...best].map(([n,v])=>[n,v.name]));
-  }
-  LIVE_NAR_ENTRY_FAIL_V56.set(key,Date.now());
-  if(lastErr)console.warn('FIXED56 NAR horse names',lastErr);
-  return new Map();
-}
-function liveNarSexAgeV56(id,race,no){
-  const meta=liveNarEntryMetaV56(race,id); if(!meta)return '';
-  const key=`${meta.baba}|${meta.ymd}|${meta.no}`;
-  return LIVE_NAR_ENTRY_CACHE_V56.get(key)?.entries?.get(Number(no))?.sexAge||'';
 }
 async function liveJraEntryNamesV21(id,race){
   const rid=String(id||'');
@@ -1913,28 +1760,11 @@ class HttpProvider{
       }
       if(hs.length){
         const oldNames=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveCleanHorseNameV22(h?.name,h?.no)]).filter(x=>x[0]>=1&&x[1]));
-        const oldSexAge=new Map((race?.horses||[]).map(h=>[Number(h?.no),liveHorseSexAgeFromAnyV56(h)]).filter(x=>x[0]>=1&&x[1]));
         race.horses=hs.map((h,i)=>{
           const no=Number(h?.no??h?.horseNo??h?.horse_no??(i+1));
           const own=liveCleanHorseNameV22(h?.name??h?.horseName??h?.horse_name,no);
-          const sexAge=liveHorseSexAgeFromAnyV56(h)||oldSexAge.get(no)||'';
-          return {...h,no,name:own||oldNames.get(no)||'',sexAge};
+          return {...h,no,name:own||oldNames.get(no)||''};
         }).filter(h=>h.no>=1&&h.no<=18);
-
-        // FIXED56: NARは公式出馬表から馬番→馬名/性齢を補完する。
-        if(isNar44){
-          try{
-            const names=await liveNarEntryNamesV56(rid,race);
-            for(const h of race.horses){
-              const nm=liveCleanHorseNameV22(names.get(Number(h.no))||h.name,h.no);
-              h.name=nm||`馬名未取得(${h.no})`;
-              h.sexAge=h.sexAge||liveNarSexAgeV56(rid,race,h.no)||'';
-            }
-          }catch(e){
-            console.warn('FIXED56 NAR horse name recovery',e);
-            for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
-          }
-        }
 
         // FIXED22: Workerがオッズだけ返す、または #2 等を返しても、JRAは出馬表から実馬名を補完する。
         if(String(race?.org||'').toUpperCase()==='JRA'){
@@ -1959,22 +1789,8 @@ class HttpProvider{
     }catch(e){errors.push("Worker /odds: "+(e?.message||e))}
     try{
       const x=await liveGetWinOddsViaNetkeibaV20(race);
-      race.horses=x.horses.map(h=>({...h,sexAge:liveHorseSexAgeFromAnyV56(h),name:liveCleanHorseNameV22(h.name,h.no)||''}));
-      if(String(race?.org||'').toUpperCase()==='NAR'){
-        try{
-          const rid=window.__fixed44NarNetkeibaRaceId?.(race)||window.__fixed44CanonicalRaceId?.(race)||String(race?.id||'');
-          const names=await liveNarEntryNamesV56(rid,race);
-          for(const h of race.horses){
-            h.name=liveCleanHorseNameV22(names.get(Number(h.no))||h.name,h.no)||`馬名未取得(${h.no})`;
-            h.sexAge=h.sexAge||liveNarSexAgeV56(rid,race,h.no)||'';
-          }
-        }catch(_){
-          for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
-        }
-      }else{
-        for(const h of race.horses)h.name=liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`;
-      }
-      return {...x,horses:race.horses};
+      race.horses=x.horses.map(h=>({...h,name:liveCleanHorseNameV22(h.name,h.no)||`馬名未取得(${h.no})`}));
+      return x;
     }catch(e){errors.push("Mobile Bridge: "+(e?.message||e))}
     throw new Error(errors.join(" / "));
   }
@@ -2531,11 +2347,14 @@ const UI={
     const closeAt=new Date(betCloseTime(r,e.settings));
     const decideAt=new Date(decisionTime(r,e.settings));
     $("#raceMeta").textContent=`発走 ${new Date(r.startTime).toLocaleTimeString("ja-JP")} / 締切 ${closeAt.toLocaleTimeString("ja-JP")} / 勝負判定 ${decideAt.toLocaleTimeString("ja-JP")} / ${r.horses?.length||0}頭`;
-    if(r.horses?.length)ProbabilityEngine.model(r.horses);
+    if(r.horses?.length){
+      try{ if(typeof normalizeHorsePopularityV52==='function') normalizeHorsePopularityV52(r.horses); }catch(_){ }
+      ProbabilityEngine.model(r.horses);
+    }
     $("#horseBody").innerHTML=(r.horses||[]).map(h=>{
       const label=ExpectedValueEngine.label(h.ev||0,e.settings),cls=label.toLowerCase().replace(" ","");
       return `<tr class="${cls}">
-      <td>${h.no}</td><td>${h.name||""}</td><td>${h.sexAge||h.sex_age||h.sexage||"-"}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
+      <td>${h.no}</td><td>${h.name||""}</td><td>${h.pop??"-"}</td><td>${Number(h.odds).toFixed(1)}</td><td>${h.odds3?Number(h.odds3).toFixed(1):"-"}</td>
       <td>${pct(h.modelProb||0)}</td><td>${pct(h.marketProb||0)}</td><td>${(h.fairOdds||0).toFixed(2)}</td>
       <td><b>${(h.ev||0).toFixed(2)}</b></td><td>${pct(h.edge||0)}</td><td><span class="tag ${cls}">${label}</span></td></tr>`
     }).join("");
@@ -3654,16 +3473,8 @@ function renderBt(result){
 async function getHistoryBlock(date,org,options={}){
   const force=!!options.force;
   const cached=webHistory.find(x=>x.date===date&&x.org===org);
-  const today55=(typeof today==='function'?today():new Date().toISOString().slice(0,10));
-  const past55=String(date)<String(today55);
-  const ds55=cached?.diagnosticSummary||cached?.diagnostics||{};
-  const verifiedEmpty55=!!cached && Array.isArray(cached.races) && cached.races.length===0 &&
-    ((String(ds55.meetingSource||'').toLowerCase()==='none') || Number(ds55.requestedRaces)===0) &&
-    !(Array.isArray(ds55.errors)&&ds55.errors.length);
-  // FIXED55: 完了済みの過去日は不変データとしてキャッシュ優先。
-  // 正常レースあり、または「開催なし」が検証済みの空ブロックだけを再利用する。
-  // 当日は結果が増えるためキャッシュ固定しない。
-  if(!force && past55 && cached && ((Array.isArray(cached.races)&&cached.races.length>0)||verifiedEmpty55))return cached;
+  // 空ブロックは古い取得失敗の可能性があるため再取得する。
+  if(!force && cached && Array.isArray(cached.races) && cached.races.length>0)return cached;
   const d=await fetchHistoryDay(date,org,{retries:3,timeoutMs:12000});
   webHistory=webHistory.filter(x=>!(x.date===date&&x.org===org));
   webHistory.push(d);saveWebHistoryCache();
@@ -3701,7 +3512,7 @@ $("#runWebBacktest").onclick=async()=>{
         $("#btProgress").textContent=`${date} ${o} 取得中… ${n}/${total}`;
         try{
           // 必ず現在のWorkerを再確認。特にJRAの空キャッシュを再利用しない。
-          const d=await getHistoryBlock(date,o,{force:false});
+          const d=await getHistoryBlock(date,o,{force:o==="JRA"});
           blocks.push(d);
           const cnt=Array.isArray(d.races)?d.races.length:0;
           fetchStats[o].races+=cnt;
@@ -8573,8 +8384,48 @@ function updateTabs(){document.querySelectorAll('#ticketOddsTabs button').forEac
 function stateFor(r){const id=raceId(r)||String(r?.id||r?.title||'demo');if(!cache.has(id))cache.set(id,{id,loaded:false,loading:false,allLoading:false,rows:Object.fromEntries(TYPES.map(t=>[t,[]])),source:'',sourceByType:{},at:null,atByType:{},error:'',errorByType:{},staleByType:{}});return cache.get(id)}
 function horseMap(r){return new Map((r?.horses||[]).map(h=>[Number(h.no),h]))}
 let mainHorseSyncBusyV23=false;
+
+/* ============================================================
+   FIXED52 POPULARITY NORMALIZER
+   NAR/JRAの一部取得経路では「人気」が欠落し、従来のfallbackが
+   馬番/取得順をrankとして入れてしまう場合があった。
+   人気は単勝オッズの昇順から必ず再構成する。
+   （同一表示オッズ時だけ、取得済みrank→馬番をtie-breakに使用）
+   ============================================================ */
+function normalizeWinRowsPopularityV52(st){
+  const rows=Array.isArray(st?.rows?.['単勝'])?st.rows['単勝']:[];
+  const ranked=rows
+    .filter(x=>/^\d{1,2}$/.test(String(x?.selection||'')) && Number(x?.odds)>=1)
+    .slice()
+    .sort((a,b)=>{
+      const d=Number(a.odds)-Number(b.odds);
+      if(Math.abs(d)>1e-12)return d;
+      const ar=Number(a.rank), br=Number(b.rank);
+      if(Number.isFinite(ar)&&Number.isFinite(br)&&ar!==br)return ar-br;
+      return Number(a.selection)-Number(b.selection);
+    });
+  ranked.forEach((x,i)=>{ x.rank=i+1; });
+  return rows;
+}
+function normalizeHorsePopularityV52(horses){
+  const list=Array.isArray(horses)?horses:[];
+  const ranked=list
+    .filter(h=>Number(h?.odds)>=1 && Number(h?.no)>=1)
+    .slice()
+    .sort((a,b)=>{
+      const d=Number(a.odds)-Number(b.odds);
+      if(Math.abs(d)>1e-12)return d;
+      const ap=Number(a.pop), bp=Number(b.pop);
+      if(Number.isFinite(ap)&&Number.isFinite(bp)&&ap!==bp)return ap-bp;
+      return Number(a.no)-Number(b.no);
+    });
+  ranked.forEach((h,i)=>{ h.pop=i+1; });
+  return list;
+}
+
 async function syncMainHorsesFromWinRowsV23(r,st){
   if(!r||mainHorseSyncBusyV23)return false;
+  normalizeWinRowsPopularityV52(st);
   const winRows=(st?.rows?.['単勝']||[]).filter(x=>/^\d{1,2}$/.test(String(x.selection||''))&&Number(x.odds)>=1);
   if(!winRows.length)return false;
   mainHorseSyncBusyV23=true;
@@ -8583,28 +8434,21 @@ async function syncMainHorsesFromWinRowsV23(r,st){
     const seed=winRows.map(x=>{
       const no=Number(x.selection), prev=old.get(no)||{};
       const prevNoise=Number(prev.modelNoise);
-      let prevName='';
-      try{prevName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(prev.name,no):String(prev.name||'').trim()}catch(_){prevName=String(prev.name||'').trim()}
-      const rowName=String(x.horseName||'').trim();
-      const sexAge=(typeof liveHorseSexAgeFromAnyV56==='function'?liveHorseSexAgeFromAnyV56(prev):'')||'';
       return {...prev,no,odds:Number(x.odds),pop:Number(x.rank)||prev.pop||0,
-        name:prevName||rowName,sexAge,
+        name:String(prev.name||x.horseName||'').trim(),
         modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(raceId(r),no)};
     });
     let names=new Map();
-    const org=String(r.org||'').toUpperCase(),rid=raceId(r);
-    if(org==='JRA' && typeof liveJraEntryNamesV21==='function'){
-      try{names=await liveJraEntryNamesV21(rid,{...r,horses:seed})}catch(e){console.warn('FIXED23 horse names',e)}
-    }else if(org==='NAR' && typeof liveNarEntryNamesV56==='function'){
-      try{names=await liveNarEntryNamesV56(rid,{...r,horses:seed})}catch(e){console.warn('FIXED56 NAR horse names',e)}
+    if(String(r.org||'').toUpperCase()==='JRA' && typeof liveJraEntryNamesV21==='function'){
+      try{names=await liveJraEntryNamesV21(raceId(r),{...r,horses:seed})}catch(e){console.warn('FIXED23 horse names',e)}
     }
     r.horses=seed.map(h=>{
       const no=Number(h.no);
       let nm='';
       try{nm=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(names.get(no)||h.name,no):String(names.get(no)||h.name||'').trim()}catch(_){nm=String(names.get(no)||h.name||'').trim()}
-      const sexAge=h.sexAge||(org==='NAR'&&typeof liveNarSexAgeV56==='function'?liveNarSexAgeV56(rid,r,no):'')||'';
-      return {...h,name:nm||`馬名未取得(${no})`,sexAge};
+      return {...h,name:nm||`馬名未取得(${no})`};
     }).sort((a,b)=>a.no-b.no);
+    normalizeHorsePopularityV52(r.horses);
     try{const pe=probabilityRef();if(pe?.model)pe.model(r.horses)}catch(_){ }
     try{
       const ui=uiRef();
@@ -8618,22 +8462,10 @@ async function syncMainHorsesFromWinRowsV23(r,st){
 }
 function displaySelectionV23(type,selection,r){
   const raw=String(selection??'');
-  if(type==='枠連')return raw;
-  const ns=raw.match(/\d{1,2}/g)?.map(Number)||[];
-  if(!ns.length)return raw;
-  const hm=horseMap(r);
-  const part=n=>{
-    const h=hm.get(Number(n));
-    let name='';
-    try{name=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(h?.name,n):String(h?.name||'').trim()}catch(_){name=String(h?.name||'').trim()}
-    return name?`${n} ${name}`:String(n);
-  };
-  if(type==='単勝'||type==='複勝')return part(ns[0]);
-  if(['ワイド','馬連','馬単','3連複','3連単'].includes(type)){
-    const sep=(type==='馬単'||type==='3連単')?' → ':' - ';
-    return ns.map(part).join(sep);
-  }
-  return raw;
+  if(type!=='単勝'&&type!=='複勝')return raw;
+  const no=Number(raw.match(/\d{1,2}/)?.[0]||0),h=horseMap(r).get(no);
+  const name=String(h?.name||'').trim();
+  return name?`${no} ${name}`:raw;
 }
 function pWin(h){return Math.max(0,Math.min(.999999,Number(h?.modelProb)||0))}
 function pl2(a,b){const pa=pWin(a),pb=pWin(b);return pa*pb/Math.max(1e-9,1-pa)}
@@ -9043,57 +8875,47 @@ function parseNarOfficialSp35(html,type,st){
   const maxNo=type==='枠連'?8:18;
   const need=(type==='3連複'||type==='3連単')?3:2;
 
-  // FIXED56: 単勝・複勝は「馬番 / 馬名 / オッズ」のヘッダ列位置を確定してから読む。
-  // 斤量56.0・性齢・順位・馬番をオッズとして拾う旧ヒューリスティックは禁止。
+  // 単勝・複勝：SP版は 馬番｜馬名｜オッズ、人気順では 順位｜馬番｜馬名｜オッズ。
   if(type==='単勝'||type==='複勝'){
     let seq=0;
     for(const tb of tables){
-      const rows=[...tb.querySelectorAll('tr')];
-      let noIdx=-1,nameIdx=-1,oddsIdx=-1,rankIdx=-1;
-      for(const tr of rows){
-        const tx=[...tr.querySelectorAll('th,td')].map(c=>officialText32(c.textContent));
-        const hx=tx.map(x=>x.replace(/\s+/g,''));
-        const ni=hx.findIndex(x=>/^馬番$/.test(x));
-        const nmi=hx.findIndex(x=>/^馬名/.test(x));
-        if(ni<0||nmi<0)continue;
-        let oi=-1;
-        if(type==='単勝')oi=hx.findIndex(x=>/単勝.*オッズ|^単勝$/.test(x));
-        else oi=hx.findIndex(x=>/複勝.*オッズ|^複勝$/.test(x));
-        // SP単独ページでは列名が単に「オッズ」。
-        if(oi<0)oi=hx.findIndex(x=>/^オッズ$/.test(x));
-        if(oi<0)continue;
-        noIdx=ni;nameIdx=nmi;oddsIdx=oi;rankIdx=hx.findIndex(x=>/^(?:順位|順)$/.test(x));
-        break;
-      }
-      if(noIdx<0||nameIdx<0||oddsIdx<0)continue;
-
-      for(const tr of rows){
+      for(const tr of tb.querySelectorAll('tr')){
         const cells=[...tr.querySelectorAll('th,td')];
-        if(cells.length<=Math.max(noIdx,nameIdx,oddsIdx))continue;
-        const tx=cells.map(c=>officialText32(c.textContent));
-        const nm=String(tx[noIdx]||'').match(/^([1-9]|1[0-8])$/); if(!nm)continue;
-        const no=Number(nm[1]);
+        if(cells.length<3)continue;
+        const texts=cells.map(c=>officialText32(c.textContent));
+        const joined=texts.join('|');
+        if(/馬番/.test(joined)&&/馬名/.test(joined)&&/オッズ/.test(joined))continue;
 
-        let horseName=String(tx[nameIdx]||'').trim();
-        const sx=horseName.match(/^(.+?)\s+(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}(?:\s|$)/);
-        if(sx)horseName=sx[1];
-        try{horseName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(horseName,no):horseName}catch(_){}
-        if(!horseName||/^(?:牡|牝|騙|セン|せん|セ)\s*\d{1,2}$/.test(horseName))continue;
-
-        const oddsText=String(tx[oddsIdx]||'').replace(/,/g,'').replace(/\s+/g,'').replace(/[－–—―]/g,'-');
-        if(type==='単勝'&&!/^\d{1,5}(?:\.\d+)?$/.test(oddsText))continue;
-        if(type==='複勝'&&!/^\d{1,5}(?:\.\d+)?(?:-\d{1,5}(?:\.\d+)?)?$/.test(oddsText))continue;
-        const rg=range(oddsText);
-        if(!rg||rg.low<1||rg.high<1||rg.high>=10000)continue;
-
-        let rank=++seq;
-        if(rankIdx>=0&&rankIdx<tx.length){
-          const rm=String(tx[rankIdx]||'').match(/^\d{1,4}$/);
-          if(rm&&Number(rm[0])>=1)rank=Number(rm[0]);
+        let nameIndex=-1;
+        for(let i=0;i<texts.length;i++){
+          const x=texts[i];
+          if(!x||/^(?:人気順|馬番順|順位|順|位|馬番|馬名|オッズ)$/.test(x))continue;
+          if(/[ぁ-んァ-ヶ一-龠A-Za-z]/.test(x) && !/^\d/.test(x)){nameIndex=i;break}
         }
-        addRow(st,type,String(no),type==='単勝'?String(rg.mid):rg.text,rank);
-        const row=st.rows[type].find(x=>x.key===`${type}|${no}`);
-        if(row)row.horseName=horseName;
+        if(nameIndex<0)continue;
+
+        let no=0;
+        for(let i=nameIndex-1;i>=0;i--){
+          if(/^\d{1,2}$/.test(texts[i])){
+            const n=Number(texts[i]);
+            if(n>=1&&n<=18){no=n;break}
+          }
+        }
+        if(!no)continue;
+
+        let oddsText='';
+        for(let i=nameIndex+1;i<texts.length;i++){
+          const x=texts[i].replace(/,/g,'').replace(/\s+/g,'');
+          if(/^\d{1,5}(?:\.\d+)?(?:[-－–—―]\d{1,5}(?:\.\d+)?)?$/.test(x)){
+            oddsText=x.replace(/[－–—―]/g,'-');break;
+          }
+        }
+        if(!oddsText)continue;
+
+        const rg=range(oddsText);
+        if(!rg||rg.mid<1)continue;
+        seq++;
+        addRow(st,type,String(no),rg.text,seq);
       }
     }
     return (st.rows[type]?.length||0)-before;
@@ -9198,9 +9020,9 @@ function parseNarOfficialPopularRowsV40(html,type,st){
 function parseNarOfficialIntoRows32(html,type,st){
   const spAdded=parseNarOfficialSp35(html,type,st);
   if(spAdded>0)return spAdded;
-  // FIXED56: 単勝・複勝は公式ヘッダ列を確認できないページを採用しない。
-  // 旧fallbackは斤量(56.0等)や馬番(1,2,3...)をオッズと誤認するため fail-closed。
-  if(type==='単勝'||type==='複勝')return 0;
+  if(type==='単勝'||type==='複勝'){
+    const r=parseNarOfficialSingle32(html,st);return type==='単勝'?r.win:r.place;
+  }
   const looseAdded=parseNarOfficialPopularRowsV40(html,type,st);
   if(looseAdded>0)return looseAdded;
   return parseNarOfficialCombos32(html,type,st);
@@ -9267,7 +9089,7 @@ async function fetchNarOfficial32(r,id,type,st){
       const txt=String(x.text||'');
       if(txt.length<300||!/オッズ|地方競馬情報サイト|Odds/i.test(txt))throw new Error(`公式HTML不正 ${txt.length}字`);
       let added=parseNarOfficialIntoRows32(txt,type,st);
-      if(!(added>0 || st.rows[type]?.length) && type!=='単勝' && type!=='複勝') added+=parseNarOfficialTextFallback39(txt,type,st);
+      if(!(added>0 || st.rows[type]?.length)) added+=parseNarOfficialTextFallback39(txt,type,st);
       if(added>0 || st.rows[type]?.length)return {added,url:x.url||u,via:x.via||'bridge'};
       errs.push(`${new URL(u).pathname}: DOM/本文とも解析0件`);
     }catch(e){errs.push(`${new URL(u).pathname}: ${e?.message||e}`)}
@@ -9567,6 +9389,7 @@ function fixed26StableNoise(rid,no){
 }
 function ensureModelFromWinRowsV26(r,st){
   if(!r||!st)return false;
+  normalizeWinRowsPopularityV52(st);
   const winRows=(st.rows?.['単勝']||[]).filter(x=>/^\d{1,2}$/.test(String(x.selection||''))&&Number(x.odds)>=1);
   if(!winRows.length)return false;
   const old=new Map((r.horses||[]).map(h=>[Number(h.no),h]));
@@ -9574,25 +9397,26 @@ function ensureModelFromWinRowsV26(r,st){
     const h=old.get(Number(x.selection));
     return h && Number.isFinite(Number(h.modelProb)) && Number(h.modelProb)>0;
   });
-  if(currentComplete)return true;
+  if(currentComplete){
+    normalizeHorsePopularityV52(r.horses);
+    return true;
+  }
   const rid=raceId(r)||String(r?.id||r?.title||'race');
   const seed=winRows.map(x=>{
     const no=Number(x.selection), prev=old.get(no)||{};
     const prevNoise=Number(prev.modelNoise);
-    let prevName='';
-    try{prevName=typeof liveCleanHorseNameV22==='function'?liveCleanHorseNameV22(prev.name,no):String(prev.name||'').trim()}catch(_){prevName=String(prev.name||'').trim()}
     return {...prev,
       no,
       odds:Number(x.odds),
       pop:Number(x.rank)||Number(prev.pop)||0,
-      name:prevName||String(x.horseName||'').trim(),
-      sexAge:(typeof liveHorseSexAgeFromAnyV56==='function'?liveHorseSexAgeFromAnyV56(prev):'')||prev.sexAge||'',
+      name:String(prev.name||x.horseName||'').trim(),
       modelNoise:Number.isFinite(prevNoise)?prevNoise:fixed26StableNoise(rid,no)
     };
   });
   const pe=probabilityRef();
   try{if(pe?.model)pe.model(seed)}catch(e){console.warn('FIXED26 probability bootstrap',e)}
   r.horses=seed.sort((a,b)=>a.no-b.no);
+  normalizeHorsePopularityV52(r.horses);
   return r.horses.some(h=>Number.isFinite(Number(h.modelProb))&&Number(h.modelProb)>0);
 }
 function enrich(rows,type,r){
@@ -9647,6 +9471,7 @@ function mergeOddsSnapshotV40(target,fresh){
 function renderRows(){
   ensureUI();if(!currentRace)return;
   const st=stateFor(currentRace),tbody=document.getElementById('ticketOddsBody');if(!tbody)return;
+  normalizeWinRowsPopularityV52(st);
   let rows=st.rows[active]||[];const rid=raceId(currentRace);const isDemo=allOddsIsDemo();
   if(!isDemo)ensureModelFromWinRowsV26(currentRace,st);
   if(isDemo&&!rid)rows=demoRows(currentRace,active);
@@ -9751,23 +9576,13 @@ function hook(){
   return true;
 }
 
-// FIXED55: quota-saver adaptive LIVE odds refresh.
-// >10分:30秒 / 10〜5分:15秒 / 5〜3分:10秒 / 3分以内:5秒。
-// Exact 3-minute AUTO decision still forces one fresh all-ticket snapshot.
-const LIVE_ODDS_AUTO_MS_V28=30000;
+// FIXED29: next-upcoming-race focus + LIVE odds atomic auto refresh every 5 seconds.
+// Keeps the previous table visible while the next snapshot is fetched, then swaps all ticket rows at once.
+// If a refresh is still running, the next tick is skipped to avoid overlapping requests on iPad/Safari.
+const LIVE_ODDS_AUTO_MS_V28=5000;
 let liveOddsAutoBusyV28=false;
 let liveOddsAutoTimerV28=null;
-let liveOddsAutoStartedV28=false;
 let liveOddsAutoTickV28=0;
-function adaptiveOddsMsV55(r){
-  const start=new Date(r?.startTime||0).getTime(),now=Date.now();
-  if(!Number.isFinite(start)||start<=now)return 60000;
-  const left=start-now;
-  if(left<=3*60*1000)return 5000;
-  if(left<=5*60*1000)return 10000;
-  if(left<=10*60*1000)return 15000;
-  return 30000;
-}
 function liveRaceRefreshableV28(r){
   if(!r||allOddsIsDemo())return false;
   if(r.settled)return false;
@@ -9811,7 +9626,7 @@ async function refreshLiveOddsV28(reason='timer'){
   const seq=liveOddsAutoTickV28;
   const fresh=blankOddsStateV28(r);
   try{
-    setStatus(`全券種オッズ更新中… / 節約AUTO ${Math.round(adaptiveOddsMsV55(r)/1000)}秒 / #${seq}`);
+    setStatus(`全券種オッズ更新中… / AUTO 5秒 / #${seq}`);
     await preloadAllNetkeiba(r,fresh,true);
     // User may have switched races while the requests were in flight.
     if(r!==currentRace||raceId(currentRace)!==rid)return false;
@@ -9835,24 +9650,17 @@ async function refreshLiveOddsV28(reason='timer'){
     }catch(e){console.warn('FIXED28 main table redraw',e)}finally{window.__fixed23RenderGuard=false}
     return true;
   }catch(e){
-    console.warn('FIXED55 adaptive AUTO odds',e);
-    if(r===currentRace)setStatus(`節約AUTO 更新失敗: ${e?.message||e}`);
+    console.warn('FIXED28 AUTO 5sec odds',e);
+    if(r===currentRace)setStatus(`AUTO 5秒 更新失敗: ${e?.message||e}`);
     return false;
   }finally{
     liveOddsAutoBusyV28=false;
   }
 }
 function startLiveOddsAutoV28(){
-  if(liveOddsAutoStartedV28)return;
-  liveOddsAutoStartedV28=true;
-  const schedule=(delay)=>{
-    liveOddsAutoTimerV28=setTimeout(async()=>{
-      try{await refreshLiveOddsV28('adaptive')}catch(_){}
-      const r=liveRaceRefreshableV28(currentRace)?currentRace:nextUpcomingRaceV29();
-      schedule(adaptiveOddsMsV55(r));
-    },Math.max(1000,Number(delay)||LIVE_ODDS_AUTO_MS_V28));
-  };
-  schedule(1200);
+  if(liveOddsAutoTimerV28)return;
+  liveOddsAutoTimerV28=setInterval(()=>{refreshLiveOddsV28('timer').catch(()=>{})},LIVE_ODDS_AUTO_MS_V28);
+  setTimeout(()=>{refreshLiveOddsV28('startup').catch(()=>{})},1200);
 }
 
 async function getAutoCandidatesV37(r,minEv=1.10,force=true){
@@ -9908,11 +9716,11 @@ window.__oddsBoard={
   onRace,render:renderOrLoad,cache,hook,
   refreshNow:refreshLiveOddsV28,
   autoMs:LIVE_ODDS_AUTO_MS_V28,
-  nextAutoMs:adaptiveOddsMsV55,
   getAutoCandidates:getAutoCandidatesV37
 };
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()},{once:true});else{hook();setTimeout(hook,500);setTimeout(hook,2000);startLiveOddsAutoV28()}
-console.log('✅ FIXED55 adaptive quota-saver LIVE ODDS loaded');
+console.log('✅ FIXED29 NEXT-RACE FOCUS + ATOMIC AUTO 5SEC LIVE ODDS loaded');
+console.log('✅ FIXED52 POPULARITY BY LIVE WIN ODDS loaded');
 })();
 </script>
 
@@ -11425,7 +11233,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     const prev=window.getHistoryBlock || (typeof getHistoryBlock==='function'?getHistoryBlock:null);
     if(!prev || prev.__fixed51WebForce)return;
     const wrapped=async function(date,org,options={}){
-      const o=battleWebActive51?{...options,force:false,retries:Math.max(1,Number(options.retries||0)),timeoutMs:Math.max(16000,Number(options.timeoutMs||0))}:options;
+      const o=battleWebActive51?{...options,force:true,retries:Math.max(3,Number(options.retries||0)),timeoutMs:Math.max(22000,Number(options.timeoutMs||0))}:options;
       return await prev(date,org,o);
     };
     wrapped.__fixed51WebForce=true;
@@ -11439,7 +11247,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     if(host&&!document.getElementById('fixed51PeriodWebBadge')){
       const e=document.createElement('div');
       e.id='fixed51PeriodWebBadge';e.className='muted';e.style.marginTop='6px';
-      e.innerHTML='<b>FIXED55 期間仮想対戦＝キャッシュ優先:</b> 完了済み過去日は保存済み正常データを再利用し、不足日・当日だけWEB取得します。JRA=公式履歴 / NAR=keiba.go.jp。';
+      e.innerHTML='<b>FIXED51 期間仮想対戦＝WEB自動取得:</b> STARTを押すだけで選択期間のJRA＋NARをWEBから再取得します。事前の「WEBから取得」は不要です。JRA=公式履歴 / NAR=keiba.go.jp。';
       host.insertAdjacentElement('afterend',e);
     }
   }
@@ -11452,15 +11260,15 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     const old=btn.onclick;
     if(typeof old!=='function')return false;
     btn.dataset.fixed51Installed='1';
-    btn.textContent='💾 キャッシュ優先＋不足分WEB取得＋期間仮想対戦 START';
+    btn.textContent='🌐 WEB自動取得＋期間仮想対戦 START';
     btn.onclick=async function(ev){
       if(battleWebActive51)return;
       battleWebActive51=true;
-      this.textContent='💾 キャッシュ確認＋不足分WEB取得中…';
+      this.textContent='🌐 JRA＋NAR WEB取得中…';
       const p=document.getElementById('btProgress');
       try{
-        if(p)p.textContent='期間仮想対戦: 保存済み正常キャッシュを優先し、不足分だけWEB取得します…';
-        log51('期間仮想対戦: キャッシュ優先＋不足分WEB取得開始（JRA公式履歴 + NAR keiba.go.jp）','ok');
+        if(p)p.textContent='期間仮想対戦: 選択期間のJRA＋NARをWEBから自動取得します…';
+        log51('期間仮想対戦: WEB自動取得開始（JRA公式履歴 + NAR keiba.go.jp）','ok');
         await old.call(this,ev);
       }catch(e){
         if(p)p.textContent='停止: '+String(e?.message||e);
@@ -11468,7 +11276,7 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
         throw e;
       }finally{
         battleWebActive51=false;
-        this.textContent='💾 キャッシュ優先＋不足分WEB取得＋期間仮想対戦 START';
+        this.textContent='🌐 WEB自動取得＋期間仮想対戦 START';
       }
     };
     return true;
@@ -11482,925 +11290,5 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
   console.log('✅ FIXED51 period battle web auto-acquire JRA+NAR loaded');
 })();
 </script>
-
-<script>
-/* =========================================================
-   FIXED52 — AUTO PLAYER JOINS PERIOD CHARACTER BATTLE
-   2026-09-14
-   AUTO contract:
-   - For EACH ticket market whose historical decision price is actually present,
-     take exactly the single highest EV ticket when EV >= 1.10.
-   - Stake = 100 yen per selected ticket type.
-   - Selection is result-blind. Finish/payout are settlement-only.
-   - Never synthesize missing historical odds from refunds/results.
-   - With the current WEB history contract, WIN is always supported; PLACE is
-     supported when placeOddsLow exists; pair/trio markets are used only when
-     the race record contains their market odds explicitly.
-   ========================================================= */
-(()=>{
-  'use strict';
-  if(window.__FIXED52_AUTO_PERIOD_BATTLE__)return;
-  window.__FIXED52_AUTO_PERIOD_BATTLE__=true;
-
-  const AUTO='AUTOプレイヤー';
-  const TYPE52=[
-    {type:'単勝',bucket:'win',aliases:['win','単勝'],ordered:false},
-    {type:'複勝',bucket:'place',aliases:['place','複勝'],ordered:false,ranged:true},
-    {type:'ワイド',bucket:'wide',aliases:['wide','ワイド'],ordered:false,ranged:true},
-    {type:'馬連',bucket:'quinella',aliases:['quinella','馬連'],ordered:false},
-    {type:'馬単',bucket:'exacta',aliases:['exacta','馬単'],ordered:true},
-    {type:'3連複',bucket:'trio',aliases:['trio','3連複','三連複'],ordered:false},
-    {type:'3連単',bucket:'trifecta',aliases:['trifecta','3連単','三連単'],ordered:true}
-  ];
-  const n=v=>Number(v);
-  const finite=v=>Number.isFinite(n(v));
-  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const initial=()=>Number(window.engine?.settings?.initialBankroll||100000);
-  const makeAuto=()=>{const x=initial();return {id:'auto-player-period',name:AUTO,avatar:'🤖',ticket:'auto',minEV:1.10,staking:'fixed100',bankroll:x,initial:x,invested:0,returned:0,wins:0,bets:0,skips:0,peak:x,maxDD:0,maxWin:0,dayInvested:0,history:[x],byOrg:{JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}},periodAuto52:true}};
-
-  function cleanSel(type,sel){
-    const xs=String(sel??'').match(/\d+/g)?.map(Number)||[];
-    if(type==='単勝'||type==='複勝')return xs.length?String(xs[0]):'';
-    if(type==='3連複')return xs.slice(0,3).sort((a,b)=>a-b).join('-');
-    if(type==='馬連'||type==='ワイド')return xs.slice(0,2).sort((a,b)=>a-b).join('-');
-    if(type==='馬単')return xs.slice(0,2).join('-');
-    if(type==='3連単')return xs.slice(0,3).join('-');
-    return String(sel??'');
-  }
-
-  function normalizeRows(src,type){
-    const out=[];
-    if(Array.isArray(src)){
-      for(const r of src){
-        if(r==null)continue;
-        if(typeof r!=='object')continue;
-        const sel=cleanSel(type,r.selection??r.sel??r.combo??r.key??r.number??r.no);
-        const low=n(r.oddsLow??r.odds_low??r.low??r.minOdds??r.min_odds);
-        const high=n(r.oddsHigh??r.odds_high??r.high??r.maxOdds??r.max_odds);
-        const mid=n(r.odds??r.oddsMid??r.odds_mid??r.price??r.value);
-        const odds=finite(low)?low:(finite(mid)?mid:(finite(high)?high:NaN));
-        if(sel&&odds>=1)out.push({selection:sel,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
-      }
-    }else if(src&&typeof src==='object'){
-      for(const [k,v] of Object.entries(src)){
-        if(v==null)continue;
-        const obj=typeof v==='object'?v:{odds:v};
-        const sel=cleanSel(type,obj.selection??obj.sel??obj.combo??obj.key??k);
-        const low=n(obj.oddsLow??obj.odds_low??obj.low??obj.minOdds??obj.min_odds);
-        const high=n(obj.oddsHigh??obj.odds_high??obj.high??obj.maxOdds??obj.max_odds);
-        const mid=n(obj.odds??obj.oddsMid??obj.odds_mid??obj.price??obj.value??v);
-        const odds=finite(low)?low:(finite(mid)?mid:(finite(high)?high:NaN));
-        if(sel&&odds>=1)out.push({selection:sel,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
-      }
-    }
-    return out;
-  }
-
-  function marketRows(race,meta){
-    // WIN: canonical historical horse odds.
-    if(meta.type==='単勝')return (race?.horses||[]).filter(h=>n(h?.odds)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.odds),oddsLow:n(h.odds),oddsHigh:n(h.odds)}));
-    // PLACE: use explicit historical lower bound only; never infer from refund.
-    if(meta.type==='複勝'){
-      const rows=(race?.horses||[]).filter(h=>n(h?.placeOddsLow)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.placeOddsLow),oddsLow:n(h.placeOddsLow),oddsHigh:n(h.placeOddsHigh??h.placeOddsLow)}));
-      if(rows.length)return rows;
-    }
-    const containers=[race?.ticketOdds,race?.ticket_odds,race?.oddsByType,race?.odds_by_type,race?.marketOdds,race?.market_odds,race?.markets,race?.finalOddsByType,race?.final_odds_by_type];
-    for(const box of containers){
-      if(!box||typeof box!=='object')continue;
-      for(const key of [meta.type,...meta.aliases]){
-        const rows=normalizeRows(box[key],meta.type);
-        if(rows.length)return rows;
-      }
-    }
-    return [];
-  }
-
-  function prob52(meta,sel,race){
-    if(meta.type==='単勝'){
-      const h=(race?.horses||[]).find(x=>Number(x.no)===Number(sel));return n(h?.modelProb);
-    }
-    if(meta.type==='複勝'){
-      const h=(race?.horses||[]).find(x=>Number(x.no)===Number(sel));
-      if(finite(h?.placeProb))return n(h.placeProb);
-    }
-    try{if(typeof calcProb==='function')return n(calcProb(meta.type,sel,race))}catch(_){ }
-    return NaN;
-  }
-
-  function choose52(race){
-    const picked=[];
-    for(const meta of TYPE52){
-      const candidates=marketRows(race,meta).map(x=>{
-        const p=prob52(meta,x.selection,race),ev=p*n(x.odds);
-        return {...x,p,ev,meta};
-      }).filter(x=>finite(x.p)&&x.p>0&&finite(x.ev)&&x.ev>=1.10);
-      candidates.sort((a,b)=>b.ev-a.ev||b.p-a.p||a.odds-b.odds||String(a.selection).localeCompare(String(b.selection)));
-      if(candidates[0])picked.push(candidates[0]);
-    }
-    return picked;
-  }
-
-  function payoutKey52(type,sel){return cleanSel(type,sel)}
-  function settle52(auto,race,pick){
-    const bucket=race?.result?.payouts?.[pick.meta.bucket];
-    // If the entire official settlement bucket is absent, do not fabricate a result.
-    if(!bucket||typeof bucket!=='object'||!Object.keys(bucket).length){auto.skips++;return {scored:false,reason:'NO_SETTLEMENT_BUCKET'}}
-    const key=payoutKey52(pick.meta.type,pick.selection),raw=bucket[key];
-    const hit=raw!=null;
-    let mult=0,refund=0;
-    if(hit){
-      try{mult=typeof btPayoutMultiplier==='function'?Number(btPayoutMultiplier(raw)):Number(raw)}catch(_){mult=Number(raw)}
-      if(!Number.isFinite(mult)||mult<0){auto.skips++;return {scored:false,reason:'BAD_SETTLEMENT'}}
-      refund=Math.round(100*mult);
-    }
-    auto.invested+=100;auto.bankroll-=100;auto.bets++;
-    if(hit){auto.returned+=refund;auto.bankroll+=refund;auto.wins++;auto.maxWin=Math.max(auto.maxWin,refund-100)}
-    const org=String(race?.org||'').toUpperCase();if(auto.byOrg[org]){auto.byOrg[org].inv+=100;if(hit)auto.byOrg[org].ret+=refund}
-    auto.peak=Math.max(auto.peak,auto.bankroll);auto.maxDD=Math.max(auto.maxDD,(auto.peak-auto.bankroll)/Math.max(1,auto.peak));
-    return {scored:true,hit,raw,mult,refund,profit:refund-100,key};
-  }
-
-  function rid52(r){return String(r?.id||r?.raceId||r?.race_id||`${r?.date||''}-${r?.org||''}-${r?.track||''}-${r?.no||''}`)}
-
-  if(typeof runBacktestOnHistory==='function'){
-    const prevRun52=runBacktestOnHistory;
-    runBacktestOnHistory=async function(historyBlocks,onProgress){
-      const result=await prevRun52(historyBlocks,onProgress);
-      try{
-        const auto=makeAuto(),races=[];
-        for(const block of historyBlocks||[]){
-          const v=typeof btValidateBlock==='function'?btValidateBlock(block):{valid:block?.races||[]};
-          for(const r of v.valid||[])races.push({...r,org:r.org||block.org,date:r.date||block.date});
-        }
-        races.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.startTime||'').localeCompare(b.startTime||'')||Number(a.no||0)-Number(b.no||0));
-        const autoAudit=[],timelineMap=new Map();
-        timelineMap.set('START',{bankroll:auto.bankroll,profit:0});
-        for(const raw of races){
-          if(auto.bankroll<100){auto.history.push(auto.bankroll);timelineMap.set(rid52(raw),{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial});continue}
-          const hs=typeof btProbabilities==='function'?btProbabilities((raw.horses||[]).map(h=>({...h}))):(raw.horses||[]).map(h=>({...h}));
-          const race={...raw,horses:hs};
-          const picks=choose52(race);
-          if(!picks.length)auto.skips++;
-          for(const p of picks){
-            if(auto.bankroll<100)break;
-            const s=settle52(auto,race,p);
-            if(!s.scored)continue;
-            autoAudit.push({
-              date:race.date||'',track:race.track||'',no:race.no||'',character:AUTO,
-              ticket:p.meta.type,selection:p.selection,stake:100,rawPayout:s.raw??null,multiplier:s.mult,
-              refund:s.refund,profit:s.profit,odds:p.odds,prob:p.p,ev:p.ev,
-              status:s.hit?'的中':'不的中',rawJson:JSON.stringify(race.result?.payouts||{}),
-              result_used_for_selection:false,selection_locked_before_result:true,
-              auto_contract:'EV>=1.10 / highest EV per available ticket type / 100 yen'
-            });
-          }
-          auto.history.push(auto.bankroll);timelineMap.set(rid52(raw),{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial});
-        }
-        result.characters=(result.characters||[]).filter(c=>String(c?.name||'')!==AUTO);result.characters.unshift(auto);
-        result.audit=[...(result.audit||[]),...autoAudit];
-        if(Array.isArray(result.timeline)&&result.timeline.length){
-          result.timeline[0].bankroll={...(result.timeline[0].bankroll||{}),[AUTO]:auto.initial};
-          result.timeline[0].profit={...(result.timeline[0].profit||{}),[AUTO]:0};
-          let idx=0;
-          for(let i=1;i<result.timeline.length;i++){
-            const r=races[idx++];if(!r)break;const x=timelineMap.get(rid52(r))||{bankroll:auto.bankroll,profit:auto.bankroll-auto.initial};
-            result.timeline[i].bankroll={...(result.timeline[i].bankroll||{}),[AUTO]:x.bankroll};
-            result.timeline[i].profit={...(result.timeline[i].profit||{}),[AUTO]:x.profit};
-          }
-        }
-        result.autoPlayerContract52={enabled:true,minEV:1.10,stake:100,rule:'highest EV once per available ticket type',resultBlind:true,missingMarketOdds:'skip',tickets:TYPE52.map(x=>x.type)};
-      }catch(e){console.error('FIXED52 AUTO period simulation',e);try{window.UI?.addLog?.('FIXED52 AUTO対戦エラー: '+String(e?.message||e),'error')}catch(_){}}
-      return result;
-    };
-    try{window.runBacktestOnHistory=runBacktestOnHistory}catch(_){ }
-  }
-
-  function addUi52(){
-    const box=document.getElementById('periodBattle48');
-    if(box&&!document.getElementById('fixed52AutoLine')){
-      const line=document.createElement('div');line.id='fixed52AutoLine';line.style.marginTop='6px';
-      line.innerHTML='<b>🤖 AUTOプレイヤー参加:</b> 各券種でEV110%以上なら、その券種の最高EVを1点だけ100円。履歴に意思決定用の市場オッズが無い券種は見送り、払戻・着順からオッズを逆算しません。';
-      box.appendChild(line);
-    }
-    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
-    if(host&&!document.getElementById('fixed52AutoBadge')){
-      const e=document.createElement('div');e.id='fixed52AutoBadge';e.className='muted';e.style.marginTop='4px';
-      e.textContent='FIXED52 AUTO参加: 各券種 EV>=1.10 → 最高EV1点×100円 / 結果ブラインド / 市場オッズ未取得券種は見送り';
-      host.insertAdjacentElement('afterend',e);
-    }
-  }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(addUi52,2500),{once:true});else setTimeout(addUi52,2500);
-  console.log('✅ FIXED52 AUTO player joins period battle — per available ticket type');
-})();
-</script>
-
-
-<script>
-/* =========================================================
-   FIXED53 — NO-BET DIAGNOSTICS + FINAL-ODDS BLIND + EV THRESHOLD SCAN
-   2026-09-14
-   - Makes FINAL_ODDS_VIRTUAL explicit as FINAL-ODDS BLIND.
-   - Re-simulates AUTO player with the selected timing mode respected.
-   - Selection is physically result-blind; settlement reads result only after picks lock.
-   - Adds NO BET funnel/reason diagnostics and an EV-threshold sensitivity scan.
-   - Adds AUTO bets to the v2.6 audit/validation layer so AUTO is ranked consistently.
-   ========================================================= */
-(()=>{
-  'use strict';
-  if(window.__FIXED53_DIAG_EVSCAN__)return;
-  window.__FIXED53_DIAG_EVSCAN__=true;
-
-  const AUTO='AUTOプレイヤー';
-  const MODE_FINAL='FINAL_RESEARCH';
-  const MODE_PRE='PRE_RACE_VALIDATION';
-  const MODE_BLIND='FINAL_ODDS_VIRTUAL';
-  const CUTOFF_MS=180000;
-  const THRESHOLDS=[1.00,1.02,1.05,1.10,1.15,1.20,1.30];
-  const TYPES=[
-    {type:'単勝',bucket:'win',aliases:['win','単勝']},
-    {type:'複勝',bucket:'place',aliases:['place','複勝'],ranged:true},
-    {type:'ワイド',bucket:'wide',aliases:['wide','ワイド'],ranged:true},
-    {type:'馬連',bucket:'quinella',aliases:['quinella','馬連']},
-    {type:'馬単',bucket:'exacta',aliases:['exacta','馬単']},
-    {type:'3連複',bucket:'trio',aliases:['trio','3連複','三連複']},
-    {type:'3連単',bucket:'trifecta',aliases:['trifecta','3連単','三連単']}
-  ];
-  const n=v=>Number(v);
-  const finite=v=>Number.isFinite(Number(v));
-  const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
-  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const iso=()=>new Date().toISOString();
-
-  function raceId(r){
-    for(const v of [r?.id,r?.raceId,r?.race_id,r?.url,r?.sourceUrl,r?.resultUrl]){
-      const m=String(v??'').match(/(?:race_id=)?(20\d{10})/);if(m)return m[1];
-    }
-    const d=String(r?.date||'').replace(/-/g,''),org=String(r?.org||'UNK').toUpperCase(),tr=String(r?.track||'TRACK').replace(/[\s　]+/g,''),no=Number(r?.no||0);
-    return `${d||'DATE'}-${org}-${tr}-${String(no||0).padStart(2,'0')}`;
-  }
-  function cleanSel(type,sel){
-    const xs=String(sel??'').match(/\d+/g)?.map(Number)||[];
-    if(type==='単勝'||type==='複勝')return xs.length?String(xs[0]):'';
-    if(type==='3連複')return xs.slice(0,3).sort((a,b)=>a-b).join('-');
-    if(type==='馬連'||type==='ワイド')return xs.slice(0,2).sort((a,b)=>a-b).join('-');
-    if(type==='馬単')return xs.slice(0,2).join('-');
-    if(type==='3連単')return xs.slice(0,3).join('-');
-    return String(sel??'');
-  }
-  function normalizeRows(src,type){
-    const out=[];
-    const push=(sel,obj)=>{
-      if(obj==null)return;
-      const o=typeof obj==='object'?obj:{odds:obj};
-      const key=cleanSel(type,o.selection??o.sel??o.combo??o.key??o.number??o.no??sel);
-      const low=n(o.oddsLow??o.odds_low??o.low??o.minOdds??o.min_odds);
-      const high=n(o.oddsHigh??o.odds_high??o.high??o.maxOdds??o.max_odds);
-      const mid=n(o.odds??o.oddsMid??o.odds_mid??o.price??o.value??obj);
-      const odds=finite(low)&&low>=1?low:(finite(mid)&&mid>=1?mid:(finite(high)&&high>=1?high:NaN));
-      if(key&&odds>=1)out.push({selection:key,odds,oddsLow:finite(low)?low:odds,oddsHigh:finite(high)?high:odds});
-    };
-    if(Array.isArray(src))src.forEach((x,i)=>{if(x&&typeof x==='object')push(i+1,x)});
-    else if(src&&typeof src==='object')Object.entries(src).forEach(([k,v])=>push(k,v));
-    return out;
-  }
-  function marketRows(race,meta){
-    if(meta.type==='単勝')return (race?.horses||[]).filter(h=>n(h?.odds)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.odds),oddsLow:n(h.odds),oddsHigh:n(h.odds)}));
-    if(meta.type==='複勝'){
-      const rows=(race?.horses||[]).filter(h=>n(h?.placeOddsLow)>=1).map(h=>({selection:String(Number(h.no)),odds:n(h.placeOddsLow),oddsLow:n(h.placeOddsLow),oddsHigh:n(h.placeOddsHigh??h.placeOddsLow)}));
-      if(rows.length)return rows;
-    }
-    const boxes=[race?.ticketOdds,race?.ticket_odds,race?.oddsByType,race?.odds_by_type,race?.marketOdds,race?.market_odds,race?.markets,race?.finalOddsByType,race?.final_odds_by_type];
-    for(const box of boxes){
-      if(!box||typeof box!=='object')continue;
-      for(const key of [meta.type,...meta.aliases]){const rows=normalizeRows(box[key],meta.type);if(rows.length)return rows}
-    }
-    return [];
-  }
-  function modelHorses(horses){
-    const hs=(horses||[]).filter(h=>n(h?.odds)>1).map(h=>({...h,no:Number(h.no),odds:Number(h.odds)})).filter(h=>Number.isFinite(h.no)&&h.no>0);
-    if(!hs.length)return hs;
-    const raws=hs.map(h=>1/Math.max(1.01,h.odds)),sum=raws.reduce((a,b)=>a+b,0);
-    hs.forEach((h,i)=>h.marketProb=raws[i]/sum);
-    const rank=[...hs].sort((a,b)=>a.odds-b.odds||a.no-b.no);rank.forEach((h,i)=>{h.pop=i+1});
-    const weights=hs.map(h=>{const rankBoost=Math.max(-.08,.12-(h.pop-1)*.012),det=((h.no*37)%17-8)/100;return Math.max(.0001,h.marketProb*(1+rankBoost+det*.10))});
-    const total=weights.reduce((a,b)=>a+b,0);
-    hs.forEach((h,i)=>{h.modelProb=weights[i]/total;h.fairOdds=1/h.modelProb;h.ev=h.modelProb*h.odds;h.edge=h.modelProb-h.marketProb;h.valueRatio=h.modelProb/h.marketProb;h.oddsEdge=h.odds/h.fairOdds});
-    return hs;
-  }
-  function probabilityCache(race){
-    const hs=race.horses||[],win=new Map(),place=new Map(),wide=new Map(),quinella=new Map(),exacta=new Map(),trio=new Map(),trifecta=new Map();
-    for(const h of hs){const no=Number(h.no),p=clamp(n(h.modelProb)||0,0,.999999);win.set(String(no),p);place.set(String(no),0)}
-    const add=(m,k,v)=>m.set(k,(m.get(k)||0)+v);
-    for(let i=0;i<hs.length;i++)for(let j=0;j<hs.length;j++)if(i!==j){
-      const a=hs[i],b=hs[j],pa=win.get(String(a.no))||0,pb=win.get(String(b.no))||0;
-      const p2=pa*(pb/Math.max(1e-9,1-pa));
-      add(exacta,`${a.no}-${b.no}`,p2);add(quinella,[a.no,b.no].sort((x,y)=>x-y).join('-'),p2);
-      for(let k=0;k<hs.length;k++)if(k!==i&&k!==j){
-        const c=hs[k],pc=win.get(String(c.no))||0;
-        const p3=p2*(pc/Math.max(1e-9,1-pa-pb));
-        if(!(p3>0&&Number.isFinite(p3)))continue;
-        add(trifecta,`${a.no}-${b.no}-${c.no}`,p3);
-        add(trio,[a.no,b.no,c.no].sort((x,y)=>x-y).join('-'),p3);
-        add(place,String(a.no),p3);add(place,String(b.no),p3);add(place,String(c.no),p3);
-        add(wide,[a.no,b.no].sort((x,y)=>x-y).join('-'),p3);
-        add(wide,[a.no,c.no].sort((x,y)=>x-y).join('-'),p3);
-        add(wide,[b.no,c.no].sort((x,y)=>x-y).join('-'),p3);
-      }
-    }
-    for(const m of [place,wide,trio])for(const [k,v] of m)m.set(k,Math.min(1,v));
-    return {win,place,wide,quinella,exacta,trio,trifecta};
-  }
-  function probFor(meta,sel,cache){return n(cache?.[meta.bucket]?.get(cleanSel(meta.type,sel)))}
-
-  function snapshotAt(s){return s?.marketTime??s?.market_time??s?.at??s?.timestamp??s?.time??s?.fetchedAt??null}
-  function snapshotHorses(s){
-    const x=s?.horses??s?.odds??s?.entries??s?.data;
-    if(Array.isArray(x))return x;
-    if(x&&typeof x==='object')return Object.entries(x).map(([no,v])=>typeof v==='object'?{no,...v}:{no,odds:v});
-    return [];
-  }
-  function findPreSnapshot(race){
-    const start=Date.parse(String(race?.startTime||race?.start_time||'')),cutoff=Number.isFinite(start)?start-CUTOFF_MS:NaN,arr=[];
-    for(const k of ['oddsSnapshots','odds_snapshots','oddsHistory','odds_history','marketSnapshots','market_snapshots','preRaceSnapshots','pre_race_snapshots'])if(Array.isArray(race?.[k]))arr.push(...race[k]);
-    for(const k of ['preRaceSnapshot','pre_race_snapshot'])if(race?.[k]&&typeof race[k]==='object')arr.push(race[k]);
-    const cand=[];
-    for(const s of arr){const at=snapshotAt(s),t=Date.parse(String(at||'')),hs=snapshotHorses(s);if(!hs.length||!Number.isFinite(t))continue;if(Number.isFinite(cutoff)?t<=cutoff:(s?.verified===true||s?.preRaceVerified===true||s?.pre_race_verified===true))cand.push({at,t,hs,s})}
-    cand.sort((a,b)=>b.t-a.t);if(cand[0])return cand[0];
-    const at=race?.preRaceTimestamp||race?.pre_race_timestamp||race?.preRaceOddsAt||null,t=Date.parse(String(at||''));
-    if(Number.isFinite(t)&&(Number.isFinite(cutoff)?t<=cutoff:true)){
-      const hs=(race.horses||[]).map(h=>({no:h.no,odds:h.preRaceOdds??h.pre_race_odds,placeOddsLow:h.preRacePlaceOddsLow??h.pre_race_place_odds_low,placeOddsHigh:h.preRacePlaceOddsHigh??h.pre_race_place_odds_high}));
-      if(hs.some(h=>n(h.odds)>1))return {at,t,hs,s:{verified:true}};
-    }
-    return null;
-  }
-  function preHorses(original,snap){
-    if(!snap)return null;const map=new Map((snap.hs||[]).map(x=>[Number(x.no),x]));
-    const hs=original.map(h=>{const s=map.get(Number(h.no)),o=n(s?.odds??s?.winOdds??s?.win_odds),pl=n(s?.placeOddsLow??s?.place_odds_low??s?.placeLow),ph=n(s?.placeOddsHigh??s?.place_odds_high??s?.placeHigh??pl);return {...h,odds:o>1?o:NaN,placeOddsLow:pl>=1?pl:undefined,placeOddsHigh:ph>=pl?ph:undefined}});
-    return hs.length&&!hs.some(h=>!(n(h.odds)>1))?hs:null;
-  }
-  function finalHorses(original,rid){
-    const hs=original.map(h=>({...h}));if(!hs.length||hs.some(h=>!(n(h.odds)>1)))return null;
-    try{const cache=JSON.parse(localStorage.getItem('btPlaceOddsCacheV23')||'{}')||{},rec=cache[rid];for(const h of hs){const p=rec?.map?.[Number(h.no)];if(p){h.placeOddsLow=n(p.low);h.placeOddsHigh=n(p.high??p.low)}}}catch(_){ }
-    return hs;
-  }
-  function stripFinalMarkets(r){
-    const d={...r};
-    for(const k of ['ticketOdds','ticket_odds','oddsByType','odds_by_type','marketOdds','market_odds','markets','finalOddsByType','final_odds_by_type'])delete d[k];
-    return d;
-  }
-  function currentMode(result){const v=result?.validationMode||document.getElementById('btValidationMode26')?.value||localStorage.getItem('btValidationMode26')||MODE_FINAL;return [MODE_PRE,MODE_BLIND].includes(v)?v:MODE_FINAL}
-  function prepare(blocks,mode){
-    const out=[];let total=0,rejected=0,preUsed=0,finalUsed=0;
-    for(const b of blocks||[]){
-      let valid=[];
-      try{valid=typeof btValidateBlock==='function'?(btValidateBlock(b).valid||[]):(b?.races||[])}catch(_){valid=b?.races||[]}
-      for(const rr of valid){
-        total++;const raw={...rr,date:rr.date||b.date,org:rr.org||b.org},rid=raceId(raw),orig=(raw.horses||[]).map(h=>({...h}));
-        let hs=null,source='',marketTime=null,allowFinalMarkets=false;
-        if(mode===MODE_PRE){const s=findPreSnapshot(raw);hs=preHorses(orig,s);if(hs){source='PRE_RACE_3M_OR_EARLIER';marketTime=s.at;preUsed++}}
-        else if(mode===MODE_BLIND){const s=findPreSnapshot(raw);hs=preHorses(orig,s);if(hs){source='PRE_RACE_3M_OR_EARLIER';marketTime=s.at;preUsed++}else{hs=finalHorses(orig,rid);if(hs){source='FINAL_ODDS_RESULT_BLIND';allowFinalMarkets=true;finalUsed++}}}
-        else{hs=finalHorses(orig,rid);if(hs){source='FINAL_RESEARCH';allowFinalMarkets=true;finalUsed++}}
-        if(!hs){rejected++;continue}
-        let decision=allowFinalMarkets?{...raw}:{...stripFinalMarkets(raw)};
-        decision.horses=hs;decision.result=null;decision._source53=source;decision._marketTime53=marketTime;decision._rid53=rid;
-        out.push({raw,decision,rid,source,marketTime,allowFinalMarkets});
-      }
-    }
-    out.sort((a,b)=>(a.raw.date||'').localeCompare(b.raw.date||'')||(a.raw.startTime||'').localeCompare(b.raw.startTime||'')||Number(a.raw.no||0)-Number(b.raw.no||0));
-    return {races:out,diag:{total,eligible:out.length,rejected,preUsed,finalUsed,mode}};
-  }
-
-  function analyze(prep){
-    const byType=Object.fromEntries(TYPES.map(t=>[t.type,{marketRaces:0,marketRows:0,probabilityRows:0,ev110Rows:0,locked110:0,scored110:0}]));
-    const races=[];let candidates=0,probRows=0,ev110=0,locked=0,scored=0,noBet=0,noMarket=0,noProbability=0,below=0,unsettled=0;
-    for(const item of prep.races){
-      const hs=modelHorses(item.decision.horses),decision={...item.decision,horses:hs,result:null},cache=probabilityCache(decision),best=[];
-      let raceMarkets=0,raceProb=0,raceEv110=0;
-      for(const meta of TYPES){
-        const rows=marketRows(decision,meta);if(rows.length){byType[meta.type].marketRaces++;raceMarkets+=rows.length;byType[meta.type].marketRows+=rows.length}
-        const vals=[];
-        for(const row of rows){const p=probFor(meta,row.selection,cache),ev=p*n(row.odds);if(!(p>0&&Number.isFinite(p)&&Number.isFinite(ev)))continue;const x={...row,p,ev,meta};vals.push(x);candidates++;probRows++;raceProb++;byType[meta.type].probabilityRows++;if(ev>=1.10){ev110++;raceEv110++;byType[meta.type].ev110Rows++}}
-        vals.sort((a,b)=>b.ev-a.ev||b.p-a.p||a.odds-b.odds||String(a.selection).localeCompare(String(b.selection)));
-        if(vals[0])best.push(vals[0]);
-      }
-      const picks110=best.filter(x=>x.ev>=1.10);locked+=picks110.length;picks110.forEach(x=>byType[x.meta.type].locked110++);
-      if(!picks110.length){noBet++;if(!raceMarkets)noMarket++;else if(!raceProb)noProbability++;else below++}
-      const settled110=[];
-      for(const p of picks110){const s=settlePreview(item.raw,p);if(s.scored){settled110.push({p,s});scored++;byType[p.meta.type].scored110++}else unsettled++}
-      races.push({...item,decision,best,picks110,settled110,counts:{market:raceMarkets,prob:raceProb,ev110:raceEv110}});
-    }
-    return {prep,races,summary:{races:prep.races.length,candidates,probRows,ev110,locked,scored,noBet,noMarket,noProbability,below,unsettled},byType};
-  }
-  function settlePreview(raw,pick){
-    const bucket=raw?.result?.payouts?.[pick.meta.bucket];
-    if(!bucket||typeof bucket!=='object'||!Object.keys(bucket).length)return {scored:false,reason:'NO_SETTLEMENT_BUCKET'};
-    const key=cleanSel(pick.meta.type,pick.selection),rawPayout=bucket[key],hit=rawPayout!=null;
-    let mult=0;
-    if(hit){try{mult=typeof btPayoutMultiplier==='function'?Number(btPayoutMultiplier(rawPayout)):Number(rawPayout)}catch(_){mult=Number(rawPayout)}if(!Number.isFinite(mult)||mult<0)return {scored:false,reason:'BAD_SETTLEMENT'}}
-    const refund=hit?Math.round(100*mult):0;
-    return {scored:true,key,hit,rawPayout,mult,refund,profit:refund-100};
-  }
-  function rawYen(x,mult){
-    if(x&&typeof x==='object')for(const k of ['refundYen','refund_yen','payoutYen','payout_yen','yen','amount'])if(Number.isFinite(Number(x[k])))return Number(x[k]);
-    return Number.isFinite(Number(mult))?Math.round(Number(mult)*100):null;
-  }
-  function simulate(analysis,threshold,makeAudit=false){
-    const initial=Math.max(100,Number(window.engine?.settings?.initialBankroll||100000));let bank=initial,peak=initial,maxDD=0,invested=0,returned=0,hits=0,bets=0,decisions=0,unsettled=0,noBetRaces=0,maxWin=0;
-    const byOrg={JRA:{inv:0,ret:0},NAR:{inv:0,ret:0}},audit=[],history=[initial],raceStates=[];
-    for(const r of analysis.races){
-      const picks=r.best.filter(x=>x.ev>=threshold);decisions+=picks.length;if(!picks.length)noBetRaces++;
-      const before=bank,scored=[];
-      for(const p of picks){const s=settlePreview(r.raw,p);if(s.scored)scored.push({p,s});else unsettled++}
-      const raceStake=scored.length*100,raceRet=scored.reduce((z,x)=>z+x.s.refund,0);bank=bank-raceStake+raceRet;invested+=raceStake;returned+=raceRet;bets+=scored.length;hits+=scored.filter(x=>x.s.hit).length;
-      const org=String(r.raw?.org||'').toUpperCase();if(byOrg[org]){byOrg[org].inv+=raceStake;byOrg[org].ret+=raceRet}
-      peak=Math.max(peak,bank);maxDD=Math.max(maxDD,(peak-bank)/Math.max(1,peak));history.push(bank);raceStates.push({rid:r.rid,bankroll:bank,profit:bank-initial});
-      if(makeAudit&&scored.length){
-        const after=bank,rate=before>0?raceStake/before:0;
-        for(const {p,s} of scored){
-          maxWin=Math.max(maxWin,s.profit);
-          audit.push({rid:r.rid,raw:r.raw,source:r.source,marketTime:r.marketTime,p,s,before,after,raceStake,rate,threshold});
-        }
-      }
-    }
-    return {threshold,initial,bankroll:bank,profit:bank-initial,invested,returned,roi:invested?returned/invested*100:0,hits,bets,hitRate:bets?hits/bets:0,decisions,unsettled,noBetRaces,maxDD,maxWin,byOrg,history,raceStates,audit};
-  }
-  function ece(rows){if(!rows.length)return 0;let z=0;for(let i=0;i<10;i++){const lo=i/10,hi=(i+1)/10,a=rows.filter(r=>r.probability>=lo&&(i===9?r.probability<=hi:r.probability<hi));if(!a.length)continue;const p=a.reduce((s,r)=>s+r.probability,0)/a.length,o=a.reduce((s,r)=>s+r.outcome,0)/a.length;z+=a.length/rows.length*Math.abs(p-o)}return z}
-  function autoValidation(sim,bets53){
-    const cnt=bets53.length,inv=sim.invested,ret=sim.returned,profit=ret-inv,roi=inv?ret/inv*100:0,hit=cnt?bets53.reduce((s,r)=>s+r.outcome,0)/cnt:0,brier=cnt?bets53.reduce((s,r)=>s+(r.probability-r.outcome)**2,0)/cnt:1,ec=ece(bets53);
-    const accuracyScore=100*(1-Math.min(1,brier/.25)),calibrationScore=100*(1-Math.min(1,ec/.25)),roiScore=clamp(50+(roi-100),0,100),ddScore=100*(1-Math.min(1,sim.maxDD/.50)),sampleScore=Math.min(100,Math.sqrt(cnt/500)*100),composite=.30*accuracyScore+.25*calibrationScore+.20*roiScore+.15*ddScore+.10*sampleScore;
-    return {n:cnt,uniquePredictionEvents:cnt,invested:inv,returned:ret,profit,roi,hitRate:hit,brier,ece:ec,maxDD:sim.maxDD,growth:(sim.bankroll-sim.initial)/sim.initial,maxBetRate:bets53.reduce((m,r)=>Math.max(m,n(r.actual_investment_rate)||0),0),maxRaceRate:bets53.reduce((m,r)=>Math.max(m,n(r.race_investment_rate)||0),0),ruinProbability500:null,accuracyScore,calibrationScore,roiScore,ddScore,sampleScore,composite};
-  }
-  function autoBets(sim,result,mode){
-    const runId=result?.runMeta?.run_id||`fixed53-${Date.now()}`,probVersion=result?.validation?.modelCalibration?.probability_model_version||'WIN-PROB-v2.6';
-    return sim.audit.map((a,i)=>{
-      const {raw,p,s}=a,org=String(raw?.org||'').toUpperCase(),finalDecision=a.source!=='PRE_RACE_3M_OR_EARLIER',pmeta=raw?.result?.payoutMeta||{};
-      return {
-        bet_id:`${runId}::${a.rid}::AUTO::${p.meta.type}::${p.selection}::${i+1}`,race_id:a.rid,run_id:runId,
-        date:raw?.date||'',org,track:raw?.track||'',race_no:Number(raw?.no||0),character:AUTO,bet_type:p.meta.type,selection:p.selection,stake:100,
-        prediction_generated_at:null,simulation_prediction_generated_at:iso(),prediction_timing_status:a.source==='PRE_RACE_3M_OR_EARLIER'?'REPLAY_ON_VERIFIED_PRE_RACE_MARKET_SNAPSHOT':'FINAL_ODDS_RESULT_BLIND_DECISION',pre_race_timestamp_verified:a.source==='PRE_RACE_3M_OR_EARLIER',
-        odds_fetched_at:null,odds_acquired_at:null,odds_market_time:a.marketTime||null,market_snapshot_pre_race_verified:a.source==='PRE_RACE_3M_OR_EARLIER',odds_snapshot_type:a.source,
-        predicted_odds:p.odds,final_odds:finalDecision?p.odds:null,final_odds_low:finalDecision?p.odds:null,final_odds_high:finalDecision?(p.oddsHigh||p.odds):null,
-        confirmed_refund_yen_per_100:s.hit?rawYen(s.rawPayout,s.mult):0,confirmed_payout_multiplier:s.mult,refund:s.refund,profit:s.profit,
-        probability:p.p,predicted_ev:p.ev,kelly_fraction:0,individual_kelly_fraction:0,portfolio_kelly_fraction:0,kelly_scale:0,
-        actual_investment_rate:a.before>0?100/a.before:0,race_investment_rate:a.rate,race_stake_total:a.raceStake,bankroll_before:a.before,bankroll_after:a.after,bankroll_before_race:a.before,bankroll_after_race:a.after,
-        decision_batch:'FIXED53_AUTO_FROZEN_BEFORE_SETTLEMENT',model_version:result?.modelVersion||'BT-MODEL-v2.6',probability_model_version:probVersion,race_id_kind:/^20\d{10}$/.test(a.rid)?'OFFICIAL_SOURCE_ID':'CANONICAL_FALLBACK',
-        result_source:pmeta.officialSource||pmeta.source||raw?.source||null,result_parser_source:pmeta.source||null,result_fetched_at:null,outcome:s.hit?1:0,status:s.hit?'的中':'不的中',validation_mode:mode,
-        selection_locked_before_result:true,final_odds_used_for_selection:finalDecision,result_used_for_selection:false,payout_used_for_selection:false,settlement_odds_type:'OFFICIAL_RESULT_PAYOUT_AFTER_DECISION',
-        decision_information_boundary:finalDecision?'FINAL_ODDS_ONLY__RESULT_BLOCKED':'PRE_RACE_MARKET_ONLY',anti_leak_note:'FIXED53: candidate/EV/selection are completed on a result=null decision object; official result/payout is read only after picks are locked.'
-      };
-    });
-  }
-  function integrateAuto(result,analysis,sim,scan,mode){
-    const old=(result.characters||[]).find(c=>String(c?.name||'')===AUTO)||{},auto={...old,id:old.id||'auto-player-period',name:AUTO,avatar:'🤖',ticket:'auto',minEV:1.10,staking:'fixed100',initial:sim.initial,bankroll:sim.bankroll,invested:sim.invested,returned:sim.returned,wins:sim.hits,bets:sim.bets,skips:analysis.summary.noBet+sim.unsettled,peak:Math.max(sim.initial,...sim.history),maxDD:sim.maxDD,maxWin:sim.maxWin,history:sim.history,byOrg:sim.byOrg,periodAuto53:true};
-    result.characters=(result.characters||[]).filter(c=>String(c?.name||'')!==AUTO);result.characters.unshift(auto);
-    const bets53=autoBets(sim,result,mode);result.bets=[...(result.bets||[]).filter(b=>String(b?.character||'')!==AUTO),...bets53];
-    result.audit=[...(result.audit||[]).filter(b=>String(b?.character||'')!==AUTO),...bets53.map(b=>({bet_id:b.bet_id,character:AUTO,profit:b.profit,status:b.status,race_id:b.race_id,bet_type:b.bet_type,selection:b.selection,stake:b.stake,predicted_ev:b.predicted_ev}))];
-    result.validation=result.validation||{characters:{}};result.validation.characters=result.validation.characters||{};result.validation.characters[AUTO]=autoValidation(sim,bets53);
-    if(Array.isArray(result.timeline)&&result.timeline.length){
-      result.timeline[0].bankroll={...(result.timeline[0].bankroll||{}),[AUTO]:sim.initial};result.timeline[0].profit={...(result.timeline[0].profit||{}),[AUTO]:0};
-      let last={bankroll:sim.initial,profit:0};for(let i=1;i<result.timeline.length;i++){last=sim.raceStates[i-1]||last;result.timeline[i].bankroll={...(result.timeline[i].bankroll||{}),[AUTO]:last.bankroll};result.timeline[i].profit={...(result.timeline[i].profit||{}),[AUTO]:last.profit}}
-    }
-    result.autoNoBetDiagnostics53={...analysis.summary,mode,modeEligible:analysis.prep.diag,byType:analysis.byType,actualAutoBets:sim.bets,actualAutoDecisions:sim.decisions};
-    result.evThresholdScan53=scan;result.autoPlayerContract53={version:53,minEV:1.10,stake:100,rule:'highest EV exactly once per available ticket type',resultBlind:true,modeAware:true,preRaceMarketFailClosed:true,finalFallbackAllowedOnlyInFinalOddsVirtual:true,missingMarketOdds:'skip',tickets:TYPES.map(x=>x.type)};
-    return result;
-  }
-
-  function fmtMode(m){return m===MODE_PRE?'PRE-RACE VERIFIED':m===MODE_BLIND?'FINAL-ODDS BLIND':'FINAL RESEARCH'}
-  function fmtPct(v,d=1){return Number.isFinite(Number(v))?Number(v).toFixed(d)+'%':'—'}
-  function ensureUI(){
-    const progress=document.getElementById('btProgress');if(!progress)return;
-    const sel=document.getElementById('btValidationMode26');if(sel){const o=[...sel.options].find(x=>x.value===MODE_BLIND);if(o)o.textContent='FINAL-ODDS BLIND（3分前優先→確定Fallback）'}
-    if(!document.getElementById('fixed53Lab')){
-      const panel=document.createElement('div');panel.id='fixed53Lab';panel.className='notice';panel.style.marginTop='10px';
-      panel.innerHTML=`<div style="font-weight:800;margin-bottom:7px">🧪 FIXED53 診断ラボ</div>
-        <div class="controls" style="margin-bottom:8px"><button id="setBlind53" class="primary">🏁 FINAL-ODDS BLIND</button><button id="showNoBet53">🔍 NO BET診断</button><button id="showScan53">📊 EV閾値スキャン</button></div>
-        <div id="diagStatus53" class="muted">期間仮想対戦を実行すると、結果を選択処理から遮断したまま診断します。</div>
-        <div id="noBet53" style="margin-top:8px"></div>
-        <div id="scan53" style="margin-top:8px"></div>`;
-      const anchor=document.getElementById('btModeStatus26')||progress;anchor.insertAdjacentElement('afterend',panel);
-      document.getElementById('setBlind53').onclick=()=>{const s=document.getElementById('btValidationMode26');if(!s)return alert('検証モード欄を読み込み中です');s.value=MODE_BLIND;localStorage.setItem('btValidationMode26',MODE_BLIND);s.dispatchEvent(new Event('change',{bubbles:true}));const st=document.getElementById('diagStatus53');if(st)st.innerHTML='<b>FINAL-ODDS BLIND</b> を選択しました。3分前スナップショットを優先し、無い場合だけ確定オッズを意思決定価格として使います。';};
-      document.getElementById('showNoBet53').onclick=()=>renderDiag(window.btResult||((typeof btResult!=='undefined')?btResult:null),false);
-      document.getElementById('showScan53').onclick=()=>renderDiag(window.btResult||((typeof btResult!=='undefined')?btResult:null),true);
-    }
-    const host=document.getElementById('btFetchDiag')||progress;if(host&&!document.getElementById('fixed53Badge')){const e=document.createElement('div');e.id='fixed53Badge';e.className='muted';e.style.marginTop='4px';e.innerHTML='<b>FIXED53:</b> NO BET診断 / FINAL-ODDS BLIND / EV閾値スキャン / AUTOは選択完了後にのみ公式結果で精算';host.insertAdjacentElement('afterend',e)}
-  }
-  function renderDiag(result,scrollScan=false){
-    ensureUI();const d=result?.autoNoBetDiagnostics53,scan=result?.evThresholdScan53;if(!d){const st=document.getElementById('diagStatus53');if(st)st.textContent='まだ診断データがありません。期間仮想対戦 START を実行してください。';return}
-    const st=document.getElementById('diagStatus53');if(st)st.innerHTML=`<b>${fmtMode(d.mode)}</b> / 対象 ${d.modeEligible?.eligible||0}/${d.modeEligible?.total||0}R / PRE ${d.modeEligible?.preUsed||0}R / FINAL ${d.modeEligible?.finalUsed||0}R / 結果は選択関数から遮断`;
-    const nbox=document.getElementById('noBet53');if(nbox){
-      const types=Object.entries(d.byType||{}).map(([k,x])=>`<tr><td>${esc(k)}</td><td>${x.marketRaces}</td><td>${x.marketRows}</td><td>${x.probabilityRows}</td><td>${x.ev110Rows}</td><td>${x.locked110}</td><td>${x.scored110}</td></tr>`).join('');
-      nbox.innerHTML=`<div><b>🔍 NO BET診断（AUTO / EV≥1.10）</b>　候補市場 ${d.candidates}件 → 確率計算可 ${d.probRows}件 → EV110%以上 ${d.ev110}件 → 最高EVロック ${d.locked}件 → 精算 ${d.scored}件</div>
-        <div class="muted" style="margin-top:4px">見送り ${d.noBet}R（市場オッズなし ${d.noMarket}R / 確率計算不可 ${d.noProbability}R / 最高EVが1.10未満 ${d.below}R） / ロック後に精算不能 ${d.unsettled}件。AUTO実勝負数 ${d.actualAutoBets}件。</div>
-        <div class="scroll" style="margin-top:6px"><table><thead><tr><th>券種</th><th>市場ありR</th><th>候補</th><th>確率可</th><th>EV≥1.10</th><th>ロック</th><th>精算</th></tr></thead><tbody>${types}</tbody></table></div>`;
-    }
-    const sbox=document.getElementById('scan53');if(sbox&&Array.isArray(scan)){
-      sbox.innerHTML=`<div><b>📊 EV閾値スキャン（AUTO・各券種最高EV1点×100円）</b></div><div class="muted">同じ意思決定用オッズ・同じ想定確率を固定し、閾値だけを横並び比較。結果・払戻は買い目ロック後の精算にのみ使用します。</div><div class="scroll" style="margin-top:6px"><table><thead><tr><th>EV閾値</th><th>ロック</th><th>精算</th><th>未精算</th><th>投資</th><th>利益</th><th>ROI</th><th>的中率</th><th>最大DD</th><th>NO BET R</th></tr></thead><tbody>${scan.map(x=>`<tr${Math.abs(x.threshold-1.10)<1e-9?' style="font-weight:800"':''}><td>${x.threshold.toFixed(2)}</td><td>${x.decisions}</td><td>${x.bets}</td><td>${x.unsettled}</td><td>${x.invested.toLocaleString()}円</td><td>${x.profit.toLocaleString()}円</td><td>${fmtPct(x.roi)}</td><td>${fmtPct(x.hitRate*100)}</td><td>${fmtPct(x.maxDD*100)}</td><td>${x.noBetRaces}</td></tr>`).join('')}</tbody></table></div>`;
-      if(scrollScan)sbox.scrollIntoView({behavior:'smooth',block:'nearest'});
-    }
-  }
-
-  if(typeof runBacktestOnHistory==='function'){
-    const prevRun=runBacktestOnHistory;
-    runBacktestOnHistory=async function(historyBlocks,onProgress){
-      const result=await prevRun(historyBlocks,onProgress);
-      try{
-        const mode=currentMode(result),prep=prepare(historyBlocks,mode),analysis=analyze(prep),main=simulate(analysis,1.10,true),scan=THRESHOLDS.map(t=>simulate(analysis,t,false));
-        integrateAuto(result,analysis,main,scan,mode);
-        setTimeout(()=>{try{renderDiag(result,false)}catch(_){ }},0);
-        try{window.UI?.addLog?.(`FIXED53 AUTO診断: ${fmtMode(mode)} / ${prep.races.length}R / ロック${main.decisions} / 精算${main.bets} / NO BET ${main.noBetRaces}R / ROI ${main.roi.toFixed(1)}%`,'ok')}catch(_){ }
-      }catch(e){console.error('FIXED53',e);try{window.UI?.addLog?.('FIXED53診断エラー: '+String(e?.message||e),'error')}catch(_){ }}
-      return result;
-    };
-    try{window.runBacktestOnHistory=runBacktestOnHistory}catch(_){ }
-  }
-
-  function boot(){ensureUI();try{if(typeof btResult!=='undefined'&&btResult?.autoNoBetDiagnostics53)renderDiag(btResult,false)}catch(_){ }}
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot,1800);setTimeout(boot,4200)},{once:true});else{setTimeout(boot,1800);setTimeout(boot,4200)}
-  console.log('✅ FIXED53 NO-BET diagnostics + FINAL-ODDS BLIND + EV threshold scan loaded');
-})();
-
-</script>
-
-<script>
-/* =========================================================
-   FIXED54 — NETWORK RECOVERY / WORKER HEALTH / CURRENT-WEEK JRA OFF-DAY GUARD
-   2026-09-14
-   - Diagnose Worker /health before a long period fetch.
-   - Auto-repair a stale apiBase to the canonical houserace Worker when possible.
-   - Treat 2026-09-08..11 and 2026-09-14 as confirmed JRA no-meeting days
-     for the current one-week test, so they are not reported as fetch failures.
-   - On network failure, wait briefly for the residential Bridge and retry once.
-   - If a previously successful positive history block exists, it may be used as
-     an explicitly labeled CACHE FALLBACK rather than turning a transient outage
-     into an empty race day.
-   - Fail fast with a precise reason when both Worker and required Bridge paths
-     are unavailable; never fabricate races or odds.
-   ========================================================= */
-(()=>{
-  'use strict';
-  if(window.__FIXED54_NETWORK_RECOVERY__) return;
-  window.__FIXED54_NETWORK_RECOVERY__=true;
-
-  const CANON54='https://houserace.nitta-katsuhiko.workers.dev';
-  const NO_JRA_54=new Set([
-    '2026-09-08','2026-09-09','2026-09-10','2026-09-11','2026-09-14'
-  ]);
-  const sleep54=ms=>new Promise(r=>setTimeout(r,ms));
-  const esc54=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const log54=(m,t='ok')=>{try{window.UI?.addLog?.(m,t)}catch(_){}};
-  let healthCache54=null;
-
-  function bridgeReady54(){
-    return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true;
-  }
-  async function waitBridge54(ms=4500){
-    const end=Date.now()+ms;
-    while(Date.now()<end){
-      if(bridgeReady54()) return true;
-      await sleep54(180);
-    }
-    return bridgeReady54();
-  }
-  function currentBase54(){
-    let b='';
-    try{b=String(window.engine?.settings?.apiBase||'').trim()}catch(_){ }
-    if(!b){
-      try{b=String(window.Store?.get?.('settings',{})?.apiBase||'').trim()}catch(_){ }
-    }
-    return (b||CANON54).replace(/\/$/,'');
-  }
-  async function health54(base,timeoutMs=7000,force=false){
-    const key=String(base).replace(/\/$/,'');
-    const age=healthCache54&&healthCache54.base===key?Date.now()-Number(healthCache54._at||0):Infinity;
-    const ttl=healthCache54?.ok?10*60*1000:30*1000;
-    if(!force&&healthCache54&&age<ttl)return {...healthCache54,cached:true};
-    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),timeoutMs);
-    const started=performance.now();
-    try{
-      const r=await fetch(String(base).replace(/\/$/,'')+`/health?_fixed54=${Date.now()}`,{
-        method:'GET',cache:'no-store',mode:'cors',signal:ctrl.signal,headers:{Accept:'application/json,text/plain,*/*'}
-      });
-      const text=await r.text(); let j=null;
-      try{j=text?JSON.parse(text):null}catch(_){ }
-      const z={ok:r.ok&&j?.ok!==false,status:r.status,ms:Math.round(performance.now()-started),version:j?.version||'',text:text.slice(0,180),base:key,_at:Date.now()};healthCache54=z;return z;
-    }catch(e){
-      const z={ok:false,status:0,ms:Math.round(performance.now()-started),version:'',error:e?.name==='AbortError'?`timeout ${timeoutMs}ms`:String(e?.message||e),base:key,_at:Date.now()};healthCache54=z;return z;
-    }finally{clearTimeout(timer)}
-  }
-  async function repairAndProbe54(force=false){
-    const configured=currentBase54();
-    let first=await health54(configured,7000,force);
-    if(first.ok) return {worker:first,repaired:false,configured,bridge:bridgeReady54()};
-
-    if(configured!==CANON54){
-      const second=await health54(CANON54,7000,force);
-      if(second.ok){
-        try{
-          if(window.engine?.settings){
-            window.engine.settings.apiBase=CANON54;
-            try{window.Store?.set?.('settings',window.engine.settings)}catch(_){ }
-            try{if(typeof HttpProvider==='function')window.engine.provider=new HttpProvider(CANON54)}catch(_){ }
-          }else{
-            const s=window.Store?.get?.('settings',{})||{};s.apiBase=CANON54;window.Store?.set?.('settings',s);
-          }
-        }catch(_){ }
-        log54(`FIXED54: API URLを ${CANON54} に自動修復しました`,'ok');
-        return {worker:second,repaired:true,configured,bridge:bridgeReady54()};
-      }
-      return {worker:first,canonical:second,repaired:false,configured,bridge:bridgeReady54()};
-    }
-    return {worker:first,repaired:false,configured,bridge:bridgeReady54()};
-  }
-
-  function emptyJra54(date){
-    return {
-      ok:true,date,org:'JRA',oddsTiming:'FINAL',races:[],count:0,
-      source:'FIXED54 confirmed JRA no-meeting day (2026 current-week guard)',
-      warning:'No JRA meeting on this date. This is not a fetch failure.',
-      diagnostics:{meetingSource:'fixed54-confirmed-current-week-off-day',requestedRaces:0,loadedRaces:0,failedRaces:0,errors:[]},
-      diagnosticSummary:{meetingSource:'none',requestedRaces:0,loadedRaces:0,failedRaces:0,firstErrors:[]},
-      _fetchMeta:{mode:'FIXED54_CONFIRMED_NO_JRA',fetchedAt:new Date().toISOString()}
-    };
-  }
-  function positiveCache54(date,org){
-    try{
-      const a=Array.isArray(window.webHistory)?window.webHistory:(typeof webHistory!=='undefined'&&Array.isArray(webHistory)?webHistory:[]);
-      return a.find(x=>x?.date===date&&String(x?.org||'').toUpperCase()===String(org||'').toUpperCase()&&Array.isArray(x?.races)&&x.races.length>0)||null;
-    }catch(_){return null}
-  }
-  function networkish54(e){
-    const s=String(e?.message||e||'');
-    return /Load failed|Failed to fetch|NetworkError|network request failed|fetch failed|タイムアウト|timeout/i.test(s);
-  }
-
-  function installHistory54(){
-    const prev=window.getHistoryBlock || (typeof getHistoryBlock==='function'?getHistoryBlock:null);
-    if(!prev||prev.__fixed54Wrapped) return false;
-    const wrapped=async function(date,org,options={}){
-      const kind=String(org||'').toUpperCase();
-      if(kind==='JRA'&&NO_JRA_54.has(String(date))){
-        log54(`JRA ${date}: 開催なし確認済み → WEB取得を省略`,'ok');
-        return emptyJra54(String(date));
-      }
-      try{
-        return await prev(date,org,options);
-      }catch(e){
-        if(networkish54(e)){
-          const cached=positiveCache54(String(date),kind);
-          if(cached){
-            cached._fetchMeta={...(cached._fetchMeta||{}),mode:'FIXED54_CACHE_FALLBACK',fallbackAt:new Date().toISOString(),fallbackReason:String(e?.message||e)};
-            log54(`${kind} ${date}: WEB通信失敗 → 既存の正常キャッシュ ${cached.races.length}R を使用`,'warn');
-            return cached;
-          }
-          if(!bridgeReady54()){
-            log54(`${kind} ${date}: Worker通信失敗。Bridge接続を4.5秒待機します…`,'warn');
-            await waitBridge54(4500);
-          }
-          if(bridgeReady54()){
-            try{
-              log54(`${kind} ${date}: Bridge ${window.__narBridgeVersion||''} 接続確認 → 再試行`,'ok');
-              return await prev(date,org,{...options,force:true,retries:1,timeoutMs:24000});
-            }catch(e2){
-              throw new Error(`${kind} ${date}: Worker/Bridge再試行失敗: ${String(e2?.message||e2)}`);
-            }
-          }
-          throw new Error(`${kind} ${date}: WEB通信不可 (${String(e?.message||e)}) / Worker=${currentBase54()} / Bridge未接続`);
-        }
-        throw e;
-      }
-    };
-    wrapped.__fixed54Wrapped=true;wrapped.__fixed54Previous=prev;
-    window.getHistoryBlock=wrapped;try{getHistoryBlock=wrapped}catch(_){ }
-    return true;
-  }
-
-  function ensurePanel54(){
-    const anchor=document.getElementById('fixed53Lab')||document.getElementById('btProgress');
-    if(!anchor||document.getElementById('fixed54NetPanel'))return;
-    const box=document.createElement('div');box.id='fixed54NetPanel';box.className='notice';box.style.marginTop='8px';
-    box.innerHTML=`<div style="font-weight:800;margin-bottom:6px">📡 FIXED54 通信リカバリ</div>
-      <div class="controls"><button id="probe54">📡 Worker / Bridge 通信診断</button></div>
-      <div id="probe54Status" class="muted" style="margin-top:6px">未診断</div>`;
-    anchor.insertAdjacentElement('afterend',box);
-    const btn=document.getElementById('probe54');
-    if(btn)btn.onclick=async()=>{
-      btn.disabled=true;const s=document.getElementById('probe54Status');if(s)s.textContent='診断中…';
-      try{
-        const d=await repairAndProbe54(true);const w=d.worker;
-        if(s)s.innerHTML=`Worker: <b style="color:${w.ok?'#9ee37d':'#ff9c9c'}">${w.ok?'OK':'NG'}</b> ${esc54(w.base||'')} ${w.status?`HTTP ${w.status}`:''} ${w.version?`/ ${esc54(w.version)}`:''} ${w.ms?`/ ${w.ms}ms`:''}${w.error?` / ${esc54(w.error)}`:''}<br>Bridge: <b style="color:${bridgeReady54()?'#9ee37d':'#f6d365'}">${bridgeReady54()?`OK ${esc54(window.__narBridgeVersion||'')}`:'待機 / 未接続'}</b>${d.repaired?'<br><b>API URLは自動修復済みです。</b>':''}`;
-      }finally{btn.disabled=false}
-    };
-  }
-
-  function installRunGuard54(){
-    const btn=document.getElementById('runWebBacktest');
-    if(!btn||btn.dataset.fixed54Guard==='1'||typeof btn.onclick!=='function')return false;
-    const old=btn.onclick;btn.dataset.fixed54Guard='1';
-    btn.onclick=async function(ev){
-      installHistory54();
-      const p=document.getElementById('btProgress');
-      const org=String(document.getElementById('btOrg')?.value||'BOTH').toUpperCase();
-      if(p)p.textContent='通信事前診断中…';
-      const d=await repairAndProbe54();
-      if(!d.worker.ok){
-        const br=await waitBridge54(1400);
-        // NAR history needs the Worker race list in this build; JRA-only can still be rescued by Bridge paths.
-        if(org==='NAR'||org==='BOTH'){
-          const msg=`停止: Worker /health 通信NG (${d.worker.error||('HTTP '+d.worker.status)})。NAR履歴のレース一覧取得にWorkerが必要です。Bridge=${br?(window.__narBridgeVersion||'接続'):'未接続'}。`;
-          if(p)p.textContent=msg;
-          log54(msg,'error');
-          const st=document.getElementById('probe54Status');if(st)st.innerHTML=`<b style="color:#ff9c9c">Worker NG:</b> ${esc54(d.worker.error||('HTTP '+d.worker.status))}<br>URL: ${esc54(d.worker.base||currentBase54())}<br>Bridge: ${br?esc54(window.__narBridgeVersion||'接続'):'未接続'}`;
-          return;
-        }
-        if(!br){
-          const msg=`停止: Worker通信NG + Bridge未接続。JRA過去データ取得経路がありません。`;
-          if(p)p.textContent=msg;log54(msg,'error');return;
-        }
-        log54(`Worker NGですがJRA-onlyなので Bridge ${window.__narBridgeVersion||''} で継続します`,'warn');
-      }
-      return await old.call(this,ev);
-    };
-    return true;
-  }
-
-  function boot54(){
-    installHistory54();ensurePanel54();installRunGuard54();
-    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
-    if(host&&!document.getElementById('fixed54Badge')){
-      const e=document.createElement('div');e.id='fixed54Badge';e.className='muted';e.style.marginTop='4px';
-      e.innerHTML='<b>FIXED54:</b> Worker /health 事前診断・API URL自動修復・Bridge待機再試行・正常キャッシュFallback・2026/9/8–11,14 JRA開催なし誤エラー防止';
-      host.insertAdjacentElement('afterend',e);
-    }
-  }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot54,5200);setTimeout(boot54,7600)},{once:true});
-  else{setTimeout(boot54,5200);setTimeout(boot54,7600)}
-  console.log('✅ FIXED54 network recovery loaded');
-})();
-</script>
-
-
-<script id="fixed55QuotaSaver">
-/* =========================================================
-   FIXED55 — CLOUDFLARE QUOTA SAVER
-   2026-09-14
-   - Adaptive all-ticket polling: 30s / 15s / 10s / 5s.
-   - Exact AUTO decision remains a forced fresh snapshot at 3 minutes.
-   - Completed historical days are cache-first; only missing/current data is fetched.
-   - Counts Worker requests made by this browser (NOT the Cloudflare account total).
-   - 3 consecutive network failures => 60s local circuit-breaker.
-   - Manual 1027 button pauses Worker calls until next 00:00 UTC (09:00 JST).
-   ========================================================= */
-(()=>{
-  'use strict';
-  if(window.__FIXED55_QUOTA_SAVER__)return;
-  window.__FIXED55_QUOTA_SAVER__=true;
-
-  const KEY='keibaFixed55WorkerStats';
-  const HOLD='keibaFixed55WorkerHoldUntil';
-  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const utcDay=()=>new Date().toISOString().slice(0,10);
-  const nextUtcReset=()=>{
-    const d=new Date();
-    return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()+1,0,0,2);
-  };
-  const load=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(_){return {}}};
-  const save=s=>{try{localStorage.setItem(KEY,JSON.stringify(s))}catch(_){}};
-  const stats=(()=>{
-    const s=load();
-    if(s.day!==utcDay())return {day:utcDay(),attempted:0,ok:0,failed:0,suppressed:0,last:''};
-    return s;
-  })();
-  let failTimes=[];
-  let shortHold=0;
-
-  function holdUntil(){
-    const x=Number(localStorage.getItem(HOLD)||0);
-    return Math.max(x,shortHold);
-  }
-  function isWorker(u){
-    try{return /\.workers\.dev$/i.test(new URL(String(u),location.href).hostname)}catch(_){return false}
-  }
-  function fmtTime(t){
-    if(!t)return 'なし';
-    return new Date(t).toLocaleString('ja-JP',{hour12:false});
-  }
-  function update(){
-    save(stats);
-    const s=document.getElementById('fixed55Status');
-    if(!s)return;
-    let ms=30000,r=null;
-    try{
-      r=window.engine?.selected||null;
-      if(window.__oddsBoard?.nextAutoMs)ms=window.__oddsBoard.nextAutoMs(r);
-    }catch(_){}
-    const h=holdUntil(),holding=h>Date.now();
-    let cached=0;
-    try{
-      const a=Array.isArray(window.webHistory)?window.webHistory:(typeof webHistory!=='undefined'&&Array.isArray(webHistory)?webHistory:[]);
-      cached=a.filter(x=>Array.isArray(x?.races)&&(x.races.length>0||Number(x?.diagnosticSummary?.requestedRaces)===0)).length;
-    }catch(_){}
-    s.innerHTML=
-      `全券種AUTO更新: <b>${Math.round(ms/1000)}秒</b>（>10分=30秒 / 10–5分=15秒 / 5–3分=10秒 / 3分以内=5秒）<br>`+
-      `Worker呼出カウンタ: <b>${stats.attempted}</b>回 / 成功${stats.ok} / 失敗${stats.failed} / 抑止${stats.suppressed} `+
-      `<span class="muted">※このブラウザでFIXED55起動後の概算。Cloudflare全体使用量ではありません。</span><br>`+
-      `履歴キャッシュ: ${cached}日区分 / Worker停止: <b style="color:${holding?'#f6d365':'#9ee37d'}">${holding?`ON ～ ${esc(fmtTime(h))}`:'OFF'}</b>`;
-  }
-
-  const nativeFetch=window.fetch.bind(window);
-  window.fetch=async function(input,init){
-    const url=typeof input==='string'?input:(input?.url||String(input));
-    if(!isWorker(url))return nativeFetch(input,init);
-
-    const h=holdUntil();
-    if(h>Date.now()){
-      stats.suppressed++;stats.last=new Date().toISOString();update();
-      throw new TypeError(`FIXED55 Worker節約停止中 ～ ${fmtTime(h)}`);
-    }
-
-    stats.attempted++;stats.last=new Date().toISOString();update();
-    try{
-      const r=await nativeFetch(input,init);
-      if(r.ok){stats.ok++;failTimes=[];}
-      else{
-        stats.failed++;
-        failTimes.push(Date.now());
-        failTimes=failTimes.filter(x=>Date.now()-x<60000);
-        if(r.status===429){
-          shortHold=Date.now()+5*60*1000;
-        }else if(failTimes.length>=3){
-          shortHold=Date.now()+60*1000;
-        }
-      }
-      update();
-      return r;
-    }catch(e){
-      stats.failed++;
-      failTimes.push(Date.now());
-      failTimes=failTimes.filter(x=>Date.now()-x<60000);
-      if(failTimes.length>=3)shortHold=Date.now()+60*1000;
-      update();
-      throw e;
-    }
-  };
-
-  function addUI(){
-    if(document.getElementById('fixed55SaverPanel'))return;
-    const anchor=document.getElementById('fixed54NetPanel')||document.getElementById('fixed53Lab')||document.getElementById('btProgress');
-    if(!anchor)return;
-    const box=document.createElement('div');
-    box.id='fixed55SaverPanel';box.className='notice';box.style.marginTop='8px';
-    box.innerHTML=`<div style="font-weight:800;margin-bottom:6px">🪫 FIXED55 Cloudflare節約モード ON</div>
-      <div class="controls">
-        <button id="fixed55Pause10">⏸ Workerを10分停止</button>
-        <button id="fixed55Quota1027">🚫 Error 1027 → 9:00 JSTまで停止</button>
-        <button id="fixed55Resume">▶ Worker再開</button>
-      </div>
-      <div id="fixed55Status" class="muted" style="margin-top:6px"></div>`;
-    anchor.insertAdjacentElement('afterend',box);
-    document.getElementById('fixed55Pause10').onclick=()=>{
-      localStorage.setItem(HOLD,String(Date.now()+10*60*1000));update();
-    };
-    document.getElementById('fixed55Quota1027').onclick=()=>{
-      localStorage.setItem(HOLD,String(nextUtcReset()));update();
-    };
-    document.getElementById('fixed55Resume').onclick=()=>{
-      localStorage.removeItem(HOLD);shortHold=0;failTimes=[];update();
-    };
-    update();
-  }
-
-  function normalizeSettings(){
-    try{
-      if(window.engine?.settings){
-        if(Number(window.engine.settings.refreshSec)<30)window.engine.settings.refreshSec=30;
-        window.Store?.set?.('settings',window.engine.settings);
-      }
-    }catch(_){}
-  }
-
-  function badge(){
-    const host=document.getElementById('btFetchDiag')||document.getElementById('btProgress');
-    if(host&&!document.getElementById('fixed55Badge')){
-      const e=document.createElement('div');e.id='fixed55Badge';e.className='muted';e.style.marginTop='4px';
-      e.innerHTML='<b>FIXED55 節約:</b> 全券種30/15/10/5秒可変更新・3分前は強制最新1回・完了済み過去日キャッシュ優先・連続通信失敗時60秒遮断・1027手動日次停止';
-      host.insertAdjacentElement('afterend',e);
-    }
-  }
-
-  const boot=()=>{normalizeSettings();addUI();badge();update()};
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(boot,6200);setInterval(update,5000)},{once:true});
-  else{setTimeout(boot,6200);setInterval(update,5000)}
-  console.log('✅ FIXED55 Cloudflare quota saver loaded');
-})();
-</script>
-
-<script id="fixed56HorseIdentityDiag">
-(()=>{
-  try{
-    console.log('✅ FIXED56 NAR horse name/sex-age + strict single/place odds parser loaded');
-  }catch(_){}
-})();
-</script>
-
 </body>
 </html>
