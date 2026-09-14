@@ -190,7 +190,8 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
 <div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED52 人気順位補正</b> — 単勝の「人気」が馬番/取得順になっていた経路を修正。LIVE単勝オッズを昇順に再順位付けし、中央の人気表示・人気依存ロジック・単勝オッズ表を同じ順位へ同期します。</div>
 <div class="notice" style="border-color:#06b6d4;background:#08242a"><b>FIXED54 AUTO 検証・観測</b> — 根拠のない勝率補正を撤去。初期状態は観測のみ。検証モデルのある帯だけ保守EV1.10以上で判定します。精算済み回収率と結果待ちを分離。</div>
-<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED55 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
+<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED57 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
+<div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED57 SIカバー改善</b> — 3歳未勝利・中央→地方転入のように過去距離/芝ダートが混在するレースでも、実走時計を距離回帰で基準化してSIを算出します。同一芝ダート歴を必須にせず、適性は別特徴量として保持。過去走0件の空レスポンスはキャッシュせず取得エラーを表示します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -11251,10 +11252,10 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
 if(window.__FIXED55_SPEED_SOFTMAX__)return;
 window.__FIXED55_SPEED_SOFTMAX__=true;
 
-const VERSION='SPEED-SOFTMAX-55.1';
-const STATE_KEY='keiba.speed55.state.v1';
-const CACHE_KEY='keiba.speed55.raceCache.v1';
-const CORPUS_KEY='keiba.speed55.corpus.v1';
+const VERSION='SPEED-SOFTMAX-57.0';
+const STATE_KEY='keiba.speed57.state.v1';
+const CACHE_KEY='keiba.speed57.raceCache.v2';
+const CORPUS_KEY='keiba.speed57.corpus.v2';
 const FEATURES=['recent','best','distance','course','going','weightDelta','pace'];
 const JRA_TRACKS=new Set(['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉']);
 const TRACK_K={芝:1.00,ダート:0.70,障害:0.40,ばんえい:0.09};
@@ -11349,14 +11350,41 @@ function addCorpus55(runs){
   for(const r of runs||[]){if(!Number.isFinite(r.timeSec)||!r.track||!r.surface||!Number.isFinite(r.distance))continue;const x={date:r.date,track:r.track,org:r.org||orgForTrack55(r.track),surface:r.surface,distance:r.distance,timeSec:r.timeSec,finish:r.finish,margin:r.margin,going:r.going,className:r.className};const k=[x.date,x.track,x.surface,x.distance,Number(x.timeSec).toFixed(1),x.finish].join('|');map.set(k,x)}
   corpus=[...map.values()].sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,4000);saveJson55(CORPUS_KEY,corpus);
 }
+function sameRun55(a,b){return String(a?.date||'')===String(b?.date||'')&&String(a?.track||'')===String(b?.track||'')&&String(a?.surface||'')===String(b?.surface||'')&&Number(a?.distance)===Number(b?.distance)&&Math.abs(Number(a?.timeSec)-Number(b?.timeSec))<.051&&Number(a?.finish)===Number(b?.finish)}
+function distanceRegression55(run){
+  // Exact-distance references are often sparse for young/transferred horses.
+  // Fit log(winner-equivalent time) = a + b*log(distance) from ACTUAL pre-race runs only.
+  // This is a data-derived fallback, not an invented ability value.
+  const org=run.org||orgForTrack55(run.track);
+  const pool=corpus.filter(x=>!sameRun55(x,run)&&(x.org||orgForTrack55(x.track))===org&&x.surface===run.surface&&Number.isFinite(Number(x.distance))&&Number(x.distance)>0&&Number.isFinite(winnerEquivalent55(x))&&winnerEquivalent55(x)>0);
+  if(pool.length<6)return null;
+  const xs=pool.map(x=>Math.log(Number(x.distance))),ys=pool.map(x=>Math.log(winnerEquivalent55(x)));
+  const mx=mean55(xs),my=mean55(ys),den=xs.reduce((s,x)=>s+(x-mx)*(x-mx),0);
+  if(!(den>1e-9))return null;
+  const b=xs.reduce((s,x,i)=>s+(x-mx)*(ys[i]-my),0)/den,a=my-b*mx;
+  let base=Math.exp(a+b*Math.log(Number(run.distance)));
+  if(!Number.isFinite(base)||base<=0)return null;
+  const predicted=x=>Math.exp(a+b*Math.log(Number(x.distance)));
+  const trackPool=pool.filter(x=>x.track===run.track);
+  let trackAdj=0;
+  if(trackPool.length>=3){const d=trackPool.map(x=>winnerEquivalent55(x)-predicted(x));const m=median55(d);if(Number.isFinite(m))trackAdj=m}
+  const goingPool=run.going?pool.filter(x=>x.going===run.going):[];
+  let goingAdj=0;
+  if(goingPool.length>=3){const d=goingPool.map(x=>winnerEquivalent55(x)-predicted(x)-(x.track===run.track?trackAdj:0));const m=median55(d);if(Number.isFinite(m))goingAdj=m}
+  base+=trackAdj;
+  return {baseTime:base,trackDiff:goingAdj,raceCorrection:0,n:pool.length,goingN:goingPool.length,scope:'ORG_SURFACE_DISTANCE_REGRESSION',raceCorrectionAvailable:false,trackDiffAvailable:goingPool.length>=3,regression:{a,b,trackN:trackPool.length}};
+}
 function ref55(run){
-  const course=corpus.filter(x=>corpusKey55(x,true)===corpusKey55(run,true)),wide=corpus.filter(x=>corpusKey55(x,false)===corpusKey55(run,false));
+  const course=corpus.filter(x=>!sameRun55(x,run)&&corpusKey55(x,true)===corpusKey55(run,true)),wide=corpus.filter(x=>!sameRun55(x,run)&&corpusKey55(x,false)===corpusKey55(run,false));
   let pool=course.length>=5?course:wide,scope=course.length>=5?'COURSE':'ORG_DISTANCE';
-  if(pool.length<5)return null;
-  const base=median55(pool.map(winnerEquivalent55));if(!Number.isFinite(base))return null;
-  const gp=run.going?pool.filter(x=>x.going===run.going):[];const gbase=gp.length>=3?median55(gp.map(winnerEquivalent55)):NaN;
-  const d=Number.isFinite(gbase)?gbase-base:0;
-  return {baseTime:base,trackDiff:d,raceCorrection:0,n:pool.length,goingN:gp.length,scope,raceCorrectionAvailable:false,trackDiffAvailable:gp.length>=3};
+  if(pool.length>=5){
+    const base=median55(pool.map(winnerEquivalent55));if(Number.isFinite(base)){
+      const gp=run.going?pool.filter(x=>x.going===run.going):[];const gbase=gp.length>=3?median55(gp.map(winnerEquivalent55)):NaN;
+      const d=Number.isFinite(gbase)?gbase-base:0;
+      return {baseTime:base,trackDiff:d,raceCorrection:0,n:pool.length,goingN:gp.length,scope,raceCorrectionAvailable:false,trackDiffAvailable:gp.length>=3};
+    }
+  }
+  return distanceRegression55(run);
 }
 function computeSI55(run){
   const K=TRACK_K[run.surface];if(!Number.isFinite(K)||!Number.isFinite(run.timeSec))return null;
@@ -11364,7 +11392,7 @@ function computeSI55(run){
     return {si:(run.baseTime+run.trackDiff+run.raceCorrection-run.timeSec+50)*K,kind:'FORMAL_COMPONENTS',K,baseTime:run.baseTime,trackDiff:run.trackDiff,raceCorrection:run.raceCorrection,referenceN:null};
   }
   const rf=ref55(run);if(!rf)return null;
-  return {si:(rf.baseTime+rf.trackDiff-rf.raceCorrection-run.timeSec+50)*K,kind:'EMPIRICAL_PARTIAL',K,baseTime:rf.baseTime,trackDiff:rf.trackDiff,raceCorrection:0,referenceN:rf.n,goingN:rf.goingN,scope:rf.scope,note:'C_race未取得のため0。公開式そのものの再現値ではなく実タイム由来推定SI'};
+  return {si:(rf.baseTime+rf.trackDiff-rf.raceCorrection-run.timeSec+50)*K,kind:rf.scope==='ORG_SURFACE_DISTANCE_REGRESSION'?'EMPIRICAL_DISTANCE_REGRESSION':'EMPIRICAL_PARTIAL',K,baseTime:rf.baseTime,trackDiff:rf.trackDiff,raceCorrection:0,referenceN:rf.n,goingN:rf.goingN,scope:rf.scope,regression:rf.regression||null,note:'C_race未取得のため0。実走タイムだけから作る推定SI。距離回帰使用時も実データのみで基準化'};
 }
 function refreshHorseSI55(h){const runs=dedupeRuns55(structuredRuns55(h));for(const r of runs){const z=computeSI55(r);if(z)Object.assign(r,{si55:z.si,siKind55:z.kind,siRef55:z})}h.speedRuns55=runs;return runs}
 function daysBetween55(target,runDate){const a=dateMs55(target),b=dateMs55(runDate);return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,(a-b)/86400000):0}
@@ -11374,15 +11402,18 @@ function targetMeta55(r){return r?.speedMeta55||{track:clean55(r?.track),org:Str
 function rawFeatures55(h,r,lambda){
   const t=targetMeta55(r),runs=(h.speedRuns55||[]).filter(x=>Number.isFinite(x.si55));
   const sameSurface=t.surface?runs.filter(x=>x.surface===t.surface):runs;
-  const recent=weightedRecent55(sameSurface,t.date||r?.date,lambda);
+  // Overall recent ability is retained even when a JRA transfer has never run on today's surface.
+  // Surface/distance/course/going remain separate conditional features and are NEVER fabricated.
+  const recent=weightedRecent55(runs,t.date||r?.date,lambda);
   const cutoff=Number.isFinite(dateMs55(t.date||r?.date))?dateMs55(t.date||r?.date)-365*86400000:NaN;
-  const yr=sameSurface.filter(x=>!Number.isFinite(cutoff)||dateMs55(x.date)>=cutoff);
+  const yr=runs.filter(x=>!Number.isFinite(cutoff)||dateMs55(x.date)>=cutoff);
+  const yrSurface=sameSurface.filter(x=>!Number.isFinite(cutoff)||dateMs55(x.date)>=cutoff);
   const best=yr.length?Math.max(...yr.map(x=>x.si55)):NaN;
-  const dist=yr.filter(x=>Number(x.distance)===Number(t.distance));
+  const dist=yrSurface.filter(x=>Number(x.distance)===Number(t.distance));
   const course=dist.filter(x=>x.track===t.track);
-  const going=yr.filter(x=>t.going&&x.going===t.going);
-  const pastWeights=sameSurface.map(x=>x.carriedWeight).filter(Number.isFinite),current=num55(h.carriedWeight55??h.assignedWeight??h.load);
-  return {recent,best,distance:dist.length?Math.max(...dist.map(x=>x.si55)):NaN,course:course.length?Math.max(...course.map(x=>x.si55)):NaN,going:going.length?Math.max(...going.map(x=>x.si55)):NaN,weightDelta:Number.isFinite(current)&&pastWeights.length?current-mean55(pastWeights):NaN,pace:pace55(sameSurface),runCount:sameSurface.length};
+  const going=yrSurface.filter(x=>t.going&&x.going===t.going);
+  const pastWeights=runs.map(x=>x.carriedWeight).filter(Number.isFinite),current=num55(h.carriedWeight55??h.assignedWeight??h.load);
+  return {recent,best,distance:dist.length?Math.max(...dist.map(x=>x.si55)):NaN,course:course.length?Math.max(...course.map(x=>x.si55)):NaN,going:going.length?Math.max(...going.map(x=>x.si55)):NaN,weightDelta:Number.isFinite(current)&&pastWeights.length?current-mean55(pastWeights):NaN,pace:pace55(runs),runCount:runs.length,surfaceRunCount:yrSurface.length};
 }
 function matrix55(horses,r,lambda){
   const raws=horses.map(h=>rawFeatures55(h,r,lambda)),n=horses.length,X=Array.from({length:n},()=>Array(FEATURES.length).fill(0)),active=[];
@@ -11418,13 +11449,15 @@ async function fetchPast55(r){
     const org=String(r.org||'').toUpperCase(),url=org==='NAR'?`https://nar.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`:`https://race.netkeiba.com/race/shutuba_past.html?race_id=${encodeURIComponent(id)}`;
     if(typeof liveHtmlViaProxyOrBridge!=='function')throw new Error('HTML取得Bridge/Proxyが利用できません');
     const res=await liveHtmlViaProxyOrBridge(url),doc=new DOMParser().parseFromString(res.text,'text/html'),parsed=parsePastPage55(doc,r);parsed.via=res.via;
-    const all=Object.values(parsed.byNo||{}).flatMap(x=>x.runs||[]);addCorpus55(all);
+    const all=Object.values(parsed.byNo||{}).flatMap(x=>x.runs||[]);const horseCount=Object.values(parsed.byNo||{}).filter(x=>(x.runs||[]).length).length;
+    if(!all.length||!horseCount)throw new Error(`過去5走の解析が0件です（取得経路: ${res.via||'unknown'}）。空レスポンスはキャッシュしません`);
+    parsed.stats={horseCount,runCount:all.length,totalHorses:(r.horses||[]).length};addCorpus55(all);
     raceCache[id]=parsed;const keys=Object.keys(raceCache);if(keys.length>30)for(const k of keys.slice(0,keys.length-30))delete raceCache[k];saveJson55(CACHE_KEY,raceCache);return parsed;
   })().finally(()=>inflight.delete(id));inflight.set(id,job);return job;
 }
 async function enrichRace55(r){
   if(!r?.horses?.length)return false;const id=raceId55(r);
-  try{if(!raceCache[id])await fetchPast55(r);applyRace55(r);try{if(typeof UI!=='undefined'&&typeof engine!=='undefined'&&engine?.selected===r)UI.renderCurrent(engine)}catch(_){ }return true}catch(e){r.speedModel55={version:VERSION,coverage:0,probabilityReady:false,validated:false,error:String(e?.message||e)};applyRace55(r);render55();return false}
+  try{const rec=raceCache[id]||await fetchPast55(r);r.speedFetch55={ok:true,via:rec?.via||'',horseCount:rec?.stats?.horseCount??Object.values(rec?.byNo||{}).filter(x=>(x.runs||[]).length).length,runCount:rec?.stats?.runCount??Object.values(rec?.byNo||{}).flatMap(x=>x.runs||[]).length,error:''};applyRace55(r);try{if(typeof UI!=='undefined'&&typeof engine!=='undefined'&&engine?.selected===r)UI.renderCurrent(engine)}catch(_){ }return true}catch(e){delete raceCache[id];saveJson55(CACHE_KEY,raceCache);r.speedFetch55={ok:false,via:'',horseCount:0,runCount:0,error:String(e?.message||e)};r.speedModel55={version:VERSION,coverage:0,probabilityReady:false,validated:false,error:String(e?.message||e)};applyRace55(r);render55();return false}
 }
 function schedule55(r){if(!r?.horses?.length)return;applyRace55(r);const id=raceId55(r);if(!raceCache[id]&&!inflight.has(id))setTimeout(()=>enrichRace55(r),0)}
 
@@ -11478,9 +11511,9 @@ function installAudit55(){
 }
 
 function ensurePanel55(){
-  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED55 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。揃わない走は実走タイムから作る EMPIRICAL_PARTIAL と明示し、C_raceを能力値で捏造しません。β・λ・τは精算済み予測を時系列分割して学習し、holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
+  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED57 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。完全一致の基準標本が不足する場合は、実走タイムだけを距離回帰して EMPIRICAL_DISTANCE_REGRESSION と明示します。今回と同じ芝/ダート歴が無い転入馬でも総合recent SIは算出し、芝/ダート・距離・コース適性は別特徴量として欠損のまま扱います。架空能力値は補完しません。β・λ・τは時系列検証を通過した場合だけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
 }
-function render55(){const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail');if(!el)return;let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length;el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / SIカバー ${sm?Math.round(sm.coverage*100):0}% / 学習用精算 ${samples}R / モデル ${mdl?(mdl.validated?'検証済':'未検証'):'未学習'}`;if(det){const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));det.textContent=JSON.stringify({model:mdl,current:cur},null,2)}}
+function render55(){const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail');if(!el)return;let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length,fx=r?.speedFetch55;const fetchTxt=fx?(fx.ok?` / 過去走 ${fx.horseCount}/${r?.horses?.length||0}頭・${fx.runCount}走`:` / 過去走取得エラー: ${fx.error}`):'';el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / SIカバー ${sm?Math.round(sm.coverage*100):0}%${fetchTxt} / 学習用精算 ${samples}R / モデル ${mdl?(mdl.validated?'検証済':'未検証'):'未学習'}`;if(det){const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',runs:h.speedFeatures55?.runCount??0,surfaceRuns:h.speedFeatures55?.surfaceRunCount??0,speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));det.textContent=JSON.stringify({model:mdl,fetch:fx||null,current:cur},null,2)}}
 function installUI55(){
   try{if(typeof UI!=='undefined'&&!UI.__speed55Wrapped){UI.__speed55Wrapped=true;const old=UI.renderCurrent;UI.renderCurrent=function(e){const v=old.apply(this,arguments);try{schedule55(e?.selected||e?.races?.[0])}catch(_){ }return v}}}catch(e){console.warn('FIXED55 UI hook',e)}
 }
