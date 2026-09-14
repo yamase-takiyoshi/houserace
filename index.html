@@ -11574,16 +11574,73 @@ function installAudit55(){
 }
 
 function ensurePanel55(){
-  if(document.getElementById('speed55panel'))return;const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');if(!host)return;const d=document.createElement('section');d.id='speed55panel';d.className='card';d.style.margin='16px';d.innerHTML=`<h3>⚡ FIXED58 スピード指数 → 想定勝率</h3><div class="body"><p id="speed55status">準備中…</p><div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div><p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p><p class="muted">Tbase・馬場差・レース補正が実データで揃った走は FORMAL_COMPONENTS。完全一致の基準標本が不足する場合は、実走タイムだけを距離回帰して EMPIRICAL_DISTANCE_REGRESSION と明示します。今回と同じ芝/ダート歴が無い転入馬でも総合recent SIは算出し、芝/ダート・距離・コース適性は別特徴量として欠損のまま扱います。架空能力値は補完しません。β・λ・τは時系列検証を通過した場合だけAUTOに採用します。</p><pre id="speed55detail" style="white-space:pre-wrap"></pre></div>`;host.insertAdjacentElement('afterend',d);document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
+  if(document.getElementById('speed55panel'))return;
+  const host=document.getElementById('audit54panel')||document.querySelector('main > .grid');
+  if(!host)return;
+  const d=document.createElement('section');
+  d.id='speed55panel';d.className='card';d.style.margin='16px';
+  d.innerHTML=`<h3>⚡ FIXED59 スピード指数 → 想定勝率</h3><div class="body">
+    <p id="speed55status">準備中…</p>
+    <div class="controls"><button id="speed55fit" class="primary">β・λ・τを時系列学習/検証</button><button id="speed55refresh">現在レースの過去5走を再取得</button></div>
+    <div id="speed55summary" class="kpis" style="grid-template-columns:repeat(5,minmax(120px,1fr));margin:12px 0 8px"></div>
+    <div id="speed55message" class="notice" style="display:none;margin:8px 0"></div>
+    <p class="muted">正式式: <code>SI=(Tbase + Dtrack + Crace - Thorse + 50)×K</code> / <code>R=Σe^(-λd)SI / Σe^(-λd)</code> / <code>P=exp(Score/τ)/Σexp(Score/τ)</code> / <code>EV=P×odds</code></p>
+    <p class="muted">実測データが不足する場合はSIを捏造せず、市場確率へfallbackします。β・λ・τは時系列検証を通過したモデルだけAUTOに採用します。</p>
+    <details id="speed55technical" style="margin-top:8px"><summary style="cursor:pointer;font-weight:700">技術詳細（JSON）</summary><pre id="speed55detail" style="white-space:pre-wrap;max-height:420px;overflow:auto;margin-top:10px"></pre></details>
+  </div>`;
+  host.insertAdjacentElement('afterend',d);
+  document.getElementById('speed55fit').onclick=async e=>{e.target.disabled=true;try{const m=await fit55();alert(m.validated?'SIモデルはholdout検証を通過しました。今後のLIVEでAUTO候補に使用します。':'学習は完了しましたがholdoutで市場を上回らなかったため、AUTOには採用しません。')}catch(err){alert(String(err?.message||err))}finally{e.target.disabled=false;render55()}};
+  document.getElementById('speed55refresh').onclick=async e=>{e.target.disabled=true;try{const r=typeof engine!=='undefined'?engine?.selected:null;if(r){delete raceCache[raceId55(r)];saveJson55(CACHE_KEY,raceCache);await enrichRace55(r)}}finally{e.target.disabled=false}};
 }
-function render55(){const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail');if(!el)return;let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length,fx=r?.speedFetch55;const fetchTxt=fx?(fx.ok?` / 過去走 ${fx.horseCount}/${r?.horses?.length||0}頭・${fx.runCount}走`:` / 過去走取得エラー: ${fx.error}`):'';el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / SIカバー ${sm?Math.round(sm.coverage*100):0}%${fetchTxt} / 学習用精算 ${samples}R / モデル ${mdl?(mdl.validated?'検証済':'未検証'):'未学習'}`;if(det){const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',runs:h.speedFeatures55?.runCount??0,surfaceRuns:h.speedFeatures55?.surfaceRunCount??0,speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));det.textContent=JSON.stringify({model:mdl,fetch:fx||null,current:cur},null,2)}}
+function render55(){
+  const el=document.getElementById('speed55status'),det=document.getElementById('speed55detail'),sum=document.getElementById('speed55summary'),msg=document.getElementById('speed55message');
+  if(!el)return;
+  let r=null;try{if(typeof engine!=='undefined')r=engine?.selected}catch(_){ }
+  const sm=r?.speedModel55,mdl=state.model,samples=trainingSamples55().length,fx=r?.speedFetch55,total=r?.horses?.length||0;
+  const cov=sm?Math.round((Number(sm.coverage)||0)*100):0;
+  const modelTxt=mdl?(mdl.validated?'検証済':'未検証'):'未学習';
+  el.textContent=`現在: ${r?`${r.org} ${r.title||r.track}`:'レース未選択'} / 学習用精算 ${samples}R / モデル ${modelTxt}`;
+
+  if(sum){
+    const fetchLabel=!fx?'待機':fx.ok?'成功':'失敗';
+    const h=fx?.horseCount??0, runs=fx?.runCount??0;
+    const fallback=!(sm?.probabilityReady&&sm?.validated);
+    sum.innerHTML=`
+      <div class="kpi"><small>過去5走取得</small><b>${fetchLabel}</b></div>
+      <div class="kpi"><small>取得頭数</small><b>${h}/${total}</b></div>
+      <div class="kpi"><small>取得走数</small><b>${runs}</b></div>
+      <div class="kpi"><small>SIカバー</small><b>${cov}%</b></div>
+      <div class="kpi"><small>現在の確率</small><b>${fallback?'市場fallback':'SIモデル'}</b></div>`;
+  }
+
+  if(msg){
+    if(fx && !fx.ok){
+      const raw=String(fx.error||'過去5走を取得できませんでした').replace(/^過去5走取得失敗:\s*/,'');
+      const parts=raw.split(/\s+\/\s+/).filter(Boolean);
+      msg.style.display='block';
+      msg.style.borderColor='#8b5a2b';msg.style.background='#24180c';msg.style.color='#ffd9a3';
+      msg.innerHTML=`<b>過去5走を取得できませんでした。</b><br><span class="muted" style="color:#e9c18f">${parts.map(x=>window.escapeHtml?window.escapeHtml(x):x).join(' → ')}</span><br><span>SIは未算出のため、現在は市場確率のみ表示しています。</span>`;
+    }else if(fx?.ok){
+      msg.style.display='block';
+      msg.style.borderColor='#2e7d32';msg.style.background='#102b18';msg.style.color='#b9f6c7';
+      msg.innerHTML=`<b>過去走取得成功。</b> ${fx.horseCount??0}/${total}頭・${fx.runCount??0}走を読み込みました。`;
+    }else{
+      msg.style.display='none';msg.textContent='';
+    }
+  }
+
+  if(det){
+    const cur=(r?.horses||[]).map(h=>({no:h.no,name:h.name,SI:Number.isFinite(h.speedIndex55)?Number(h.speedIndex55.toFixed(2)):null,kind:h.speedIndexKind55||'',runs:h.speedFeatures55?.runCount??0,surfaceRuns:h.speedFeatures55?.surfaceRunCount??0,speedP:Number.isFinite(h.speedProb55)?Number((h.speedProb55*100).toFixed(2)):null,marketP:Number.isFinite(h.marketProb)?Number((h.marketProb*100).toFixed(2)):null,source:h.probabilitySource}));
+    det.textContent=JSON.stringify({model:mdl,fetch:fx||null,current:cur},null,2);
+  }
+}
 function installUI55(){
   try{if(typeof UI!=='undefined'&&!UI.__speed55Wrapped){UI.__speed55Wrapped=true;const old=UI.renderCurrent;UI.renderCurrent=function(e){const v=old.apply(this,arguments);try{schedule55(e?.selected||e?.races?.[0])}catch(_){ }return v}}}catch(e){console.warn('FIXED55 UI hook',e)}
 }
 function boot55(){installProbability55();installAudit55();ensurePanel55();installUI55();try{if(typeof engine!=='undefined'&&engine?.selected)schedule55(engine.selected)}catch(_){ }render55()}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot55,5200),{once:true});else setTimeout(boot55,5200);
 window.SpeedModel55={VERSION,state,applyRace:applyRace55,enrichRace:enrichRace55,fit:fit55,trainingSamples:trainingSamples55,formalSI:(Tbase,Dtrack,Crace,Thorse,K)=>(Number(Tbase)+Number(Dtrack)+Number(Crace)-Number(Thorse)+50)*Number(K),weightedRecent:weightedRecent55};
-console.log('✅ FIXED58 speed-index + 502/OddsPark/banei fallback loaded');
+console.log('✅ FIXED59 clean SI panel + FIXED58 fallback loaded');
 })();
 
 </script>
