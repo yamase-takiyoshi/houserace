@@ -188,6 +188,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#8b5cf6;background:#1d1630"><b>FIXED40 NAR 3連単・前回値保持</b> — NAR公式SP/PC/IPATの人気順URLを拡張し、3連単の取得0件を補強。更新失敗時は前回の正常オッズを消さず保持し、0件時に別券種の取得元を誤表示しません。</div>
 <div class="notice" style="border-color:#d97706;background:#2a1807"><b>FIXED44 NAR race_id補正</b> — NARでは12桁IDを無条件採用せず、日付＋競馬場＋Rからnetkeiba正規race_idを再生成します。例: 2026-09-13 金沢6R → <code>202646091306</code>。<code>208600000000</code>のようなプレースホルダIDを遮断します。</div>
 <div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED52 人気順位補正</b> — 単勝の「人気」が馬番/取得順になっていた経路を修正。LIVE単勝オッズを昇順に再順位付けし、中央の人気表示・人気依存ロジック・単勝オッズ表を同じ順位へ同期します。</div>
+<div class="notice" style="border-color:#06b6d4;background:#08242a"><b>FIXED53 AUTO 券種別TOP1</b> — AUTOプレイヤーはオートモードで、各券種につきEV最高の1買い目だけを100円購入します。EV1.10未満の券種は見送り。同一券種の2点買い以上は行いません。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -1885,7 +1886,7 @@ class SimulationEngine{
     if(!c){
       c={
         id:"auto-player",name:"AUTOプレイヤー",avatar:"🤖",
-        desc:"AUTO: 締切3分前 / EV1.10以上 / 全買い目100円",
+        desc:"AUTO: 締切3分前 / 各券種EV最高1点 / EV1.10以上 / 100円",
         ticket:"all",minEV:1.10,staking:"fixed100",risk:0,
         bankroll:this.settings.initialBankroll,initial:this.settings.initialBankroll,
         invested:0,returned:0,wins:0,bets:0,skips:0,
@@ -1895,7 +1896,7 @@ class SimulationEngine{
       };
       this.characters.unshift(c);
     }
-    c.desc="AUTO: 締切3分前 / EV1.10以上 / 全買い目100円";
+    c.desc="AUTO: 締切3分前 / 各券種EV最高1点 / EV1.10以上 / 100円";
     return c;
   }
   save(){Store.set("settings",this.settings);Store.set("liveStateSchemaVersion",LIVE_STATE_SCHEMA_VERSION);Store.set("characters",this.characters);Store.set("bets",this.bets);Store.set("runtime",{races:this.races.map(r=>({...r,startTime:new Date(r.startTime).toISOString()}))})}
@@ -2074,9 +2075,10 @@ class SimulationEngine{
     if(race._autoBetting)return;
     race._autoBetting=true;
     try{
-      // AUTO DRIVE policy is fixed by request:
-      // exactly 3 minutes before betting close, buy EVERY all-ticket candidate
-      // whose decision EV is >= 1.10, 100 yen each.
+      // FIXED53 AUTO DRIVE policy:
+      // exactly 3 minutes before betting close, for EACH ticket type buy only
+      // the single candidate with the highest decision EV, 100 yen.
+      // Ticket types whose best EV is below 1.10 are skipped.
       this.settings.betTiming=3;
 
       try{await this.refreshOdds(race)}catch{}
@@ -2084,11 +2086,12 @@ class SimulationEngine{
       race.horses.forEach(h=>{if(h.odds3==null)h.odds3=h.odds});
 
       const autoPlayer=this.ensureAutoPlayer();
+      const autoMinEv=Number.isFinite(Number(autoPlayer.minEV))?Number(autoPlayer.minEV):1.10;
       let candidates=[];
 
       if(window.__oddsBoard?.getAutoCandidates){
         UI.autoStep=`${race.title} 全券種EV再取得`;
-        candidates=await window.__oddsBoard.getAutoCandidates(race,1.10,true);
+        candidates=await window.__oddsBoard.getAutoCandidates(race,autoMinEv,true);
       }
 
       // If the all-ticket board has not initialized yet, do not fabricate odds.
@@ -2096,14 +2099,39 @@ class SimulationEngine{
         candidates=[];
       }
 
-      const qualified=candidates
-        .filter(x=>Number.isFinite(Number(x.ev))&&Number(x.ev)>=1.10)
-        .sort((a,b)=>Number(b.ev)-Number(a.ev));
+      // Defensive invariant: ONE bet at most per ticket type.
+      // If duplicate rows exist, EV wins; exact ties are resolved deterministically.
+      const eligible=candidates.filter(x=>
+        String(x?.ticket||"").trim() &&
+        String(x?.selection||"").trim() &&
+        Number.isFinite(Number(x?.ev)) && Number(x.ev)>=autoMinEv
+      );
+      const bestByTicket=new Map();
+      const better=(a,b)=>{
+        const ae=Number(a.ev),be=Number(b.ev);
+        if(ae!==be)return ae>be;
+        const ap=Number(a.modelProb||0),bp=Number(b.modelProb||0);
+        if(ap!==bp)return ap>bp;
+        const ar=Number(a.rank||Number.MAX_SAFE_INTEGER),br=Number(b.rank||Number.MAX_SAFE_INTEGER);
+        if(ar!==br)return ar<br;
+        return String(a.selection||"").localeCompare(String(b.selection||""),"ja",{numeric:true})<0;
+      };
+      for(const x of eligible){
+        const type=String(x.ticket).trim();
+        const prev=bestByTicket.get(type);
+        if(!prev||better(x,prev))bestByTicket.set(type,x);
+      }
+      const ticketOrder=["単勝","複勝","枠連","馬連","ワイド","馬単","3連複","3連単"];
+      const qualified=[...bestByTicket.values()].sort((a,b)=>{
+        const ai=ticketOrder.indexOf(String(a.ticket)),bi=ticketOrder.indexOf(String(b.ticket));
+        if(ai!==bi)return (ai<0?999:ai)-(bi<0?999:bi);
+        return Number(b.ev)-Number(a.ev);
+      });
 
       race.betLocked=true;
       race.status="BET LOCKED";
 
-      this.log(`${race.title} 発売締切3分前。全券種EV1.10以上を100円ずつ購入判定（候補 ${qualified.length}点）`);
+      this.log(`${race.title} 発売締切3分前。AUTOは各券種EV最高1点のみ100円、EV${autoMinEv.toFixed(2)}以上（購入候補 ${qualified.length}券種）`);
 
       let made=0;
       for(const x of qualified){
@@ -2112,7 +2140,7 @@ class SimulationEngine{
         const sel=String(x.selection||"").trim();
         if(!sel)continue;
 
-        // race/day caps are intentionally not applied here: "全部100円買う".
+        // FIXED53: one selected candidate per ticket type, always 100 yen.
         const stake=100;
         autoPlayer.bankroll-=stake;
         autoPlayer.invested+=stake;
@@ -2136,7 +2164,7 @@ class SimulationEngine{
           ev:Number(x.ev),
           stake,
           return:0,profit:-stake,status:"OPEN",
-          autoPolicy:"EV>=1.10_ALL_100YEN",
+          autoPolicy:"PER_TICKET_TOP1_EV>=1.10_100YEN",
           autoDecisionMinutesBeforeClose:3
         };
         this.bets.push(bet);
@@ -2145,9 +2173,9 @@ class SimulationEngine{
 
       if(!made){
         autoPlayer.skips++;
-        this.log(`${race.title} AUTOプレイヤーはEV1.10以上なしで見送り`);
+        this.log(`${race.title} AUTOプレイヤーは各券種の最高EVが基準未満、または有効候補なしで見送り`);
       }else{
-        this.log(`${race.title} AUTOプレイヤー ${made}点 × 100円 = ${fmtY(made*100)}購入`);
+        this.log(`${race.title} AUTOプレイヤー ${made}券種 × 各1点 × 100円 = ${fmtY(made*100)}購入`);
       }
 
       this.save();
@@ -10567,9 +10595,10 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
         rows.push({character:c.name,ticket:c.ticket==='place'?'複勝':'単勝',selection:String(h.no),stake,odds:Number(h.odds),prob:Number(h.modelProb),ev:Number(h.ev),note:''});
       }
     }
-    // Calendar AUTO player: at minimum, lock the single WIN ticket with the highest EV>=1.10.
-    const auto=[...hs].filter(h=>Number(h.ev)>=1.10).sort((a,b)=>Number(b.ev)-Number(a.ev))[0];
-    if(auto)rows.unshift({character:'AUTOプレイヤー',ticket:'単勝',selection:String(auto.no),stake:100,odds:Number(auto.odds),prob:Number(auto.modelProb),ev:Number(auto.ev),note:'履歴に単勝市場があるため固定'});
+    // Calendar AUTO player: apply TOP1-per-ticket to markets actually preserved in history.
+    // This calendar path currently has a verified WIN market only, so AUTO locks one WIN bet at most.
+    const auto=[...hs].filter(h=>Number(h.ev)>=1.10).sort((a,b)=>Number(b.ev)-Number(a.ev)||Number(b.modelProb)-Number(a.modelProb)||Number(a.no)-Number(b.no))[0];
+    if(auto)rows.unshift({character:'AUTOプレイヤー',ticket:'単勝',selection:String(auto.no),stake:100,odds:Number(auto.odds),prob:Number(auto.modelProb),ev:Number(auto.ev),note:'AUTO券種別TOP1（履歴に保存された単勝市場のみ）'});
     return rows;
   }
 
