@@ -192,6 +192,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 <div class="notice" style="border-color:#06b6d4;background:#08242a"><b>FIXED54 AUTO 検証・観測</b> — 根拠のない勝率補正を撤去。初期状態は観測のみ。検証モデルのある帯だけ保守EV1.10以上で判定します。精算済み回収率と結果待ちを分離。</div>
 <div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED58 スピード指数→学習Softmax</b> — 実走タイムからSIを算出し、β・λ・τは精算済み予測を時系列学習。holdoutで市場確率よりLog Loss/Brierが改善したモデルだけAUTOに採用します。基準タイム・馬場差・レース補正が不足する場合は推定SIと明示し、架空能力値で補完しません。</div>
 <div class="notice" style="border-color:#60a5fa;background:#0b1d35"><b>FIXED58 過去5走 502/ばんえい修正</b> — NAR過去5走は netkeiba が502でも OddsPark / 直接取得 / テキスト中継へ自動フォールバック。帯広ばんえいの2桁日付・水分量・ダ200/直200表記を解析します。空レスポンスはキャッシュせず、取得経路とエラーを表示します。</div>
+<div class="notice" style="border-color:#22c55e;background:#0b2a18"><b>FIXED60 JRA履歴の当日誤取得防止</b> — 期間バックテストは確定済みデータ専用です。終了日の初期値を前日に変更し、当日・未来日を指定してSTARTしても前日までへ自動補正します。JRAの12桁race_idは年月日ではなく「年＋競馬場＋開催回＋開催日＋R」です。202606040602 は 2026年・中山(06)・4回・6日・2R を表します。</div>
 <div class="kpis">
   <div class="kpi"><small>次レース</small><b id="kpiNext">--</b></div>
   <div class="kpi"><small>締切まで</small><b id="kpiCountdown">--</b></div>
@@ -2730,6 +2731,13 @@ function btDateList(from,to){
   for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)) out.push(ymdLocal(d));
   return out;
 }
+// FIXED60: historical backtest uses completed calendar days only.
+// Today's races/results are handled by LIVE mode and may not yet have an official result CNAME.
+function btLatestCompletedDate(){
+  const d=new Date(today()+"T12:00:00+09:00");
+  d.setDate(d.getDate()-1);
+  return ymdLocal(d);
+}
 function freshBtCharacters(){
  const chars=CharacterEngine.create(engine.settings);
  chars.push({id:'auto-player',name:'AUTOプレイヤー',avatar:'🤖',desc:'共通AUTO54・未検証は見送り',ticket:'all',minEV:1.10,staking:'fixed100'});
@@ -3495,7 +3503,14 @@ async function getHistoryBlock(date,org,options={}){
   return d;
 }
 $("#runWebBacktest").onclick=async()=>{
-  const end=$("#btEnd").value||today();
+  let end=$("#btEnd").value||btLatestCompletedDate();
+  const requestedEnd=end;
+  const todayJst=today();
+  if(end>=todayJst){
+    end=btLatestCompletedDate();
+    $("#btEnd").value=end;
+    try{UI.addLog(`履歴バックテストは確定済みデータ専用です。${requestedEnd} は未確定日なので ${end} までに自動補正しました。`,`warn`)}catch(_){}
+  }
   const from=backDate(end,btDays);
   const dates=btDateList(from,end);
   const org=$("#btOrg").value;
@@ -3749,7 +3764,7 @@ $("#resetBt").onclick=()=>{
   if(TimeSeriesGraph.profit){TimeSeriesGraph.profit.destroy();TimeSeriesGraph.profit=null;}
 };
 setTimeout(()=>{
-  if($("#btEnd"))$("#btEnd").value=today();
+  if($("#btEnd"))$("#btEnd").value=btLatestCompletedDate();
   const saved=Store.get("btResultAnomalyAuditV1",null);
   const validSaved=!!saved
     && Number(saved.schemaVersion)===BACKTEST_SCHEMA_VERSION
@@ -10689,6 +10704,18 @@ console.log("✅ ODDS WORKER SPLIT applied: LIVE=https://houserace.nitta-katsuhi
     '2026-09-13':[
       {venueCode:'06',track:'中山',kai:4,day:4,count:12},
       {venueCode:'09',track:'阪神',kai:4,day:4,count:12}
+    ],
+    '2026-09-19':[
+      {venueCode:'06',track:'中山',kai:4,day:5,count:12},
+      {venueCode:'09',track:'阪神',kai:4,day:5,count:12}
+    ],
+    '2026-09-20':[
+      {venueCode:'06',track:'中山',kai:4,day:6,count:12},
+      {venueCode:'09',track:'阪神',kai:4,day:6,count:12}
+    ],
+    '2026-09-21':[
+      {venueCode:'06',track:'中山',kai:4,day:7,count:12},
+      {venueCode:'09',track:'阪神',kai:4,day:7,count:12}
     ]
   };
 
