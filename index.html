@@ -13,13 +13,13 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-JRA-DIAG-V4</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-JRA-DIAG-V5</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>トップROI</small><b id="kTop">--</b></div>
 </div>
-<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD v4 / JRA BRIDGE DIAG</span></h3><div class="body"><div class="controls">
+<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD v5 / JRA ID PARSER</span></h3><div class="body"><div class="controls">
 <label>開始日 <input id="fromDate" type="date"></label><label>終了日 <input id="toDate" type="date"></label><label>区分 <select id="orgSelect"><option value="BOTH">JRA+NAR</option><option>JRA</option><option>NAR</option></select></label><button class="preset" data-days="1">1日</button><button class="preset" data-days="7">7日</button><button class="preset" data-days="31">1か月</button><button class="preset" data-days="92">3か月</button><button class="preset" data-days="183">6か月</button><button class="preset" data-days="365">1年</button><button id="runBtn" class="primary">🏁 全11名 START</button><button id="stopBtn" class="danger" disabled>停止</button></div>
 <div class="progressBlock"><div class="progressHead"><b>① 開催データ取得進捗</b><span id="fetchProgressText">未実行</span></div><div class="progress"><i id="fetchBar"></i></div></div>
 <div class="progressBlock"><div class="progressHead"><b>② レース処理進捗</b><span id="raceProgressText">未実行</span></div><div class="progress race"><i id="raceBar"></i></div></div>
@@ -297,8 +297,27 @@ function setJraDiagBox(id,state,html){const el=$(id);if(!el)return;el.classList.
 function setJraDiagMeta(){const m=$('jraDiagMeta');if(!m)return;m.innerHTML=`<span>race_id</span><span class="mono">${jraDiagEsc(JRA_BRIDGE_DIAG.raceId||'--')}</span><span>診断日</span><span>${jraDiagEsc(JRA_BRIDGE_DIAG.date||'--')}</span><span>最終URL</span><span style="word-break:break-all">${jraDiagEsc(JRA_BRIDGE_DIAG.lastUrl||'--')}</span>`}
 function bridgeInfo(){return {ready:!!window.__NAR_BRIDGE_READY__,hasFetch:typeof window.__narBridgeFetch==='function',hasDirect:typeof window.__narBridgeDirect==='function'&&!!window.__narBridgeHasDirect,version:String(window.__narBridgeVersion||document.documentElement.getAttribute('data-nar-bridge-ready')||'不明')}}
 function jraLooksBlocked(text){text=String(text||'');return !text||/Access Denied|Reference\s*#|Just a moment|Pardon Our Interruption|Incapsula|akamai|errors\.edgesuite\.net|404\s+not\s+found|ページが見つかりません|指定されたページは存在しません/i.test(text)}
-function jraRaceIdsFromHtml(text){const out=[],seen=new Set();for(const re of [/race_id[=\\"'&amp;%3D]+(20\d{10})/ig,/race_id=(20\d{10})/ig,/[?&]race_id=(20\d{10})/ig]){let m;while((m=re.exec(String(text||'')))){const id=m[1];if(!seen.has(id)){seen.add(id);out.push(id)}}}return out}
-function jraInspect(kind,r,text,raceId=''){const status=Number(r?.status||0),body=String(text||r?.text||''),blocked=jraLooksBlocked(body);let marker=false,reason='';if(status<200||status>=400)return {ok:false,reason:'HTTP '+status};if(blocked)return {ok:false,reason:'遮断/エラーページ判定'};if(kind==='list'){const ids=jraRaceIdsFromHtml(body);marker=ids.length>0||/JRA|中央競馬|race_list|RaceList|札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉/i.test(body);reason=marker?`JRA開催本文 / race_id ${ids.length}件`:'JRA開催マーカーなし';return {ok:marker,reason,ids}}
+function jraRaceIdsFromHtml(text){
+  const src=String(text||'');
+  const out=[],seen=new Set();
+  const push=id=>{id=String(id||'').replace(/\D/g,'');if(/^20\d{10}$/.test(id)&&!seen.has(id)){seen.add(id);out.push(id)}};
+  const patterns=[
+    /(?:race_id|raceId|raceid)[\s\\"'=:&amp;%3D_-]+(20\d{10})/ig,
+    /[?&](?:amp;)?race_id=(20\d{10})/ig,
+    /data-(?:race-id|raceid)=[\"']?(20\d{10})/ig,
+    /\/race\/(20\d{10})(?:\/|[?\"'#])/ig,
+    /\/race\/(?:shutuba|result|race_result)\.html\?[^\"'<>]*race_id=(20\d{10})/ig,
+    /race_id%3D(20\d{10})/ig,
+    /(?:\"|')race_id(?:\"|')\s*:\s*(?:\"|')?(20\d{10})/ig
+  ];
+  for(const re of patterns){let m;while((m=re.exec(src)))push(m[1]);}
+  let dec=src;
+  try{dec=decodeURIComponent(src.replace(/&amp;/g,'&').replace(/&#x3D;|&#61;/gi,'='));}
+  catch(_){dec=src.replace(/&amp;/g,'&').replace(/&#x3D;|&#61;/gi,'=');}
+  if(dec!==src){for(const re of patterns){re.lastIndex=0;let m;while((m=re.exec(dec)))push(m[1]);}}
+  return out;
+}
+function jraInspect(kind,r,text,raceId=''){const status=Number(r?.status||0),body=String(text||r?.text||''),blocked=jraLooksBlocked(body);let marker=false,reason='';if(status<200||status>=400)return {ok:false,reason:'HTTP '+status};if(blocked)return {ok:false,reason:'遮断/エラーページ判定'};if(kind==='list'){const ids=jraRaceIdsFromHtml(body);const racePathCount=(body.match(/\/race\/20\d{10}/ig)||[]).length;marker=ids.length>0||/JRA|中央競馬|race_list|RaceList|札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉/i.test(body);reason=marker?`JRA開催本文 / race_id ${ids.length}件 / racePath ${racePathCount}件`:'JRA開催マーカーなし';return {ok:marker,reason,ids,racePathCount}}
 if(kind==='odds'){const hasRid=!raceId||body.includes(raceId);marker=/オッズ|単勝|複勝|人気|Odds|OddsTable/i.test(body);reason=marker&&hasRid?'オッズマーカー検出'+(raceId?' / race_id一致':''):marker?'オッズ本文あり / race_id本文一致なし':'オッズマーカーなし';return {ok:marker,reason}}
 if(kind==='result'){const hasRid=!raceId||body.includes(raceId);marker=/着\s*順|払戻|払戻金|結果|RaceResult|Result_Pay_Back|Pay_Back|Payout/i.test(body);reason=marker&&hasRid?'結果/払戻マーカー検出'+(raceId?' / race_id一致':''):marker?'結果本文あり / race_id本文一致なし':'結果/払戻マーカーなし';return {ok:marker,reason}}
 return {ok:body.length>0,reason:body.length?'本文あり':'本文なし'}}
@@ -311,7 +330,7 @@ const oddsUrl=`https://race.netkeiba.com/odds/index.html?race_id=${found.raceId}
 const resultUrl=`https://race.netkeiba.com/race/result.html?race_id=${found.raceId}&rf=race_submenu`;let rr=await jraBridgeFetchDiag(resultUrl,14000),ri=jraInspect('result',rr,rr.text||'',found.raceId);JRA_BRIDGE_DIAG.lastUrl=rr.finalUrl||resultUrl;JRA_BRIDGE_DIAG.results.result={status:rr.status,inspection:ri,finalUrl:JRA_BRIDGE_DIAG.lastUrl,elapsedMs:rr.elapsedMs,bodyLength:String(rr.text||'').length};setJraDiagBox('jraDiagResult',ri.ok?'pass':'fail',jraDiagBoxHtml(rr,ri));setJraDiagMeta();jraDiagLog(`結果/払戻: HTTP ${rr.status} / ${ri.reason}`,ri.ok?'ok':'bad');
 const ok=oi.ok&&ri.ok;$('jraBridgeDiagSummary').textContent=ok?`✅ JRA Bridge 3系統成功 / ${found.date} / ${found.raceId}`:`⚠️ 開催一覧成功、個別系統に不合格あり / ${found.raceId}`;if(ok)jraDiagLog('JRAはWorkerなしBridge直結で3系統取得可能と判定','ok');else jraDiagLog('JRA Bridgeは一部系統の追加調整が必要です','bad')}
 catch(e){$('jraBridgeDiagSummary').textContent='❌ '+e.message;jraDiagLog(e.message,'bad');const bi=bridgeInfo();if(!bi.hasFetch)setJraDiagBox('jraDiagBridge','fail',`<b class="badText">❌ Bridge未検出</b><div>${jraDiagEsc(e.message)}</div>`)}finally{JRA_BRIDGE_DIAG.running=false;$('jraBridgeDiagBtn').disabled=false}}
-async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA Bridge診断`,`build=20260921-JRA-DIAG-V4`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
+async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA Bridge診断`,`build=20260921-JRA-DIAG-V5`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec',sApi:'apiBase',sOddsApi:'oddsApi',sResultApi:'resultApi'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value),apiBase:$('sApi').value.trim(),oddsApi:$('sOddsApi').value.trim(),resultApi:$('sResultApi').value.trim()};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
