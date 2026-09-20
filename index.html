@@ -150,13 +150,42 @@ function setFetchProgress(n,total,text,done=false){const ratio=total?Math.max(0,
 function completeFetchProgress(n,total,text){$('fetchBar').style.width=(total?Math.min(100,n/total*100):0)+'%';$('fetchProgressText').textContent=`${text} (${n}/${total})`}
 function setRaceProgress(n,total,text){$('raceBar').style.width=(total?Math.min(100,Math.max(0,n)/total*100):0)+'%';$('raceProgressText').textContent=total?`${text} (${Math.max(0,n)}/${total}R)`:text}
 function setCurrentPhase(text){$('currentPhase').textContent=text;$('progressText').textContent=text}
+function resetRunStateUI(from,to,org){
+ // 新しいSTARTでは前回実行の結果表示を完全に切り離す。
+ // 取得済みsnapshotキャッシュ(SNAP_KEY)は実データ再利用のため保持する。
+ lastResult=null;
+ try{localStorage.removeItem(RESULT_KEY)}catch(_){ }
+ for(const k of Object.keys(charts))destroyChart(k);
+ $('kPeriod').textContent=`${from}→${to}`;
+ $('kRaces').textContent='0';
+ $('kAccepted').textContent='0';
+ $('kLeak').textContent='0';
+ $('kNoSnap').textContent='0';
+ $('kModel').textContent='市場';
+ $('kSamples').textContent='0';
+ $('kTop').textContent='--';
+ $('rankBody').innerHTML='';
+ $('futureBody').innerHTML='';
+ $('betBody').innerHTML='';
+ $('auditSummary').className='notice strict';
+ $('auditSummary').innerHTML='<b>新規実行:</b> 未来情報監査 0件 / 締切前snapshot無し 0件 / 確定オッズ使用 0件';
+ $('calendar').innerHTML='<div class="muted">新しい期間を実行中…</div>';
+ $('log').innerHTML='';
+ resetFetchStatus();
+ $('fetchBar').style.width='0%';
+ $('raceBar').style.width='0%';
+ $('fetchProgressText').textContent='準備中';
+ $('raceProgressText').textContent='開催データ待ち';
+ setCurrentPhase(`新規実行を初期化しました — ${from}→${to} / ${org} / 全11名`);
+ $('modelBadge').textContent='MARKET FALLBACK';
+ $('modelBadge').className='badge warn';
+}
 async function runSimulation(){
  if(!settings.simulation)return alert('設定でシミュレーションモードをONにしてください');
  const from=$('fromDate').value,to=settings.periodCross?$('toDate').value:$('fromDate').value,org=$('orgSelect').value;
  if(!from||!to)return alert('開始日・終了日を指定してください');
  if(from>to)return alert('開始日は終了日以前にしてください');
- stopRequested=false;$('runBtn').disabled=true;$('stopBtn').disabled=false;resetFetchStatus();
- $('fetchBar').style.width='0%';$('raceBar').style.width='0%';$('fetchProgressText').textContent='準備中';$('raceProgressText').textContent='開催データ待ち';
+ stopRequested=false;resetRunStateUI(from,to,org);$('runBtn').disabled=true;$('stopBtn').disabled=false;
  const dates=datesBetween(from,to),orgs=org==='BOTH'?['JRA','NAR']:[org],adapter=new DataAdapter(settings),players=freshPlayers(),model=new WalkForwardModel(settings.minSamples),state={bets:[],audit:[],futureRejected:0,noSnapshot:0,finalOddsUsed:0,processed:0,accepted:0,calendar:{},fetchErrors:[],fetchStatus:[]};
  $('kPeriod').textContent=`${from}→${to}`;log(`期間横断START ${from}→${to} / ${org} / 全11名`,'good');
  const total=dates.length*orgs.length;let step=0;
