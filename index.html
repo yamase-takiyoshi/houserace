@@ -68,7 +68,29 @@ class DataAdapter{
  async result(race){const rid=race.id||race.raceId||race.race_id,org=race.org;const d=await fetchJson(url(this.s.resultApi,'result',{race_id:rid,raceId:rid,org,type:org}));return normalizeResult(d)}
  async liveOdds(race){const rid=race.id||race.raceId||race.race_id,org=race.org;const d=await fetchJson(url(this.s.oddsApi,'odds',{race_id:rid,raceId:rid,org,type:org}));return normalizeLiveSnapshot(d,race)}
 }
-function normalizeRaces(d,date,org){const a=Array.isArray(d)?d:(d?.races||d?.data?.races||d?.items||[]);return (Array.isArray(a)?a:[]).map((r,i)=>({id:String(r.id||r.raceId||r.race_id||`${date}-${org}-${i+1}`),org:String(r.org||r.type||org||'').toUpperCase(),date:String(r.date||date),track:r.track||r.venue||r.place||'',no:Number(r.no||r.raceNo||r.race_no||i+1),startTime:r.startTime||r.start_time||r.postTime||null,betCloseTime:r.betCloseTime||r.bet_close_time||null,closeBeforeMin:Number(r.closeBeforeMin??(String(r.org||org).toUpperCase()==='JRA'?1:2)),horses:Array.isArray(r.horses)?r.horses:[],features:r.features||null,result:r.result||null,oddsSnapshots:r.oddsSnapshots,snapshots:r.snapshots,oddsHistory:r.oddsHistory,historyOdds:r.historyOdds,finalOddsSnapshot:r.finalOddsSnapshot||r.finalSnapshot||r.finalMarketSnapshot||null,finalOdds:r.finalOdds||null,finalMarkets:r.finalMarkets||null,source:r.source||'history'})).filter(r=>r.id&&r.org)}
+const JRA_TRACKS=['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉'];
+const NAR_TRACKS=['帯広','門別','盛岡','水沢','浦和','船橋','大井','川崎','金沢','笠松','名古屋','園田','姫路','高知','佐賀'];
+function canonicalRaceOrg(r,requestedOrg){
+ const track=String(r?.track||r?.venue||r?.place||'').replace(/競馬場/g,'').trim();
+ if(JRA_TRACKS.some(x=>track.includes(x)))return {org:'JRA',source:'track'};
+ if(NAR_TRACKS.some(x=>track.includes(x)))return {org:'NAR',source:'track'};
+ const raw=String(r?.org??r?.organization??r?.type??r?.sourceOrg??'').trim().toUpperCase();
+ if(raw.includes('JRA')||raw.includes('中央'))return {org:'JRA',source:'org'};
+ if(raw.includes('NAR')||raw.includes('地方'))return {org:'NAR',source:'org'};
+ const rid=String(r?.id||r?.raceId||r?.race_id||'').replace(/\D/g,'');
+ if(rid.length>=6){const code=Number(rid.slice(4,6));if(code>=1&&code<=10)return {org:'JRA',source:'race_id'};if(code>=20&&code<=99)return {org:'NAR',source:'race_id'}}
+ return {org:String(requestedOrg||'').toUpperCase(),source:'requested'};
+}
+function normalizeDateValue(v){if(!v)return '';const m=String(v).match(/(20\d{2})[-\/]?(\d{2})[-\/]?(\d{2})/);return m?`${m[1]}-${m[2]}-${m[3]}`:''}
+function normalizeRaces(d,date,org){
+ const a=Array.isArray(d)?d:(d?.races||d?.data?.races||d?.items||[]), requested=String(org||'').toUpperCase();
+ return (Array.isArray(a)?a:[]).map((r,i)=>{
+   const c=canonicalRaceOrg(r,requested), explicitDate=normalizeDateValue(r.date||r.raceDate||r.race_date);
+   if(requested&&c.org!==requested)return null;
+   if(explicitDate&&explicitDate!==date)return null;
+   return {id:String(r.id||r.raceId||r.race_id||`${date}-${requested}-${i+1}`),org:c.org,_orgSource:c.source,date:String(explicitDate||date),track:r.track||r.venue||r.place||'',no:Number(r.no||r.raceNo||r.race_no||i+1),startTime:r.startTime||r.start_time||r.postTime||null,betCloseTime:r.betCloseTime||r.bet_close_time||null,closeBeforeMin:Number(r.closeBeforeMin??(c.org==='JRA'?1:2)),horses:Array.isArray(r.horses)?r.horses:[],features:r.features||null,result:r.result||null,oddsSnapshots:r.oddsSnapshots,snapshots:r.snapshots,oddsHistory:r.oddsHistory,historyOdds:r.historyOdds,finalOddsSnapshot:r.finalOddsSnapshot||r.finalSnapshot||r.finalMarketSnapshot||null,finalOdds:r.finalOdds||null,finalMarkets:r.finalMarkets||null,source:r.source||'history'};
+ }).filter(Boolean)
+}
 function extractSnapshots(d){if(Array.isArray(d))return d;if(Array.isArray(d?.snapshots))return d.snapshots;if(Array.isArray(d?.data?.snapshots))return d.data.snapshots;if(Array.isArray(d?.history))return d.history;if(Array.isArray(d?.oddsHistory))return d.oddsHistory;return []}
 function extractFinalSnapshot(d,race){const x=d?.finalOddsSnapshot||d?.finalSnapshot||d?.snapshot||d?.data?.finalOddsSnapshot||d?.data?.finalSnapshot||d?.data?.snapshot||d?.data||d;if(!x||typeof x!=='object'||Array.isArray(x))return null;if(Array.isArray(x.horses)||x.markets||x.odds)return x;if(Array.isArray(d?.horses)||d?.markets||d?.odds)return {horses:d.horses||race.horses||[],markets:d.markets||d.odds||{},source:d.source||'FINAL odds'};return null}
 function normalizeLiveSnapshot(d,race){const at=d?.at||d?.timestamp||d?.observedAt||new Date().toISOString();const horses=Array.isArray(d?.horses)?d.horses:race.horses||[];return {at,marketTime:d?.marketTime||d?.oddsAt||at,source:d?.source||'LIVE odds',horses,markets:d?.markets||d?.odds||null}}
@@ -162,7 +184,7 @@ async function runSimulation(){
     if(stopRequested)break;
     const race=races[ri];
     const raceLabel=`${race.track||o} ${race.no||ri+1}R`;
-    setRaceProgress(ri,races.length,`${date} ${o} ${raceLabel} 処理中`);setCurrentPhase(`${date} ${o}: ${races.length}R取得済 → ${ri+1}/${races.length}R ${raceLabel} を処理中（期間累計 ${state.processed+1}R目）`);
+    setRaceProgress(ri+1,races.length,`${date} ${o} ${raceLabel} 処理中`);setCurrentPhase(`${date} ${o}: ${races.length}R取得済 → ${ri+1}/${races.length}R ${raceLabel} を処理中（期間累計 ${state.processed+1}R目）`);
     state.processed++;setKpis(state,model,players);
     const ok=await simulateRace(race,players,model,adapter,state);
     if(ok){state.accepted++;had=true}
