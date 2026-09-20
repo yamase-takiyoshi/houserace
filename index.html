@@ -13,9 +13,9 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-BRIDGE-ONLY-V9</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-BRIDGE-ONLY-V10-JRA-JSON</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
-<div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。 <b>V9:</b> 確定オッズ8秒・結果8秒・1レース20秒の強制タイムアウト／失敗時は次レースへ続行。NARはカレンダーkaisai_id経由を自動フォールバック。</div>
+<div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。 <b>V10:</b> JRA確定オッズは静的HTMLではなく netkeiba のJSONオッズAPIをBridge経由で直接取得。単勝・複勝・枠連・馬連・ワイド・馬単・三連複・三連単を解析し、API失敗時だけHTML診断へフォールバック。確定オッズ8秒・結果8秒・1レース20秒の強制タイムアウト。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>トップROI</small><b id="kTop">--</b></div>
 </div>
@@ -200,6 +200,89 @@ function marketHeading(type){return {win:/^単勝$/,place:/^複勝$/,frame:/^枠
 function marketOddsValue(text){const vals=(bridgeHalf(String(text||'')).replace(/,/g,'').match(/\d+(?:\.\d+)?/g)||[]).map(Number).filter(x=>x>=1&&x<=999999);return vals.length?vals[0]:0}
 function parseMarketRows(root,type){const out={},arity=(type==='win'||type==='place')?1:TRIPLE_MARKETS.has(type)?3:2,max=type==='frame'?8:18;for(const row of root.querySelectorAll('tr')){const cells=[...row.querySelectorAll('th,td')];if(cells.length<2)continue;let odds=0,oddsIndex=-1;for(let i=cells.length-1;i>=0;i--){const t=bridgeHalf(bridgeClean(cells[i].textContent));if(/人気|票|組|馬番|枠番/.test(t)&&!/\d+\.\d/.test(t))continue;const v=marketOddsValue(t);if(v>=1&&(/\d+\.\d/.test(t)||/\d+\s*[-～~]\s*\d/.test(t))){odds=v;oddsIndex=i;break}}if(!(odds>=1))continue;const selCells=cells.filter((_,i)=>i!==oddsIndex).map(c=>bridgeHalf(bridgeClean(c.textContent))).join(' ').replace(/[→>]/g,'-');let nums=[];for(const m of selCells.matchAll(/(?:^|\D)(1[0-8]|[1-9])(?=\D|$)/g)){const n=Number(m[1]);if(n>=1&&n<=max)nums.push(n)}if(nums.length<arity){const attrs=[];for(const el of row.querySelectorAll('[data-umaban],[data-horse-no],[data-number],[data-num],[value]'))for(const a of ['data-umaban','data-horse-no','data-number','data-num','value']){const v=Number(el.getAttribute(a));if(v>=1&&v<=max)attrs.push(v)}if(attrs.length>=arity)nums=attrs}if(nums.length<arity)continue;nums=nums.slice(-arity);const key=marketComboKey(type,nums);if(key&&!out[key])out[key]=odds}return out}
 function parseMarketHtml(html,type){const doc=new DOMParser().parseFromString(String(html||''),'text/html'),pat=marketHeading(type),heads=[...doc.querySelectorAll('h1,h2,h3,h4,dt,caption,.Title,.title,[class*="Title"]')];for(const h of heads){const t=bridgeHalf(bridgeClean(h.textContent)).replace(/\s+/g,'');if(!pat?.test(t))continue;let node=h.nextElementSibling;for(let i=0;node&&i<8;i++,node=node.nextElementSibling){const m=parseMarketRows(node,type);if(Object.keys(m).length)return m;if(/^H[1-4]$/.test(node.tagName))break}}return parseMarketRows(doc,type)}
+
+/* V10: JRA odds are injected by JavaScript after the HTML shell loads.
+   The static odds page therefore contains placeholders such as ---.-.
+   Use the same JSON endpoint used by the page itself. */
+const JRA_API_MARKET_CODE={win:'1',place:'2',frame:'3',quinella:'4',wide:'5',exacta:'6',trio:'7',trifecta:'8'};
+function jraOddsApiUrl(rid,type='all'){
+ const q=new URLSearchParams({pid:'api_get_jra_odds',race_id:String(rid),type:String(type),action:'init',sort:'odds',compress:'0',output:'json'});
+ return 'https://race.netkeiba.com/api/api_get_jra_odds.html?'+q.toString();
+}
+function parseLooseJson(text){
+ let t=String(text||'').replace(/^\uFEFF/,'').trim();
+ try{return JSON.parse(t)}catch(_){ }
+ const a=t.indexOf('{'),b=t.lastIndexOf('}');
+ if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1))}catch(_){ }}
+ throw Error('JRA JSON API: JSON解析失敗');
+}
+function jraOddsRoot(obj){
+ return obj?.data?.odds||obj?.odds||obj?.data?.data?.odds||obj?.result?.odds||null;
+}
+function jraLeafOdds(v){
+ if(Array.isArray(v)){
+  const lo=Number(String(v[0]??'').replace(/,/g,''));
+  const hi=Number(String(v[1]??'').replace(/,/g,''));
+  if(Number.isFinite(lo)&&lo>=1)return {odds:lo,high:Number.isFinite(hi)&&hi>=lo?hi:null};
+  return null;
+ }
+ if(v&&typeof v==='object'){
+  const lo=Number(v.odds??v.low??v.min??v.oddsLow??v[0]);
+  const hi=Number(v.high??v.max??v.oddsHigh??v[1]);
+  if(Number.isFinite(lo)&&lo>=1)return {odds:lo,high:Number.isFinite(hi)&&hi>=lo?hi:null};
+  return null;
+ }
+ const m=bridgeHalf(String(v??'')).replace(/,/g,'').match(/\d+(?:\.\d+)?/);
+ const n=m?Number(m[0]):NaN;
+ return Number.isFinite(n)&&n>=1?{odds:n,high:null}:null;
+}
+function jraFlattenLeaves(node,prefix='',out=[]){
+ if(Array.isArray(node)||node==null||typeof node!=='object'){out.push([prefix,node]);return out}
+ for(const [k,v] of Object.entries(node)){
+  if(Array.isArray(v)||v==null||typeof v!=='object')out.push([prefix+String(k),v]);
+  else jraFlattenLeaves(v,prefix+String(k),out);
+ }
+ return out;
+}
+function jraComboFromKey(raw,type){
+ let s=bridgeHalf(String(raw??'')).trim();
+ const arity=(type==='win'||type==='place')?1:TRIPLE_MARKETS.has(type)?3:2;
+ const max=type==='frame'?8:18;
+ let nums=[];
+ const sep=s.match(/\d+/g)||[];
+ if(/[\-_>:/,\s]/.test(s)&&sep.length>=arity) nums=sep.map(Number);
+ if(nums.length<arity){
+  const d=s.replace(/\D/g,'');
+  if(type==='frame'&&arity===2&&d.length===2) nums=[Number(d[0]),Number(d[1])];
+  else if(d.length>=arity*2){nums=[];for(let i=0;i<arity;i++)nums.push(Number(d.slice(i*2,i*2+2)))}
+  else if(arity===1&&d.length) nums=[Number(d)];
+ }
+ nums=nums.filter(n=>Number.isFinite(n)&&n>=1&&n<=max);
+ if(nums.length<arity)return'';
+ return marketComboKey(type,nums.slice(0,arity));
+}
+function parseJraApiBucket(bucket,type){
+ const out={};
+ if(!bucket||typeof bucket!=='object')return out;
+ for(const [raw,v] of jraFlattenLeaves(bucket)){
+  const key=jraComboFromKey(raw,type),ov=jraLeafOdds(v);
+  if(key&&ov&&ov.odds>=1&&!out[key])out[key]=ov.odds; // 複勝/ワイドは下限を保守的に採用
+ }
+ return out;
+}
+function parseJraOddsApiObject(obj){
+ const root=jraOddsRoot(obj);if(!root||typeof root!=='object')throw Error('JRA JSON API: data.oddsなし');
+ const markets={};
+ for(const [type,code] of Object.entries(JRA_API_MARKET_CODE))markets[type]=parseJraApiBucket(root[code]||root['b'+code],type);
+ return markets;
+}
+async function fetchJraOddsApi(rid,type='all',timeout=3300){
+ const u=jraOddsApiUrl(rid,type),r=await bridgeGetCore(u,timeout),obj=parseLooseJson(r.text),root=jraOddsRoot(obj);
+ if(!root||typeof root!=='object')throw Error(`JRA JSON API ${type}: data.oddsなし body=${r.text.length}`);
+ return {obj,root,text:r.text,status:r.status,finalUrl:r.finalUrl||u,profile:r.profile};
+}
+function mergeMarketMaps(dst,src){for(const t of ODDS_TYPES){dst[t]=dst[t]||{};for(const [k,v] of Object.entries(src?.[t]||{}))if(!dst[t][k])dst[t][k]=v}return dst}
+
 function parseHorseMetaBridge(html){const doc=new DOMParser().parseFromString(String(html||''),'text/html'),out=new Map();for(const tr of doc.querySelectorAll('tr')){const link=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');if(!link)continue;let no=bridgeNum(tr.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"]')?.textContent||'');if(!(no>=1&&no<=18)){for(const c of [...tr.querySelectorAll('td,th')].slice(0,4)){const t=bridgeHalf(bridgeClean(c.textContent));if(/^([1-9]|1[0-8])$/.test(t)){no=Number(t);break}}}if(!(no>=1&&no<=18))continue;let frame=bridgeNum(tr.querySelector('.Waku,.Waku1,.Waku2,.Waku3,.Waku4,.Waku5,.Waku6,.Waku7,.Waku8,[class*="Waku"],[class*="waku"],[class*="Frame"]')?.textContent||'');if(!(frame>=1&&frame<=8))frame=null;out.set(no,{no,frame,name:bridgeClean(link.textContent)||`#${no}`})}return out}
 function bridgeOddsUrls(race,type){const id=bridgeLockedRaceId(race),code=ODDS_PAGE_CODE[type],q=`race_id=${encodeURIComponent(id)}&type=${code}`;return race.org==='JRA'?[`https://race.netkeiba.com/odds/index.html?${q}`,`https://race.sp.netkeiba.com/odds/index.html?${q}`]:[`https://nar.netkeiba.com/odds/index.html?${q}`,`https://nar.sp.netkeiba.com/odds/index.html?${q}`,`https://nar.sp.netkeiba.com/odds/odds.html?${q}`]}
 function bridgeResultUrls(race){const id=bridgeLockedRaceId(race);return race.org==='JRA'?[`https://race.netkeiba.com/race/result.html?race_id=${id}&rf=race_submenu`,`https://race.sp.netkeiba.com/?pid=race_result&race_id=${id}`,`https://db.netkeiba.com/race/${id}/`]:[`https://nar.sp.netkeiba.com/race/race_result.html?race_id=${id}`,`https://nar.netkeiba.com/race/result.html?race_id=${id}&rf=race_list`,`https://db.netkeiba.com/race/${id}/`]}
@@ -227,13 +310,57 @@ class BridgeDataAdapter extends DataAdapter{
  async finalOddsPayload(race){
   const locked=bridgeLockedRace(race),rid=locked.id;
   if(this.finalCache.has(rid)){log(`race_id=${rid} FINAL cache hit`,'muted');return this.finalCache.get(rid)}
-  log(`race_id=${rid} FINAL[1/4] b1 単勝/複勝取得開始`,'muted');
+
+  if(locked.org==='JRA'){
+   const errors=[];let markets={win:{},place:{},frame:{},quinella:{},wide:{},exacta:{},trio:{},trifecta:{}};
+   log(`race_id=${rid} FINAL[1/4] JRA JSON API type=all 取得開始`,'muted');
+   try{
+    const a=await fetchJraOddsApi(rid,'all',3300);markets=mergeMarketMaps(markets,parseJraOddsApiObject(a.obj));
+    log(`race_id=${rid} JRA API HTTP=${a.status} body=${a.text.length} oddsKeys=${Object.keys(a.root||{}).join(',')||'-'}`,'muted');
+   }catch(e){errors.push('all:'+String(e?.message||e));log(`race_id=${rid} JRA API all失敗: ${e?.message||e}`,'bad')}
+
+   let counts=Object.fromEntries(ODDS_TYPES.map(t=>[t,Object.keys(markets[t]||{}).length]));
+   log(`race_id=${rid} FINAL[2/4] API解析 ${Object.entries(counts).map(([k,v])=>k+'='+v).join(' ')}`,'muted');
+
+   const need=ODDS_TYPES.filter(t=>counts[t]===0).filter(t=>t!=='place');
+   if(need.length){
+    log(`race_id=${rid} FINAL[3/4] API個別補完 ${need.join(',')}`,'muted');
+    const byApiType=new Map();for(const t of need){const apiType=t==='win'?'1':JRA_API_MARKET_CODE[t];if(apiType)byApiType.set(apiType,true)}
+    const apiTypes=[...byApiType.keys()];
+    const settled=await Promise.allSettled(apiTypes.map(tp=>fetchJraOddsApi(rid,tp,3000)));
+    settled.forEach((z,i)=>{const tp=apiTypes[i];if(z.status==='fulfilled'){try{markets=mergeMarketMaps(markets,parseJraOddsApiObject(z.value.obj))}catch(e){errors.push(tp+':parse:'+String(e?.message||e))}}else errors.push(tp+':'+String(z.reason?.message||z.reason))});
+    counts=Object.fromEntries(ODDS_TYPES.map(t=>[t,Object.keys(markets[t]||{}).length]));
+   }
+
+   if(Object.keys(markets.win||{}).length<2){
+    try{
+     const b1=await bridgeFirstCore(bridgeOddsUrls(locked,'win'),h=>bridgeBodyMatchesRace(h,rid)&&/オッズ|単勝|複勝|Odds/i.test(h),2200);
+     const doc=new DOMParser().parseFromString(String(b1.text||''),'text/html');
+     const title=bridgeClean(doc.querySelector('title')?.textContent||'').slice(0,90);
+     const htmlWin=parseMarketHtml(b1.text,'win'),htmlPlace=parseMarketHtml(b1.text,'place');
+     log(`race_id=${rid} HTML診断 body=${b1.text.length} title=${title||'-'} htmlWin=${Object.keys(htmlWin).length} htmlPlace=${Object.keys(htmlPlace).length}`,'bad');
+     markets=mergeMarketMaps(markets,{win:htmlWin,place:htmlPlace});
+    }catch(e){errors.push('htmlDiag:'+String(e?.message||e));log(`race_id=${rid} HTML診断失敗: ${e?.message||e}`,'bad')}
+   }
+   if(Object.keys(markets.win||{}).length<2)throw Error(`race_id=${rid} JRA確定単勝オッズを解析できません / ${errors.slice(-3).join(' / ')}`);
+
+   let meta=new Map();
+   try{const sh=await bridgeFirstCore(bridgeShutubaUrls(locked),h=>bridgeBodyMatchesRace(h,rid)&&/horse|馬名|出馬表/i.test(h),1800);meta=parseHorseMetaBridge(sh.text)}catch(e){errors.push('meta:'+String(e?.message||e))}
+   const nos=Object.keys(markets.win).map(Number).filter(n=>n>0).sort((a,b)=>a-b),horses=nos.map(no=>({no,name:meta.get(no)?.name||`#${no}`,frame:meta.get(no)?.frame||null,odds:Number(markets.win[String(no)])}));
+   const snap={at:null,horses,markets:{win:markets.win||{},place:markets.place||{},frame:markets.frame||{},quinella:markets.quinella||{},wide:markets.wide||{},exacta:markets.exacta||{},trio:markets.trio||{},trifecta:markets.trifecta||{}},source:`Bridge ${window.__narBridgeVersion||''} JRA JSON FINAL ODDS / race_id=${rid}`};
+   counts=Object.fromEntries(Object.entries(snap.markets).map(([k,v])=>[k,Object.keys(v||{}).length]));
+   const out={snapshot:snap,source:snap.source,diagnostics:{raceId:rid,route:'JRA_JSON_API',marketCounts:counts,errors}};
+   log(`race_id=${rid} FINAL[4/4] JRA JSON完了 ${Object.entries(counts).map(([k,v])=>k+'='+v).join(' ')}`,'good');
+   this.finalCache.set(rid,out);return out;
+  }
+
+  log(`race_id=${rid} FINAL[1/4] NAR b1 単勝/複勝取得開始`,'muted');
   const b1=await bridgeFirstCore(bridgeOddsUrls(locked,'win'),h=>bridgeBodyMatchesRace(h,rid)&&/オッズ|単勝|複勝|Odds/i.test(h),4200);
   const markets={win:parseMarketHtml(b1.text,'win'),place:parseMarketHtml(b1.text,'place')},errors=[];
-  log(`race_id=${rid} FINAL[2/4] b1解析 win=${Object.keys(markets.win||{}).length} place=${Object.keys(markets.place||{}).length}`,'muted');
-  if(Object.keys(markets.win||{}).length<2)throw Error(`race_id=${rid} Bridge確定単勝オッズを解析できません`);
+  log(`race_id=${rid} FINAL[2/4] NAR b1解析 win=${Object.keys(markets.win||{}).length} place=${Object.keys(markets.place||{}).length}`,'muted');
+  if(Object.keys(markets.win||{}).length<2)throw Error(`race_id=${rid} NAR確定単勝オッズを解析できません`);
   const restTypes=['frame','quinella','wide','exacta','trio','trifecta'];
-  log(`race_id=${rid} FINAL[3/4] 6市場並列取得開始`,'muted');
+  log(`race_id=${rid} FINAL[3/4] NAR 6市場並列取得開始`,'muted');
   const settled=await Promise.allSettled(restTypes.map(async type=>{
    const r=await bridgeFirstCore(bridgeOddsUrls(locked,type),h=>bridgeBodyMatchesRace(h,rid)&&/オッズ|枠連|馬連|ワイド|馬単|3連|三連|Odds/i.test(h),3600);
    return {type,map:parseMarketHtml(r.text,type),url:r.finalUrl||r.requestUrl};
@@ -244,7 +371,7 @@ class BridgeDataAdapter extends DataAdapter{
   const nos=Object.keys(markets.win).map(Number).filter(n=>n>0).sort((a,b)=>a-b),horses=nos.map(no=>({no,name:meta.get(no)?.name||`#${no}`,frame:meta.get(no)?.frame||null,odds:Number(markets.win[String(no)])}));
   const snap={at:null,horses,markets:{win:markets.win||{},place:markets.place||{},frame:markets.frame||{},quinella:markets.quinella||{},wide:markets.wide||{},exacta:markets.exacta||{},trio:markets.trio||{},trifecta:markets.trifecta||{}},source:`Bridge ${window.__narBridgeVersion||''} FINAL ODDS / ${locked.org} / race_id=${rid}`};
   const counts=Object.fromEntries(Object.entries(snap.markets).map(([k,v])=>[k,Object.keys(v||{}).length]));
-  const out={snapshot:snap,source:snap.source,diagnostics:{raceId:rid,marketCounts:counts,errors}};
+  const out={snapshot:snap,source:snap.source,diagnostics:{raceId:rid,route:'NAR_HTML',marketCounts:counts,errors}};
   log(`race_id=${rid} FINAL[4/4] 完了 ${Object.entries(counts).map(([k,v])=>k+'='+v).join(' ')}`,'good');
   this.finalCache.set(rid,out);return out;
  }
@@ -426,7 +553,7 @@ async function runSimulation(){
   }
   const after=players.reduce((sum,c)=>sum+c.bankroll,0),pl=after-dayProfitBefore;state.calendar[date]={profit:pl,done:true,had};renderCalendar(state.calendar)
  }
- const result={schema:'KEIBA_STRICT_RESEARCH_BRIDGE_ONLY_V9',generatedAt:new Date().toISOString(),settings:{...settings},period:{from,to,org},transport:{mode:'BRIDGE_GM_XHR',bridgeVersion:String(window.__narBridgeVersion||''),workerUsed:false},strictRules:{predictionUsesOnlyTimestampLEDecisionTime:!settings.allowFinalOdds,oddsAcquisitionMode:settings.allowFinalOdds?'FINAL_ODDS_DIRECT':'PRE_DECISION_SNAPSHOT_ONLY',finalOddsForbidden:!settings.allowFinalOdds,finalOddsDirectEnabled:settings.allowFinalOdds,finalOddsFallbackEnabled:false,payoutSettlementOnly:true,noSnapshotMeansSkip:!settings.allowFinalOdds},characters:players,bets:state.bets,audit:state.audit,stats:{processed:state.processed,accepted:state.accepted,futureRejected:state.futureRejected,noSnapshot:state.noSnapshot,finalOddsUsed:state.finalOddsUsed,raceTimeouts:state.raceTimeouts,fetchErrors:state.fetchErrors,fetchStatus:state.fetchStatus},model:model.last,calendar:state.calendar};
+ const result={schema:'KEIBA_STRICT_RESEARCH_BRIDGE_ONLY_V10_JRA_JSON',generatedAt:new Date().toISOString(),settings:{...settings},period:{from,to,org},transport:{mode:'BRIDGE_GM_XHR',bridgeVersion:String(window.__narBridgeVersion||''),workerUsed:false},strictRules:{predictionUsesOnlyTimestampLEDecisionTime:!settings.allowFinalOdds,oddsAcquisitionMode:settings.allowFinalOdds?'FINAL_ODDS_DIRECT':'PRE_DECISION_SNAPSHOT_ONLY',finalOddsForbidden:!settings.allowFinalOdds,finalOddsDirectEnabled:settings.allowFinalOdds,finalOddsFallbackEnabled:false,payoutSettlementOnly:true,noSnapshotMeansSkip:!settings.allowFinalOdds},characters:players,bets:state.bets,audit:state.audit,stats:{processed:state.processed,accepted:state.accepted,futureRejected:state.futureRejected,noSnapshot:state.noSnapshot,finalOddsUsed:state.finalOddsUsed,raceTimeouts:state.raceTimeouts,fetchErrors:state.fetchErrors,fetchStatus:state.fetchStatus},model:model.last,calendar:state.calendar};
  lastResult=result;saveJSON(RESULT_KEY,result);renderAll(result);$('runBtn').disabled=false;$('stopBtn').disabled=true;
  if(!stopRequested){$('fetchBar').style.width='100%';$('raceBar').style.width='100%';$('fetchProgressText').textContent=`全開催取得完了 (${total}/${total})`;$('raceProgressText').textContent=`全処理完了 / 累計 ${state.processed}R`;setCurrentPhase(`完了 — 処理${state.processed}R / 採用${state.accepted}R / タイムアウト${state.raceTimeouts} / snapshot無し${state.noSnapshot} / 確定オッズ使用${state.finalOddsUsed}`)}else{setCurrentPhase(`停止 — 処理${state.processed}R / 採用${state.accepted}R`)}
  log(`完了 採用${state.accepted}/${state.processed}レース / タイムアウト${state.raceTimeouts} / 未来情報拒否${state.futureRejected} / snapshot無し${state.noSnapshot} / 確定オッズ使用${state.finalOddsUsed}`,state.futureRejected?'':'good')
@@ -488,7 +615,7 @@ async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA 
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value)};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
-function applySettingsUI(){$('modeBadge').textContent=settings.mode;$('runBtn').disabled=!settings.simulation;$('toDate').disabled=!settings.periodCross;document.querySelectorAll('.preset').forEach(b=>b.disabled=!settings.periodCross);if(settings.allowFinalOdds){$('strictBadge').textContent='FINAL ODDS DIRECT';$('strictBadge').className='badge warn';$('strictNotice').innerHTML='<b>確定オッズ直接モード:</b> 締切前snapshot探索は行わず、Bridge v1.7.5+ / GM XHRで各レースの確定オッズを直接取得します。Cloudflare Workerは使用しません。確定オッズは未来情報なので、このモードのROIはSTRICT成績と必ず分離して評価してください。着順・払戻は引き続き購入判断後の精算専用です。';$('finalOddsHint').innerHTML='⚠ 確定オッズ使用ON: 締切前snapshot探索を完全にスキップし、確定オッズを直接使用します。結果には FINAL_ODDS / FINAL_ODDS_DIRECT_USED と記録されます。'}else{$('strictBadge').textContent='NO FUTURE DATA';$('strictBadge').className='badge ok';$('strictNotice').innerHTML='<b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。締切前snapshotだけを短時間で取得し、存在しなければ即SKIPします。確定オッズへはフォールバックしません。着順・払戻は購入判断完了後の精算専用です。';$('finalOddsHint').innerHTML='確定オッズ使用OFF: timestamp付き pre-decision snapshot 専用です。ローカル/保存済みtimestamp付きsnapshotが無ければ即SKIPし、確定オッズへは切り替えません。Bridgeから過去snapshotを捏造しません。'}}
+function applySettingsUI(){$('modeBadge').textContent=settings.mode;$('runBtn').disabled=!settings.simulation;$('toDate').disabled=!settings.periodCross;document.querySelectorAll('.preset').forEach(b=>b.disabled=!settings.periodCross);if(settings.allowFinalOdds){$('strictBadge').textContent='FINAL ODDS DIRECT';$('strictBadge').className='badge warn';$('strictNotice').innerHTML='<b>確定オッズ直接モード:</b> 締切前snapshot探索は行わず、Bridge v1.7.5+ / GM XHRで各レースの確定オッズを直接取得します。JRAはJSONオッズAPI、NARは従来HTML経路です。Cloudflare Workerは使用しません。確定オッズは未来情報なので、このモードのROIはSTRICT成績と必ず分離して評価してください。着順・払戻は引き続き購入判断後の精算専用です。';$('finalOddsHint').innerHTML='⚠ 確定オッズ使用ON: 締切前snapshot探索を完全にスキップし、確定オッズを直接使用します。結果には FINAL_ODDS / FINAL_ODDS_DIRECT_USED と記録されます。'}else{$('strictBadge').textContent='NO FUTURE DATA';$('strictBadge').className='badge ok';$('strictNotice').innerHTML='<b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。締切前snapshotだけを短時間で取得し、存在しなければ即SKIPします。確定オッズへはフォールバックしません。着順・払戻は購入判断完了後の精算専用です。';$('finalOddsHint').innerHTML='確定オッズ使用OFF: timestamp付き pre-decision snapshot 専用です。ローカル/保存済みtimestamp付きsnapshotが無ければ即SKIPし、確定オッズへは切り替えません。Bridgeから過去snapshotを捏造しません。'}}
 function download(name,text,type='application/json'){const a=document.createElement('a'),blob=new Blob([text],{type});a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
 function exportJson(){if(!lastResult)return alert('先に実行してください');download(`keiba_strict_${lastResult.period.from}_${lastResult.period.to}.json`,JSON.stringify(lastResult,null,2))}
 function exportCsv(){if(!lastResult)return alert('先に実行してください');const cols=['date','track','raceNo','character','ticket','selection','decisionTime','oddsAt','oddsMode','odds','probability','marketProbability','fairOdds','ev','kelly','stake','payoutMultiplier','refund','profit','source'];const lines=[cols.join(',')].concat(lastResult.bets.map(r=>cols.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(',')));download('keiba_strict_bets.csv',lines.join('\n'),'text/csv;charset=utf-8')}
