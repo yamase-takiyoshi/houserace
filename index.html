@@ -12,13 +12,13 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA</div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-0505</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>トップROI</small><b id="kTop">--</b></div>
 </div>
-<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD</span></h3><div class="body"><div class="controls">
+<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD v2 / 12秒WATCHDOG</span></h3><div class="body"><div class="controls">
 <label>開始日 <input id="fromDate" type="date"></label><label>終了日 <input id="toDate" type="date"></label><label>区分 <select id="orgSelect"><option value="BOTH">JRA+NAR</option><option>JRA</option><option>NAR</option></select></label><button class="preset" data-days="1">1日</button><button class="preset" data-days="7">7日</button><button class="preset" data-days="31">1か月</button><button class="preset" data-days="92">3か月</button><button class="preset" data-days="183">6か月</button><button class="preset" data-days="365">1年</button><button id="runBtn" class="primary">🏁 全11名 START</button><button id="stopBtn" class="danger" disabled>停止</button></div>
 <div class="progressBlock"><div class="progressHead"><b>① 開催データ取得進捗</b><span id="fetchProgressText">未実行</span></div><div class="progress"><i id="fetchBar"></i></div></div>
 <div class="progressBlock"><div class="progressHead"><b>② レース処理進捗</b><span id="raceProgressText">未実行</span></div><div class="progress race"><i id="raceBar"></i></div></div>
@@ -52,7 +52,8 @@ function ts(v){if(v==null||v==='')return NaN;if(typeof v==='number')return v;con
 function toIso(v){const x=ts(v);return Number.isFinite(x)?new Date(x).toISOString():null}
 function datesBetween(a,b){const out=[];let d=new Date(a+'T12:00:00+09:00'),e=new Date(b+'T12:00:00+09:00');while(d<=e){out.push(isoDate(d));d.setDate(d.getDate()+1)}return out}
 function shiftDate(d,days){const x=new Date(d+'T12:00:00+09:00');x.setDate(x.getDate()+days);return isoDate(x)}
-async function fetchJson(url,opts={}){const timeoutMs=Number(opts.timeoutMs||18000),retries=Math.max(0,Number(opts.retries??1)),retryDelayMs=Number(opts.retryDelayMs||800);let lastErr=null;for(let attempt=0;attempt<=retries;attempt++){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'},signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);return await r.json()}catch(e){lastErr=e?.name==='AbortError'?Error(`TIMEOUT ${Math.round(timeoutMs/1000)}s`):e;if(attempt<retries)await new Promise(res=>setTimeout(res,retryDelayMs*(attempt+1)))}finally{clearTimeout(timer)}}throw lastErr||Error('FETCH_FAILED')}
+let activeRaceAbortSignal=null;
+async function fetchJson(url,opts={}){const timeoutMs=Number(opts.timeoutMs||18000),retries=Math.max(0,Number(opts.retries??1)),retryDelayMs=Number(opts.retryDelayMs||800);let lastErr=null;for(let attempt=0;attempt<=retries;attempt++){const controller=new AbortController(),external=opts.signal||activeRaceAbortSignal;const onAbort=()=>controller.abort();if(external){if(external.aborted)controller.abort();else external.addEventListener('abort',onAbort,{once:true})}const timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'},signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);return await r.json()}catch(e){const raceAbort=external?.aborted;lastErr=e?.name==='AbortError'?Error(raceAbort?'RACE_WATCHDOG_ABORT':`TIMEOUT ${Math.round(timeoutMs/1000)}s`):e;if(raceAbort)throw lastErr;if(attempt<retries)await new Promise(res=>setTimeout(res,retryDelayMs*(attempt+1)))}finally{clearTimeout(timer);if(external)external.removeEventListener('abort',onAbort)}}throw lastErr||Error('FETCH_FAILED')}
 async function firstValidParallel(tasks,validator){const settled=await Promise.allSettled(tasks.map(fn=>fn()));for(const r of settled){if(r.status==='fulfilled'){const v=validator(r.value);if(v)return v}}const msgs=settled.filter(r=>r.status==='rejected').map(r=>r.reason?.message||String(r.reason));throw Error(msgs.join(' / ')||'NO_VALID_RESPONSE')}
 function url(base,path,params={}){const u=new URL(path,(base||location.href).replace(/\/$/,'')+'/');for(const[k,v]of Object.entries(params))if(v!=null&&v!=='')u.searchParams.set(k,v);return u.toString()}
 
@@ -70,7 +71,7 @@ class DataAdapter{
   if(embedded?.length)return {snapshots:embedded,source:'race.embedded'};
   const local=SnapshotStore.get(rid);if(local.length)return {snapshots:local,source:'local LIVE archive'};
   const paths=['odds-history','odds-snapshots','snapshots'];
-  try{return await firstValidParallel(paths.map(p=>async()=>({p,d:await fetchJson(url(this.s.oddsApi,p,{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:3500,retries:0})})),x=>{const a=extractSnapshots(x.d);return a.length?{snapshots:a,source:x.p}:null})}
+  try{return await firstValidParallel(paths.map(p=>async()=>({p,d:await fetchJson(url(this.s.oddsApi,p,{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:2500,retries:0})})),x=>{const a=extractSnapshots(x.d);return a.length?{snapshots:a,source:x.p}:null})}
   catch(e){throw Error('timestamp付き締切前オッズなし: '+e.message)}
  }
  async finalOddsPayload(race){
@@ -81,16 +82,16 @@ class DataAdapter{
   const horseOdds=(race.horses||[]).filter(h=>Number(h.odds||h.winOdds||h.win)>=1);
   if(horseOdds.length>=2)return {snapshot:{horses:race.horses,markets:race.markets||race.odds||{},source:'history race horse odds'},source:'history race horse odds FINAL_REFERENCE'};
   const paths=['final-odds','odds-final','odds'];
-  try{return await firstValidParallel(paths.map(p=>async()=>({p,d:await fetchJson(url(this.s.oddsApi,p,{race_id:rid,raceId:rid,org,type:org,final:1,mode:'final'}),{timeoutMs:5000,retries:0})})),x=>{const snap=extractFinalSnapshot(x.d,race);return snap?{snapshot:snap,source:x.p+' FINAL'}:null})}
+  try{return await firstValidParallel(paths.map(p=>async()=>({p,d:await fetchJson(url(this.s.oddsApi,p,{race_id:rid,raceId:rid,org,type:org,final:1,mode:'final'}),{timeoutMs:3000,retries:0})})),x=>{const snap=extractFinalSnapshot(x.d,race);return snap?{snapshot:snap,source:x.p+' FINAL'}:null})}
   catch(e){throw Error('確定オッズ取得不能: '+e.message)}
  }
  async result(race){
   if(race.result&&typeof race.result==='object')return normalizeResult(race.result);
   if(race.payouts||race.winner||race.top3)return normalizeResult({winner:race.winner,top3:race.top3,payouts:race.payouts,payoutUnit:race.payoutUnit,source:'history embedded result'});
   const rid=race.id||race.raceId||race.race_id,org=race.org;
-  const d=await fetchJson(url(this.s.resultApi,'result',{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:6000,retries:0});return normalizeResult(d)
+  const d=await fetchJson(url(this.s.resultApi,'result',{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:3500,retries:0});return normalizeResult(d)
  }
- async liveOdds(race){const rid=race.id||race.raceId||race.race_id,org=race.org;const d=await fetchJson(url(this.s.oddsApi,'odds',{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:6000,retries:0});return normalizeLiveSnapshot(d,race)}
+ async liveOdds(race){const rid=race.id||race.raceId||race.race_id,org=race.org;const d=await fetchJson(url(this.s.oddsApi,'odds',{race_id:rid,raceId:rid,org,type:org}),{timeoutMs:3500,retries:0});return normalizeLiveSnapshot(d,race)}
 }
 const JRA_TRACKS=['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉'];
 const NAR_TRACKS=['帯広','門別','盛岡','水沢','浦和','船橋','大井','川崎','金沢','笠松','名古屋','園田','姫路','高知','佐賀'];
@@ -241,8 +242,14 @@ async function runSimulation(){
     state.processed++;setKpis(state,model,players);
     state.onStage=(stage)=>{setRaceProgress(ri+1,races.length,`${date} ${o} ${raceLabel} — ${stage}`);setCurrentPhase(`${date} ${o}: ${ri+1}/${races.length}R ${raceLabel} — ${stage}`)};
     const raceStarted=performance.now();
-    const ok=await simulateRace(race,players,model,adapter,state);
-    state.onStage=null;
+    const raceAbort=new AbortController();activeRaceAbortSignal=raceAbort.signal;
+    let heartbeatSec=0;
+    const heartbeat=setInterval(()=>{heartbeatSec=Math.floor((performance.now()-raceStarted)/1000);setRaceProgress(ri+1,races.length,`${date} ${o} ${raceLabel} 処理中 ${heartbeatSec}秒 / 上限12秒`);},1000);
+    const watchdog=setTimeout(()=>raceAbort.abort(),12000);
+    let ok=false;
+    try{ok=await simulateRace(race,players,model,adapter,state)}
+    catch(e){state.audit.push(auditRow(race,'SKIP',e?.message||'RACE_PROCESS_ERROR'));ok=false}
+    finally{clearTimeout(watchdog);clearInterval(heartbeat);activeRaceAbortSignal=null;state.onStage=null}
     if(ok){state.accepted++;had=true}
     const elapsed=((performance.now()-raceStarted)/1000).toFixed(1);
     setRaceProgress(ri+1,races.length,`${date} ${o} ${raceLabel} 処理完了 (${elapsed}秒)`);
