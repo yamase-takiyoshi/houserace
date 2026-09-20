@@ -345,7 +345,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 </div>
 
 
-<div class="card" style="margin-top:12px">
+<div id="periodSimulationCard" class="card" style="margin-top:12px">
   <h3>📅 期間横断シミュレーション — キャラクターフル出場</h3>
   <div class="body">
     <div class="notice">
@@ -631,8 +631,19 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
   <form method="dialog">
     <h2>設定</h2>
     <div class="formgrid">
-      <label>モード
+      <label>データ取得モード
         <select id="sMode"><option value="demo">DEMO</option><option value="live">LIVE API</option></select>
+      </label>
+      <label>シミュレーションモード
+        <select id="sSimulationMode"><option value="1">ON</option><option value="0">OFF</option></select>
+      </label>
+      <label>期間横断シミュレーション
+        <select id="sPeriodCross"><option value="1">ON（開始日〜終了日）</option><option value="0">OFF（1日だけ）</option></select>
+      </label>
+      <label>期間横断 開始日<input id="sPeriodFrom" type="date"></label>
+      <label>期間横断 終了日<input id="sPeriodTo" type="date"></label>
+      <label>期間横断 区分
+        <select id="sPeriodOrg"><option value="BOTH">JRA+NAR</option><option value="JRA">JRA</option><option value="NAR">NAR</option></select>
       </label>
       <label>発売締切の何分前に勝負するか<input id="sBetTiming" type="number" min="1" max="20"></label>
       <label>EV購入基準<input id="sEvPositive" type="number" step="0.01" min="0.5" max="3"></label>
@@ -654,7 +665,7 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
         <input id="sNetkeibaProxy" placeholder="https://keiba-odds.nitta-katsuhiko.workers.dev">
       </label>
     </div>
-    <p class="muted">LIVE API: /races /odds /result。全券種オッズは別欄のCloudflare Proxyへ ?url=netkeibaURL で取得し、Worker遮断時だけ住宅IP Bridgeへフォールバックします。</p>
+    <p class="muted">シミュレーションモードをOFFにすると期間バックテスト操作を停止します。期間横断をOFFにすると終了日1日だけを全員でシミュレーションします。LIVE API: /races /odds /result。全券種オッズは別欄のCloudflare Proxyへ ?url=netkeibaURL で取得し、Worker遮断時だけ住宅IP Bridgeへフォールバックします。</p>
     <div class="controls"><button value="cancel">キャンセル</button><button id="saveSettings" class="primary" value="default">保存</button></div>
   </form>
 </dialog>
@@ -749,7 +760,8 @@ const DEFAULTS={
   initialBankroll:100000, maxRace:5000, maxDay:30000, refreshSec:15,
   jra:true,nar:true,auto:true,apiBase:"https://houserace.nitta-katsuhiko.workers.dev",
   netkeibaProxyUrl:"https://keiba-odds.nitta-katsuhiko.workers.dev",
-  jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18
+  jraCloseBeforeMin:1, narCloseBeforeMin:2, resultDelaySec:18,
+  simulationMode:true, periodCross:true, periodFrom:"", periodTo:"", periodOrg:"BOTH"
 };
 const Store={
   get(k,d){try{return JSON.parse(localStorage.getItem("keibaSimClose3."+k))??d}catch{return d}},
@@ -2552,7 +2564,13 @@ $("#filterJra").onclick=()=>setFilter("JRA");
 $("#filterNar").onclick=()=>setFilter("NAR");
 function setFilter(f){engine.filter=f;["filterAll","filterJra","filterNar"].forEach(id=>$("#"+id).classList.remove("active"));$("#filter"+(f==="ALL"?"All":f==="JRA"?"Jra":"Nar")).classList.add("active");UI.renderRaces(engine)}
 function openSettings(){
-  const s=engine.settings;$("#sMode").value=s.mode;$("#sBetTiming").value=s.auto?3:s.betTiming;$("#sEvPositive").value=s.evPositive;$("#sEvStrong").value=s.evStrong;
+  const s=engine.settings;$("#sMode").value=s.mode;
+  if($("#sSimulationMode")) $("#sSimulationMode").value=s.simulationMode===false?"0":"1";
+  if($("#sPeriodCross")) $("#sPeriodCross").value=s.periodCross===false?"0":"1";
+  if($("#sPeriodFrom")) $("#sPeriodFrom").value=s.periodFrom||$("#btFrom")?.value||"";
+  if($("#sPeriodTo")) $("#sPeriodTo").value=s.periodTo||$("#btEnd")?.value||btLatestCompletedDate();
+  if($("#sPeriodOrg")) $("#sPeriodOrg").value=s.periodOrg||$("#btOrg")?.value||"BOTH";
+  $("#sBetTiming").value=s.auto?3:s.betTiming;$("#sEvPositive").value=s.evPositive;$("#sEvStrong").value=s.evStrong;
   $("#sBankroll").value=s.initialBankroll;$("#sMaxRace").value=s.maxRace;$("#sMaxDay").value=s.maxDay;$("#sRefresh").value=s.refreshSec;
   $("#sJraClose").value=s.jraCloseBeforeMin??1;$("#sNarClose").value=s.narCloseBeforeMin??2;
   $("#sJra").value=s.jra?"1":"0";$("#sNar").value=s.nar?"1":"0";
@@ -2562,7 +2580,11 @@ function openSettings(){
   $("#settingsDlg").showModal();
 }
 $("#saveSettings").onclick=()=>{
-  engine.settings={...engine.settings,mode:$("#sMode").value,betTiming:+$("#sBetTiming").value,evPositive:+$("#sEvPositive").value,evStrong:+$("#sEvStrong").value,
+  engine.settings={...engine.settings,mode:$("#sMode").value,
+    simulationMode:$("#sSimulationMode")?.value!=="0",
+    periodCross:$("#sPeriodCross")?.value!=="0",
+    periodFrom:$("#sPeriodFrom")?.value||"",periodTo:$("#sPeriodTo")?.value||"",periodOrg:$("#sPeriodOrg")?.value||"BOTH",
+    betTiming:+$("#sBetTiming").value,evPositive:+$("#sEvPositive").value,evStrong:+$("#sEvStrong").value,
     initialBankroll:+$("#sBankroll").value,maxRace:+$("#sMaxRace").value,maxDay:+$("#sMaxDay").value,refreshSec:+$("#sRefresh").value,
     jraCloseBeforeMin:+$("#sJraClose").value,narCloseBeforeMin:+$("#sNarClose").value,
     jra:$("#sJra").value==="1",nar:$("#sNar").value==="1",
@@ -2571,7 +2593,11 @@ $("#saveSettings").onclick=()=>{
     netkeibaProxyUrl:$("#sNetkeibaProxy").value.trim()||"https://keiba-odds.nitta-katsuhiko.workers.dev"};
   Store.set("settings",engine.settings);
   localStorage.setItem("keibaNetkeibaProxyUrl",engine.settings.netkeibaProxyUrl||"");
-  if(confirm("設定を保存しました。データ取得モード変更を反映するため再読み込みしますか？"))location.reload();
+  if($("#btFrom") && engine.settings.periodFrom) $("#btFrom").value=engine.settings.periodFrom;
+  if($("#btEnd") && engine.settings.periodTo) $("#btEnd").value=engine.settings.periodTo;
+  if($("#btOrg")) $("#btOrg").value=engine.settings.periodOrg||"BOTH";
+  if(typeof applySimulationSettingsUI==="function") applySimulationSettingsUI();
+  if(confirm("設定を保存しました。設定を完全反映するため再読み込みしますか？"))location.reload();
 };
 $("#exportJson").onclick=async()=>{
   const r=await saveJsonAs56(`keiba_sim_${today()}.json`,JSON.stringify(betRows(),null,2),"購入履歴 JSON");
@@ -3536,7 +3562,11 @@ async function getHistoryBlock(date,org,options={}){
   return d;
 }
 $("#runWebBacktest").onclick=async()=>{
-  let end=$("#btEnd").value||btLatestCompletedDate();
+  if(engine?.settings?.simulationMode===false){
+    alert("設定でシミュレーションモードがOFFです。設定 → シミュレーションモードをONにしてください。");
+    return;
+  }
+  let end=$("#btEnd").value||engine?.settings?.periodTo||btLatestCompletedDate();
   const requestedEnd=end;
   const todayJst=today();
   if(end>=todayJst){
@@ -3544,7 +3574,8 @@ $("#runWebBacktest").onclick=async()=>{
     $("#btEnd").value=end;
     try{UI.addLog(`履歴バックテストは確定済みデータ専用です。${requestedEnd} は未確定日なので ${end} までに自動補正しました。`,`warn`)}catch(_){}
   }
-  let from=$("#btFrom")?.value||backDate(end,btDays);
+  let from=(engine?.settings?.periodCross===false) ? end : ($("#btFrom")?.value||engine?.settings?.periodFrom||backDate(end,btDays));
+  if(engine?.settings?.periodCross===false && $("#btFrom")) $("#btFrom").value=end;
   if(from>end){
     try{UI.addLog(`開始日 ${from} が終了日 ${end} より後なので、開始日を ${end} に補正しました。`,`warn`)}catch(_){}
     from=end;
@@ -3804,8 +3835,10 @@ $("#resetBt").onclick=()=>{
   if(TimeSeriesGraph.profit){TimeSeriesGraph.profit.destroy();TimeSeriesGraph.profit=null;}
 };
 setTimeout(()=>{
-  if($("#btEnd"))$("#btEnd").value=btLatestCompletedDate();
-  if($("#btFrom"))$("#btFrom").value=backDate($("#btEnd")?.value||btLatestCompletedDate(),btDays);
+  const ps=engine?.settings||{};
+  if($("#btEnd"))$("#btEnd").value=ps.periodTo||btLatestCompletedDate();
+  if($("#btFrom"))$("#btFrom").value=ps.periodCross===false?($("#btEnd")?.value||btLatestCompletedDate()):(ps.periodFrom||backDate($("#btEnd")?.value||btLatestCompletedDate(),btDays));
+  if($("#btOrg"))$("#btOrg").value=ps.periodOrg||"BOTH";
   $("#btFrom")?.addEventListener("change",()=>{
     document.querySelectorAll(".btPeriod").forEach(b=>b.classList.remove("active"));
     renderBtRangeSelection();
@@ -11728,6 +11761,66 @@ setTimeout(()=>{
   const el=document.getElementById("legacyJsonName");
   if(el && (!el.value || el.value==="keiba_sim")) el.value=`keiba_sim_${today()}`;
 },0);
+</script>
+
+<script id="simulationSettingsControllerV1">
+(function(){
+  "use strict";
+  function q(id){return document.getElementById(id)}
+  window.applySimulationSettingsUI=function(){
+    if(typeof engine==="undefined"||!engine)return;
+    const st=engine.settings||{};
+    const simOn=st.simulationMode!==false;
+    const crossOn=st.periodCross!==false;
+    const card=q("periodSimulationCard"),run=q("runWebBacktest"),from=q("btFrom"),end=q("btEnd"),org=q("btOrg");
+    if(card){card.style.opacity=simOn?"1":"0.58";card.style.filter=simOn?"none":"grayscale(.25)"}
+    if(run){run.disabled=!simOn;run.textContent=!simOn?"⛔ シミュレーションOFF":(crossOn?"🏇 選択期間を全員で実行":"🏇 選択日を全員で実行")}
+    if(from){from.disabled=!simOn||!crossOn;if(!crossOn&&end?.value)from.value=end.value}
+    if(end)end.disabled=!simOn;
+    if(org)org.disabled=!simOn;
+    document.querySelectorAll(".btPeriod").forEach(b=>{b.disabled=!simOn||!crossOn});
+    const rs=q("btRangeStatus");
+    if(rs&&!simOn)rs.textContent="シミュレーションモード: OFF（設定からONにできます）";
+    else if(rs&&!crossOn)rs.textContent=`単日シミュレーション: ${end?.value||"未指定"} / ${org?.value||"BOTH"}`;
+    else if(typeof renderBtRangeSelection==="function")try{renderBtRangeSelection()}catch(_){}
+  };
+  function persistPeriod(){
+    if(typeof engine==="undefined"||!engine)return;
+    engine.settings.periodFrom=q("btFrom")?.value||"";
+    engine.settings.periodTo=q("btEnd")?.value||"";
+    engine.settings.periodOrg=q("btOrg")?.value||"BOTH";
+    if(engine.settings.periodCross===false&&engine.settings.periodTo){engine.settings.periodFrom=engine.settings.periodTo}
+    try{Store.set("settings",engine.settings)}catch(_){}
+  }
+  function bind(){
+    ["btFrom","btEnd","btOrg"].forEach(id=>q(id)?.addEventListener("change",()=>{persistPeriod();window.applySimulationSettingsUI()}));
+    q("sSimulationMode")?.addEventListener("change",function(){
+      const on=this.value!=="0";
+      [q("sPeriodCross"),q("sPeriodFrom"),q("sPeriodTo"),q("sPeriodOrg")].forEach(el=>{if(el)el.disabled=!on});
+    });
+    q("sPeriodCross")?.addEventListener("change",function(){
+      const on=this.value!=="0";
+      if(q("sPeriodFrom"))q("sPeriodFrom").disabled=!on||q("sSimulationMode")?.value==="0";
+      if(!on&&q("sPeriodTo")?.value&&q("sPeriodFrom"))q("sPeriodFrom").value=q("sPeriodTo").value;
+    });
+    const origOpen=window.openSettings;
+    if(typeof origOpen==="function"){
+      window.openSettings=function(){
+        origOpen.apply(this,arguments);
+        setTimeout(()=>{
+          const sim=q("sSimulationMode")?.value!=="0",cross=q("sPeriodCross")?.value!=="0";
+          if(q("sPeriodCross"))q("sPeriodCross").disabled=!sim;
+          if(q("sPeriodFrom"))q("sPeriodFrom").disabled=!sim||!cross;
+          if(q("sPeriodTo"))q("sPeriodTo").disabled=!sim;
+          if(q("sPeriodOrg"))q("sPeriodOrg").disabled=!sim;
+        },0);
+      };
+      const btn=q("btnSettings"); if(btn)btn.onclick=()=>window.openSettings();
+    }
+    window.applySimulationSettingsUI();
+  }
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>setTimeout(bind,0),{once:true});else setTimeout(bind,0);
+})();
 </script>
 </body>
 </html>
