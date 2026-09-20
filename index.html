@@ -346,18 +346,17 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 
 
 <div class="card" style="margin-top:12px">
-  <h3>自動バックテスト</h3>
+  <h3>📅 期間横断シミュレーション — キャラクターフル出場</h3>
   <div class="body">
     <div class="notice">
+      <b>開始日〜終了日をカレンダーで直接指定</b>して、選択期間のレースを日付順に横断します。<br>
+      <b>キャラクターフル出場:</b> 10キャラクター＋AUTOプレイヤーの全11名が各レースで同時に判定します。各キャラクター固有の条件に合わないレースは「見送り」として記録します。<br>
       過去WEBデータは FINAL ODDS（最終オッズ）です。発売締切3分前オッズではありません。<br>
       <b>STRICT精算:</b> 実払戻は「100円あたり払戻円」を倍率へ正規化（例 320円→3.2倍）して精算します。複勝・ワイド・三連複は実払戻が無い場合は見送りです。
     </div>
     <div class="controls" style="margin-bottom:10px">
-      <button class="btPeriod active" data-days="1">1日</button>
-      <button class="btPeriod" data-days="7">1週間</button>
-      <button class="btPeriod" data-days="31">1か月</button>
-      <button class="btPeriod" data-days="92">3か月</button>
-      <button class="btPeriod" data-days="365">1年</button>
+      <label><b>開始日</b><input id="btFrom" type="date"></label>
+      <label><b>終了日</b><input id="btEnd" type="date"></label>
       <label>区分
         <select id="btOrg">
           <option value="BOTH">JRA+NAR</option>
@@ -365,9 +364,18 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
           <option value="NAR">NAR</option>
         </select>
       </label>
-      <label>終了日<input id="btEnd" type="date"></label>
-      <button id="runWebBacktest" class="primary">自動取得して実行</button>
+      <button id="runWebBacktest" class="primary">🏇 選択期間を全員で実行</button>
     </div>
+    <div class="controls" style="margin-bottom:8px">
+      <span class="muted">期間プリセット:</span>
+      <button class="btPeriod active" data-days="1">1日</button>
+      <button class="btPeriod" data-days="7">1週間</button>
+      <button class="btPeriod" data-days="31">1か月</button>
+      <button class="btPeriod" data-days="92">3か月</button>
+      <button class="btPeriod" data-days="365">1年</button>
+    </div>
+    <div id="btRangeStatus" class="muted" style="margin-bottom:8px">期間: 未指定</div>
+    <div id="btFullRoster" class="notice" style="border-color:#2f8f63;background:#0d281d;margin-bottom:8px"></div>
     <div id="btProgress" class="muted">未実行</div>
 <div class="muted" style="margin-top:6px">iPad保護モード: 10レースごとに画面制御を戻し、監査表の初期描画件数を制限します。</div>
     <div class="scroll" style="margin-top:10px">
@@ -2709,11 +2717,36 @@ setTimeout(initHistoryDates,100);
 // ===============================
 let btDays=1;
 let btResult=null;
+function btRosterNames(){
+  return CharacterEngine.templates().map(t=>t[0]).concat("AUTOプレイヤー");
+}
+function btRangeDayCount(from,to){
+  if(!from||!to)return 0;
+  const a=new Date(from+"T00:00:00+09:00"),b=new Date(to+"T00:00:00+09:00");
+  if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime())||a>b)return 0;
+  return Math.floor((b-a)/86400000)+1;
+}
+function renderBtRangeSelection(){
+  const from=$("#btFrom")?.value||"";
+  const to=$("#btEnd")?.value||"";
+  const n=btRangeDayCount(from,to);
+  const org=$("#btOrg")?.value||"BOTH";
+  const orgLabel=org==="BOTH"?"JRA+NAR":org;
+  if($("#btRangeStatus")) $("#btRangeStatus").textContent=n?`選択期間: ${from} → ${to}（${n}日間） / ${orgLabel}`:"期間: 開始日と終了日を選択してください";
+  if($("#btFullRoster")){
+    const names=btRosterNames();
+    $("#btFullRoster").innerHTML=`<b>🎭 フル出場 ${names.length}名</b><div style="margin-top:6px;line-height:1.8">${names.map((x,i)=>`${i+1}. ${escapeHtml(x)}`).join("　")}</div><div class="muted" style="margin-top:4px">※ 全員が各レースを判定します。戦略条件に合わない場合は購入せず見送りです。</div>`;
+  }
+}
 document.querySelectorAll(".btPeriod").forEach(btn=>{
   btn.onclick=()=>{
     btDays=Number(btn.dataset.days||1);
     document.querySelectorAll(".btPeriod").forEach(b=>b.classList.remove("active"));
     btn.classList.add("active");
+    const end=$("#btEnd")?.value||btLatestCompletedDate();
+    if($("#btEnd")) $("#btEnd").value=end;
+    if($("#btFrom")) $("#btFrom").value=backDate(end,btDays);
+    renderBtRangeSelection();
   };
 });
 function ymdLocal(d){
@@ -3511,9 +3544,15 @@ $("#runWebBacktest").onclick=async()=>{
     $("#btEnd").value=end;
     try{UI.addLog(`履歴バックテストは確定済みデータ専用です。${requestedEnd} は未確定日なので ${end} までに自動補正しました。`,`warn`)}catch(_){}
   }
-  const from=backDate(end,btDays);
+  let from=$("#btFrom")?.value||backDate(end,btDays);
+  if(from>end){
+    try{UI.addLog(`開始日 ${from} が終了日 ${end} より後なので、開始日を ${end} に補正しました。`,`warn`)}catch(_){}
+    from=end;
+    if($("#btFrom")) $("#btFrom").value=from;
+  }
   const dates=btDateList(from,end);
   const org=$("#btOrg").value;
+  renderBtRangeSelection();
   const orgs=org==="BOTH"?["JRA","NAR"]:[org];
   const total=dates.length*orgs.length;
   const blocks=[];
@@ -3598,9 +3637,10 @@ $("#runWebBacktest").onclick=async()=>{
 
     $("#btProgress").textContent=`計算準備中… JRA ${fetchStats.JRA.races} / NAR ${fetchStats.NAR.races}レース`;
     btResult=await runBacktestOnHistory(blocks,(done,total)=>{
-      $("#btProgress").textContent=`計算中… ${done}/${total}レース / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races}`;
+      $("#btProgress").textContent=`計算中… ${done}/${total}レース / 全${btRosterNames().length}名 / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races}`;
     });
     btResult.fetchStats=fetchStats;
+    btResult.periodSelection={from,end,days:dates.length,org,fullRoster:true,roster:btRosterNames()};
     $("#btProgress").textContent=`描画中…`;
     await new Promise(resolve=>setTimeout(resolve,0));
     renderBt(btResult);
@@ -3610,7 +3650,7 @@ $("#runWebBacktest").onclick=async()=>{
     const warningBlockCount=ig.warningBlocks?.length||0;
     const warningRaceCount=ig.warningRaces?.length||0;
     const modeLabel=org==="BOTH"?"JRA+NAR":org;
-    $("#btProgress").textContent=`完了: 採用${btResult.races}レース / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races} / 除外${rejectedCount} / 警告ブロック${warningBlockCount} / ${modeLabel} / FINAL ODDS / ANTI-LEAK`;
+    $("#btProgress").textContent=`完了: ${from}→${end}（${dates.length}日） / 全${btRosterNames().length}名フル出場 / 採用${btResult.races}レース / JRA取得${fetchStats.JRA.races} / NAR取得${fetchStats.NAR.races} / 除外${rejectedCount} / 警告ブロック${warningBlockCount} / ${modeLabel} / FINAL ODDS / ANTI-LEAK`;
     renderDiag();
     if(rejectedBlockCount)UI.addLog(`整合性監査: ${rejectedBlockCount}ブロックを構造異常で除外しました`,"warn");
     if(warningBlockCount)UI.addLog(`JRA警告: ${warningBlockCount}ブロックで結果分布が偏っていますが、予測入力から着順/popを遮断した上で採用しました`,"warn");
@@ -3765,6 +3805,17 @@ $("#resetBt").onclick=()=>{
 };
 setTimeout(()=>{
   if($("#btEnd"))$("#btEnd").value=btLatestCompletedDate();
+  if($("#btFrom"))$("#btFrom").value=backDate($("#btEnd")?.value||btLatestCompletedDate(),btDays);
+  $("#btFrom")?.addEventListener("change",()=>{
+    document.querySelectorAll(".btPeriod").forEach(b=>b.classList.remove("active"));
+    renderBtRangeSelection();
+  });
+  $("#btEnd")?.addEventListener("change",()=>{
+    document.querySelectorAll(".btPeriod").forEach(b=>b.classList.remove("active"));
+    renderBtRangeSelection();
+  });
+  $("#btOrg")?.addEventListener("change",renderBtRangeSelection);
+  renderBtRangeSelection();
   const saved=Store.get("btResultAnomalyAuditV1",null);
   const validSaved=!!saved
     && Number(saved.schemaVersion)===BACKTEST_SCHEMA_VERSION
