@@ -13,9 +13,9 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-STYLE-COMPARE-V16.3</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge warn">STYLE COMPARE</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-STYLE-COMPARE-V16.4</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge warn">STYLE COMPARE</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
-<div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。 <b>V16.2 EV Pool Fix:</b> MARKET FALLBACKでは同じオッズからプラスEVを生成しません。不完全な券種オッズを確率質量1.0/3.0へ強制拡大する旧処理を廃止し、市場プール欠損は購入不可にします。AUTOは異常高EV・極端な市場乖離・低確率・高オッズを購入前に隔離し、Kelly表示は2%上限、選択順位は (EV−1)×的中確率 を使用します。 <b>V10:</b> JRA確定オッズは静的HTMLではなく netkeiba のJSONオッズAPIをBridge経由で直接取得。単勝・複勝・枠連・馬連・ワイド・馬単・三連複・三連単を解析し、API失敗時だけHTML診断へフォールバック。確定オッズ8秒・結果8秒・1レース20秒の強制タイムアウト。</div>
+<div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。 <b>V16.2 EV Pool Fix:</b> MARKET FALLBACKでは同じオッズからプラスEVを生成しません。不完全な券種オッズを確率質量1.0/3.0へ強制拡大する旧処理を廃止し、市場プール欠損は購入不可にします。AUTOは異常高EV・極端な市場乖離・低確率・高オッズを購入前に隔離し、Kelly表示は2%上限、選択順位は (EV−1)×的中確率 を使用します。 <b>V10:</b> JRA確定オッズは静的HTMLではなく netkeiba のJSONオッズAPIをBridge経由で直接取得。単勝・複勝・枠連・馬連・ワイド・馬単・三連複・三連単を解析し、API失敗時だけHTML診断へフォールバック。確定オッズ20秒・結果12秒・1レース48秒の強制タイムアウト。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>トップROI</small><b id="kTop">--</b></div>
 </div>
@@ -66,9 +66,9 @@ function toIso(v){const x=ts(v);return Number.isFinite(x)?new Date(x).toISOStrin
 function datesBetween(a,b){const out=[];let d=new Date(a+'T12:00:00+09:00'),e=new Date(b+'T12:00:00+09:00');while(d<=e){out.push(isoDate(d));d.setDate(d.getDate()+1)}return out}
 function shiftDate(d,days){const x=new Date(d+'T12:00:00+09:00');x.setDate(x.getDate()+days);return isoDate(x)}
 let activeRaceAbortSignal=null;
-const FINAL_ODDS_HARD_TIMEOUT_MS=8000;
-const RESULT_HARD_TIMEOUT_MS=8000;
-const RACE_HARD_TIMEOUT_MS=32000;
+const FINAL_ODDS_HARD_TIMEOUT_MS=20000;
+const RESULT_HARD_TIMEOUT_MS=12000;
+const RACE_HARD_TIMEOUT_MS=48000;
 function hardTimeoutPromise(ms,label,onTimeout){let timer=null;const promise=new Promise((_,reject)=>{timer=setTimeout(()=>{try{onTimeout?.()}catch(_){}reject(Error(`${label}_TIMEOUT_${Math.ceil(ms/1000)}S`))},ms)});return {promise,cancel:()=>clearTimeout(timer)}}
 async function fetchJson(url,opts={}){const timeoutMs=Number(opts.timeoutMs||18000),retries=Math.max(0,Number(opts.retries??1)),retryDelayMs=Number(opts.retryDelayMs||800);let lastErr=null;for(let attempt=0;attempt<=retries;attempt++){const controller=new AbortController(),external=opts.signal||activeRaceAbortSignal;const onAbort=()=>controller.abort();if(external){if(external.aborted)controller.abort();else external.addEventListener('abort',onAbort,{once:true})}const timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'},signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);return await r.json()}catch(e){const raceAbort=external?.aborted;lastErr=e?.name==='AbortError'?Error(raceAbort?'RACE_WATCHDOG_ABORT':`TIMEOUT ${Math.round(timeoutMs/1000)}s`):e;if(raceAbort)throw lastErr;if(attempt<retries)await new Promise(res=>setTimeout(res,retryDelayMs*(attempt+1)))}finally{clearTimeout(timer);if(external)external.removeEventListener('abort',onAbort)}}throw lastErr||Error('FETCH_FAILED')}
 async function firstValidParallel(tasks,validator){const settled=await Promise.allSettled(tasks.map(fn=>fn()));for(const r of settled){if(r.status==='fulfilled'){const v=validator(r.value);if(v)return v}}const msgs=settled.filter(r=>r.status==='rejected').map(r=>r.reason?.message||String(r.reason));throw Error(msgs.join(' / ')||'NO_VALID_RESPONSE')}
@@ -623,17 +623,16 @@ async function narOfficialOddsBundle(race){
  const q=narOfficialQuery(race),markets={win:{},place:{},frame:{},quinella:{},wide:{},exacta:{},trio:{},trifecta:{}},errors=[];
  const unique=[...new Set(Object.values(NAR_OFFICIAL_ODDS_PATH))];
  const pages={};
- const got=await Promise.allSettled(unique.map(async p=>{
-  const u=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/${p}?${q}`,r=await officialGet(u,6000);return[p,r.text];
- }));
- got.forEach((z,i)=>{if(z.status==='fulfilled')pages[z.value[0]]=z.value[1];else errors.push(unique[i]+':'+(z.reason?.message||z.reason))});
+ /* V16.4: オッズ7ページ + 出馬表(DebaTable) を1回の並列バッチで取得。旧版はDebaTableを直列で後追いしており、確定オッズ上限に間に合わず FINAL_ODDS_TIMEOUT でSKIPしていた。*/
+ const fetchList=[...unique.map(p=>[p,`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/${p}?${q}`]),['__deba',`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?${q}`]];
+ const got=await Promise.allSettled(fetchList.map(async([k,u])=>{const r=await officialGet(u,6000);return[k,r.text]}));
+ got.forEach((z,i)=>{if(z.status==='fulfilled')pages[z.value[0]]=z.value[1];else errors.push(fetchList[i][0]+':'+(z.reason?.message||z.reason))});
  for(const t of ODDS_TYPES){const html=pages[NAR_OFFICIAL_ODDS_PATH[t]]||'';if(html)markets[t]=parseOfficialMarketV14(html,t)}
  const counts=Object.fromEntries(ODDS_TYPES.map(t=>[t,Object.keys(markets[t]||{}).length]));
  if(counts.win<2)throw Error('NAR公式単勝オッズ不足 / '+errors.slice(-3).join(' / '));
  let meta=new Map();
- try{
-  const u=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?${q}`,r=await officialGet(u,6000);
-  const doc=v14Doc(r.text);
+ if(pages['__deba']){try{
+  const doc=v14Doc(pages['__deba']);
   for(const tr of doc.querySelectorAll('tr')){
    const cells=[...tr.querySelectorAll('th,td')];if(cells.length<2)continue;
    let no=0;{const ns=cells.slice(0,4).map(c=>v14Text(c.textContent)).filter(t=>/^(?:[1-9]|1[0-8])$/.test(t)).map(Number);if(ns.length)no=ns[ns.length-1]}
@@ -641,7 +640,7 @@ async function narOfficialOddsBundle(race){
    const name=v14Text(tr.querySelector('a')?.textContent||cells.find(c=>/[ァ-ヶ一-龠A-Za-z]/.test(c.textContent||''))?.textContent||'')||`#${no}`;
    meta.set(no,{no,name,frame:null});
   }
- }catch(e){errors.push('deba:'+String(e?.message||e))}
+ }catch(e){errors.push('deba:'+String(e?.message||e))}}
  const horses=Object.keys(markets.win).map(Number).sort((a,b)=>a-b).map(no=>({no,name:meta.get(no)?.name||`#${no}`,frame:meta.get(no)?.frame||null,odds:Number(markets.win[String(no)])}));
  return {snapshot:{at:null,horses,markets,source:'地方競馬公式 FINAL ODDS'},source:'地方競馬公式 FINAL ODDS',diagnostics:{route:'NAR_OFFICIAL',marketCounts:counts,errors}};
 }
@@ -1020,7 +1019,7 @@ async function simulateRace(race,players,model,adapter,state){
  if(!Number.isFinite(dtime)){state.audit.push(auditRow(race,'SKIP','decisionTime不明'));return false}
  let payload=null,chosen={selected:null,futureCount:0},snap=null,usedFinalOdds=false;
  if(settings.allowFinalOdds){
-  try{stage('[2/8] 確定オッズ直接取得（上限8秒）');const fp=await awaitStage(adapter.finalOddsPayload(race),FINAL_ODDS_HARD_TIMEOUT_MS,'FINAL_ODDS');stage('[3/8] オッズ正規化 / 空市場を安全化');snap=normalizeFinalSnapshot(fp.snapshot,race,dtime);payload={snapshots:[],source:fp.source};usedFinalOdds=true;state.finalOddsUsed++;state.audit.push(auditRow(race,'REFERENCE','FINAL_ODDS_DIRECT_USED'))}
+  try{stage(`[2/8] 確定オッズ直接取得（上限${Math.round(FINAL_ODDS_HARD_TIMEOUT_MS/1000)}秒）`);const fp=await awaitStage(adapter.finalOddsPayload(race),FINAL_ODDS_HARD_TIMEOUT_MS,'FINAL_ODDS');stage('[3/8] オッズ正規化 / 空市場を安全化');snap=normalizeFinalSnapshot(fp.snapshot,race,dtime);payload={snapshots:[],source:fp.source};usedFinalOdds=true;state.finalOddsUsed++;state.audit.push(auditRow(race,'REFERENCE','FINAL_ODDS_DIRECT_USED'))}
   catch(e){state.noSnapshot++;state.audit.push(auditRow(race,'SKIP','確定オッズ取得不能: '+String(e?.message||e).slice(0,180)));return false}
  }else{
   try{stage('[2/8] 締切前snapshot取得');payload=await adapter.snapshotPayload(race);chosen=chooseSnapshot(payload.snapshots,dtime);state.futureRejected+=chosen.futureCount;if(chosen.selected)snap=normalizeSnapshot(chosen.selected,race,dtime)}catch(e){state.noSnapshot++;state.audit.push(auditRow(race,'SKIP','PRE_DECISION_SNAPSHOT_NOT_AVAILABLE'));return false}
@@ -1038,7 +1037,7 @@ async function simulateRace(race,players,model,adapter,state){
  stage(settings.styleMode?'[6/8] 11キャラ購入判定 / STYLE比較=各スタイルの最良手をフラット購入':'[6/8] 11キャラ購入判定 / AUTO=EV Guard通過→券種別スコア最高×100円');
  if(!settings.styleMode){const autoSummary=summarizeAutoGuard(generated.candidates);state.autoGuardRejected=(state.autoGuardRejected||0)+autoSummary.rejected;if(autoSummary.rejected>0){const reasons=Object.entries(autoSummary.counts).map(([k,v])=>`${k}:${v}`).join(', ');state.audit.push(auditRow(race,'AUTO_GUARD',`拒否 ${autoSummary.rejected}/${autoSummary.total} / 通過 ${autoSummary.approved} / ${reasons}`))}}
  for(const c of players){if(c.bankroll<100)continue;let raceUsed=0;let options=generated.candidates.filter(x=>c.tickets.includes(x.ticket)&&candidateFilter(c,x,horseMap,modelOk,hasDrift));if(c.style==='auto')options.sort((a,b)=>autoCandidateScore(b)-autoCandidateScore(a)||b.ev-a.ev||b.prob-a.prob);else options.sort((a,b)=>b.ev-a.ev||b.prob-a.prob);let picks;if(c.style==='auto'){picks=[];for(const ticket of c.tickets){const best=options.find(x=>x.ticket===ticket);if(best)picks.push(best)}}else{const maxPicks=c.style==='ev'?3:c.style==='kelly'?3:c.style==='triple'?2:1;picks=options.slice(0,maxPicks)}for(const cand of picks){const sf=stakeFor(c,cand,race.date,raceUsed,modelOk);if(!sf.stake)continue;const ag=c.style==='auto'?autoGuard(cand):null;c.bankroll-=sf.stake;c.invested+=sf.stake;c.byOrg[race.org].inv+=sf.stake;c.byTicket[cand.ticket].inv+=sf.stake;c.dayInvested[race.date]=(c.dayInvested[race.date]||0)+sf.stake;c.bets++;c.evSum+=cand.ev;c.kellySum+=sf.kelly;raceUsed+=sf.stake;locked.push({id:uid(),date:race.date,startTime:race.startTime,track:race.track,raceNo:race.no,raceId:race.id,org:race.org,character:c.name,ticket:cand.ticket,selection:cand.selection,decisionTime:new Date(dtime).toISOString(),oddsAt:usedFinalOdds?(Number.isFinite(snap.at)?new Date(snap.at).toISOString():'FINAL_ODDS'):new Date(snap.at).toISOString(),oddsMode:usedFinalOdds?'FINAL_ODDS':'PRE_DECISION',odds:cand.odds,probability:cand.prob,marketProbability:cand.marketProb,fairOdds:cand.fairOdds,ev:cand.ev,kelly:sf.kelly,marketDivergence:ag?.ratio??null,autoScore:ag?.score??null,guardReason:ag?.reason??null,kellyFraction:c.style==='auto'?0:settings.kellyFraction,stake:sf.stake,source:payload.source+' / '+snap.source,model:currentModel.mode,modelT:currentModel.T,modelBlend:Number(cand.modelBlend||0),structuralProbability:cand.structuralProb,structuralMarketProbability:cand.structuralMarketProb,marketComplete:cand.marketComplete,marketObserved:cand.marketObserved,marketExpected:cand.marketExpected,marketCountCoverage:cand.marketCountCoverage,marketMassCoverage:cand.marketMassCoverage,payoutMultiplier:null,refund:null,profit:null,status:'LOCKED'})}}
- let result;try{stage(`[7/8] 結果・払戻取得（上限8秒） locked=${locked.length}`);result=await awaitStage(adapter.result(race),RESULT_HARD_TIMEOUT_MS,'RESULT')}catch(e){for(const b of locked)b.status='RESULT_ERROR';state.bets.push(...locked);state.audit.push(auditRow(race,'RESULT_ERROR',String(e?.message||e)));stage('[8/8] 結果取得失敗 → NEXT');return true}
+ let result;try{stage(`[7/8] 結果・払戻取得（上限${Math.round(RESULT_HARD_TIMEOUT_MS/1000)}秒） locked=${locked.length}`);result=await awaitStage(adapter.result(race),RESULT_HARD_TIMEOUT_MS,'RESULT')}catch(e){for(const b of locked)b.status='RESULT_ERROR';state.bets.push(...locked);state.audit.push(auditRow(race,'RESULT_ERROR',String(e?.message||e)));stage('[8/8] 結果取得失敗 → NEXT');return true}
  stage('[8/8] 精算・学習記録 → NEXT');settleLocked(locked,result,players,horseMap);state.bets.push(...locked);const startMs=ts(race.startTime),settledAt=Number.isFinite(startMs)?startMs+5*60000:dtime+5*60000;model.observeRace(settledAt,generated.horses,result);for(const c of players){c.peak=Math.max(c.peak,c.bankroll);c.maxDD=Math.max(c.maxDD,c.peak>0?(c.peak-c.bankroll)/c.peak:0);c.history.push({label:`${race.date} ${race.track}${race.no}R`,value:c.bankroll})}log(`race_id=${rid} POST[8/8] 完了 locked=${locked.length} → NEXT`,'good');return true
 }
 
