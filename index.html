@@ -13,13 +13,13 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-BRIDGE-ONLY-V12-AUTO-FIX</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-BRIDGE-ONLY-V13-ADAPTIVE</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。期間バックテストでtimestamp付き締切前オッズが存在しないレースは、確定オッズで代用せずSKIPします。着順・払戻は購入判断完了後の精算専用です。 <b>V10:</b> JRA確定オッズは静的HTMLではなく netkeiba のJSONオッズAPIをBridge経由で直接取得。単勝・複勝・枠連・馬連・ワイド・馬単・三連複・三連単を解析し、API失敗時だけHTML診断へフォールバック。確定オッズ8秒・結果8秒・1レース20秒の強制タイムアウト。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>トップROI</small><b id="kTop">--</b></div>
 </div>
-<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD v11 / 15s / RACE-ID LOCK</span></h3><div class="body"><div class="controls">
+<div class="card"><h3>📅 期間横断シミュレーション <span class="badge ok">FAST GUARD v13 / ADAPTIVE BRIDGE / RACE-ID LOCK</span></h3><div class="body"><div class="controls">
 <label>開始日 <input id="fromDate" type="date"></label><label>終了日 <input id="toDate" type="date"></label><label>区分 <select id="orgSelect"><option value="BOTH">JRA+NAR</option><option>JRA</option><option>NAR</option></select></label><button class="preset" data-days="1">1日</button><button class="preset" data-days="7">7日</button><button class="preset" data-days="31">1か月</button><button class="preset" data-days="92">3か月</button><button class="preset" data-days="183">6か月</button><button class="preset" data-days="365">1年</button><button id="runBtn" class="primary">🏁 全11名 START</button><button id="stopBtn" class="danger" disabled>停止</button></div>
 <div class="progressBlock"><div class="progressHead"><b>① 開催データ取得進捗</b><span id="fetchProgressText">未実行</span></div><div class="progress"><i id="fetchBar"></i></div></div>
 <div class="progressBlock"><div class="progressHead"><b>② レース処理進捗</b><span id="raceProgressText">未実行</span></div><div class="progress race"><i id="raceBar"></i></div></div>
@@ -49,7 +49,7 @@
 </main>
 <dialog id="settingsDlg"><form method="dialog"><h2>設定</h2><div class="formgrid">
 <label>モード<select id="sMode"><option value="SIMULATION">SIMULATION</option><option value="LIVE">LIVE</option></select></label><label>シミュレーションモード<select id="sSim"><option value="1">ON</option><option value="0">OFF</option></select></label><label>期間横断<select id="sCross"><option value="1">ON</option><option value="0">OFF</option></select></label><label>確定オッズ使用<select id="sFinalOdds"><option value="0">OFF（STRICT）</option><option value="1">ON（参考モード）</option></select></label><label>decisionTime（締切何分前）<input id="sDecision" type="number" min="1" max="10"></label><label>EV最低値<input id="sEv" type="number" min="0.5" max="3" step="0.01"></label><label>Strong Buy EV<input id="sStrong" type="number" min="0.5" max="3" step="0.01"></label><label>Kelly<select id="sKelly"><option value="0">OFF</option><option value="0.125">1/8 Kelly</option><option value="0.25">1/4 Kelly</option><option value="0.5">1/2 Kelly</option><option value="1">Full Kelly</option></select></label><label>初期資金<input id="sBank" type="number" step="1000"></label><label>1レース最大投資<input id="sMaxRace" type="number" step="100"></label><label>1日最大投資<input id="sMaxDay" type="number" step="100"></label><label>1馬券最大投資率<input id="sMaxTicketPct" type="number" step="0.005" min="0.005" max="0.2"></label><label>最大DD停止率<input id="sMaxDD" type="number" step="0.01" min="0.05" max="0.9"></label><label>最小学習サンプル<input id="sMinSamples" type="number" step="10" min="30"></label><label>LIVE更新間隔（秒）<input id="sRefresh" type="number" min="5" max="300"></label>
-<div class="notice strict" style="grid-column:1/-1"><b>通信経路:</b> Userscript Bridge v1.7.5+ → GM XHR → netkeiba / 地方競馬サイト。Cloudflare Workerは本体処理では使用しません。</div></div><p id="finalOddsHint" class="muted">確定オッズ使用OFFは timestamp付き pre-decision snapshot 専用です。ONでは締切前snapshot探索をスキップして確定オッズを直接使用します。</p><div class="controls"><button value="cancel">キャンセル</button><button id="saveSettings" class="primary" value="default">保存</button></div></form></dialog>
+<div class="notice strict" style="grid-column:1/-1"><b>通信経路:</b> Userscript Bridge v1.7.8+ → GM XHR → netkeiba / 地方競馬サイト。Cloudflare Workerは本体処理では使用しません。</div></div><p id="finalOddsHint" class="muted">確定オッズ使用OFFは timestamp付き pre-decision snapshot 専用です。ONでは締切前snapshot探索をスキップして確定オッズを直接使用します。</p><div class="controls"><button value="cancel">キャンセル</button><button id="saveSettings" class="primary" value="default">保存</button></div></form></dialog>
 <script>
 'use strict';
 const $=id=>document.getElementById(id), JPY=n=>Math.round(Number(n)||0).toLocaleString('ja-JP')+'円', PCT=n=>(Number(n)*100).toFixed(1)+'%', clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
@@ -117,7 +117,7 @@ class DataAdapter{
    - No Cloudflare Worker in simulation core
    - STRICT mode: timestamped local/embedded snapshots only; no final-odds fallback
    ============================================================ */
-const BRIDGE_MIN_VERSION='1.7.5';
+const BRIDGE_MIN_VERSION='1.7.8';
 const JRA_CODE_NAME={"01":"札幌","02":"函館","03":"福島","04":"新潟","05":"東京","06":"中山","07":"中京","08":"京都","09":"阪神","10":"小倉"};
 const NAR_CODE_NAME={"30":"門別","35":"盛岡","36":"水沢","42":"浦和","43":"船橋","44":"大井","45":"川崎","46":"金沢","47":"笠松","48":"名古屋","50":"園田","51":"姫路","54":"高知","55":"佐賀","65":"帯広"};
 const ODDS_PAGE_CODE={win:'b1',place:'b1',frame:'b2',quinella:'b3',wide:'b4',exacta:'b5',trio:'b6',trifecta:'b7'};
@@ -130,7 +130,7 @@ function bridgeNum(s){const m=bridgeHalf(bridgeClean(s)).match(/-?\d+(?:\.\d+)?/
 function bridgeVersionOk(){const v=String(window.__narBridgeVersion||'0');const a=v.split('.').map(Number),b=BRIDGE_MIN_VERSION.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false}return true}
 function bridgeReadyCore(){return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true}
 async function bridgeGetCore(targetUrl,timeout=9000){
- if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.5+ が必要です');
+ if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.8+ が必要です');
  const fn=window.__narBridgeFetch, started=performance.now(),raceSignal=activeRaceAbortSignal; let timer,abortHandler;
  try{
   const p=Promise.resolve(fn(targetUrl,{timeout}));
@@ -170,8 +170,8 @@ function parseBridgeRaceIds(html,date,org){
  if(!map.size){for(const re of [/race_id[=:%\\u003d\\u003D&;quot'"\s]+(20\d{10})/ig,/data-race-id=["']?(20\d{10})/ig,/race_id%3D(20\d{10})/ig,/\/race\/(20\d{10})(?:\/|\?|["'])/ig]){let m;while((m=re.exec(String(html||''))))add(m[1],null)}}
  return [...map.values()].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')||a.track.localeCompare(b.track)||a.no-b.no)
 }
-function bridgeListUrls(date,org){const ymd=String(date).replaceAll('-','');if(org==='JRA'){const p=shiftDate(date,-1).replaceAll('-',''),n=shiftDate(date,1).replaceAll('-','');return [`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}&current_group=10${ymd}`,`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}&current_group=10${p}`,`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}&current_group=10${n}`,`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,`https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,`https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`]}return [`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}&rf=race_list`,`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`,`https://nar.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`]}
-function bridgeNarCalendarUrls(date){const [y,m]=String(date).split('-');const mm=String(Number(m)||1);return [`https://nar.netkeiba.com/top/calendar.html?month=${mm}&year=${y}`,`https://nar.netkeiba.com/top/calendar.html?year=${y}&month=${mm}`]}
+function bridgeListUrls(date,org){const ymd=String(date).replaceAll('-','');if(org==='JRA')return [`https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`,`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,`https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`];return [`https://nar.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`,`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}&rf=race_list`]}
+function bridgeNarCalendarUrls(date){const [y,m]=String(date).split('-');const mm=String(Number(m)||1);return [`https://nar.netkeiba.com/top/calendar.html?year=${y}&month=${mm}`]}
 function parseNarKaisaiIds(html,date){
  const ymd=String(date).replaceAll('-',''),out=new Set(),raw=String(html||'').replace(/&amp;/g,'&');
  const doc=new DOMParser().parseFromString(raw,'text/html');
@@ -182,7 +182,7 @@ function parseNarKaisaiIds(html,date){
  for(const re of [new RegExp(`kaisai_date=${ymd}[^\"'<>]{0,180}kaisai_id=(20\\d{8})`,'ig'),new RegExp(`kaisai_id=(20\\d{8})[^\"'<>]{0,180}kaisai_date=${ymd}`,'ig')]){let m;while((m=re.exec(raw))){if(NAR_CODE_NAME[m[1].slice(4,6)])out.add(m[1])}}
  return [...out];
 }
-function bridgeNarKaisaiListUrls(date,kaisaiId){const ymd=String(date).replaceAll('-',''),kid=encodeURIComponent(kaisaiId);return [`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}&kaisai_id=${kid}`,`https://nar.sp.netkeiba.com/?pid=race_list&kaisai_date=${ymd}&kaisai_id=${kid}`]}
+function bridgeNarKaisaiListUrls(date,kaisaiId){const ymd=String(date).replaceAll('-',''),kid=encodeURIComponent(kaisaiId);return [`https://nar.sp.netkeiba.com/?pid=race_list&kaisai_date=${ymd}&kaisai_id=${kid}`,`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}&kaisai_id=${kid}`]}
 async function bridgeNarRaceListFallback(date){
  log(`${date} NAR 一覧0件 → カレンダーからkaisai_idを探索`,'muted');
  const cal=await bridgeFirstCore(bridgeNarCalendarUrls(date),h=>parseNarKaisaiIds(h,date).length>0,5000).catch(e=>{log(`${date} NAR カレンダー取得失敗: ${e?.message||e}`,'bad');return null});
@@ -295,7 +295,7 @@ function parseBridgeResult(html,url){const doc=new DOMParser().parseFromString(S
 class BridgeDataAdapter extends DataAdapter{
  constructor(s){super(s);this.resultCache=new Map();this.finalCache=new Map()}
  async races(date,org){
-  if(!bridgeReadyCore())throw Error('Bridge v1.7.5+ が未接続です');
+  if(!bridgeReadyCore())throw Error('Bridge v1.7.8+ が未接続です');
   let list=null,races=[];
   try{list=await bridgeFirstCore(bridgeListUrls(date,org),html=>parseBridgeRaceIds(html,date,org).length>0,8000)}catch(e){if(!/本文判定NG|候補なし|timeout|TIMEOUT/i.test(String(e?.message||e)))throw e}
   if(list)races=parseBridgeRaceIds(list.text,date,org);
@@ -537,7 +537,7 @@ function resetRunStateUI(from,to,org){
 }
 async function runSimulation(){
  if(!settings.simulation)return alert('設定でシミュレーションモードをONにしてください');
- if(!bridgeReadyCore())return alert('Userscript Bridge v1.7.5+ が検出できません。先にBridgeを有効にしてください。');
+ if(!bridgeReadyCore())return alert('Userscript Bridge v1.7.8+ が検出できません。先にBridgeを有効にしてください。');
  const from=$('fromDate').value,to=settings.periodCross?$('toDate').value:$('fromDate').value,org=$('orgSelect').value;
  if(!from||!to)return alert('開始日・終了日を指定してください');
  if(from>to)return alert('開始日は終了日以前にしてください');
@@ -655,7 +655,7 @@ async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA 
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value)};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
-function applySettingsUI(){$('modeBadge').textContent=settings.mode;$('runBtn').disabled=!settings.simulation;$('toDate').disabled=!settings.periodCross;document.querySelectorAll('.preset').forEach(b=>b.disabled=!settings.periodCross);if(settings.allowFinalOdds){$('strictBadge').textContent='FINAL ODDS DIRECT';$('strictBadge').className='badge warn';$('strictNotice').innerHTML='<b>確定オッズ直接モード:</b> 締切前snapshot探索は行わず、Bridge v1.7.5+ / GM XHRで各レースの確定オッズを直接取得します。JRAはJSONオッズAPI、NARは従来HTML経路です。Cloudflare Workerは使用しません。確定オッズは未来情報なので、このモードのROIはSTRICT成績と必ず分離して評価してください。着順・払戻は引き続き購入判断後の精算専用です。';$('finalOddsHint').innerHTML='⚠ 確定オッズ使用ON: 締切前snapshot探索を完全にスキップし、確定オッズを直接使用します。結果には FINAL_ODDS / FINAL_ODDS_DIRECT_USED と記録されます。'}else{$('strictBadge').textContent='NO FUTURE DATA';$('strictBadge').className='badge ok';$('strictNotice').innerHTML='<b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。締切前snapshotだけを短時間で取得し、存在しなければ即SKIPします。確定オッズへはフォールバックしません。着順・払戻は購入判断完了後の精算専用です。';$('finalOddsHint').innerHTML='確定オッズ使用OFF: timestamp付き pre-decision snapshot 専用です。ローカル/保存済みtimestamp付きsnapshotが無ければ即SKIPし、確定オッズへは切り替えません。Bridgeから過去snapshotを捏造しません。'}}
+function applySettingsUI(){$('modeBadge').textContent=settings.mode;$('runBtn').disabled=!settings.simulation;$('toDate').disabled=!settings.periodCross;document.querySelectorAll('.preset').forEach(b=>b.disabled=!settings.periodCross);if(settings.allowFinalOdds){$('strictBadge').textContent='FINAL ODDS DIRECT';$('strictBadge').className='badge warn';$('strictNotice').innerHTML='<b>確定オッズ直接モード:</b> 締切前snapshot探索は行わず、Bridge v1.7.8+ / GM XHRで各レースの確定オッズを直接取得します。JRAはJSONオッズAPI、NARは従来HTML経路です。Cloudflare Workerは使用しません。確定オッズは未来情報なので、このモードのROIはSTRICT成績と必ず分離して評価してください。着順・払戻は引き続き購入判断後の精算専用です。';$('finalOddsHint').innerHTML='⚠ 確定オッズ使用ON: 締切前snapshot探索を完全にスキップし、確定オッズを直接使用します。結果には FINAL_ODDS / FINAL_ODDS_DIRECT_USED と記録されます。'}else{$('strictBadge').textContent='NO FUTURE DATA';$('strictBadge').className='badge ok';$('strictNotice').innerHTML='<b>STRICT研究モード:</b> decisionTimeより後の情報は予測・EV・Kellyへ入力しません。締切前snapshotだけを短時間で取得し、存在しなければ即SKIPします。確定オッズへはフォールバックしません。着順・払戻は購入判断完了後の精算専用です。';$('finalOddsHint').innerHTML='確定オッズ使用OFF: timestamp付き pre-decision snapshot 専用です。ローカル/保存済みtimestamp付きsnapshotが無ければ即SKIPし、確定オッズへは切り替えません。Bridgeから過去snapshotを捏造しません。'}}
 function download(name,text,type='application/json'){const a=document.createElement('a'),blob=new Blob([text],{type});a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
 function exportJson(){if(!lastResult)return alert('先に実行してください');download(`keiba_strict_${lastResult.period.from}_${lastResult.period.to}.json`,JSON.stringify(lastResult,null,2))}
 function exportCsv(){if(!lastResult)return alert('先に実行してください');const cols=['date','track','raceNo','character','ticket','selection','decisionTime','oddsAt','oddsMode','odds','probability','marketProbability','fairOdds','ev','kelly','stake','payoutMultiplier','refund','profit','source'];const lines=[cols.join(',')].concat(lastResult.bets.map(r=>cols.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(',')));download('keiba_strict_bets.csv',lines.join('\n'),'text/csv;charset=utf-8')}
