@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.3-JSON-TABLE-FIX</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.4-JRA-ANON-CNAME-FIX</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>V17 STRICT OOS研究モード:</b> TRAIN→VALIDATION→TESTを時系列60/20/20で分離し、TESTは一次モデル調整に使用しません。decisionTimeより後の情報は予測・EV・Kellyへ入力せず、締切前snapshotが無いレースはSKIPします。全購入で設定EV下限を強制し、AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を必須にします。FINAL ODDSはREFERENCE専用でOOS成績には使用できません。</div>
 <div class="kpis">
@@ -49,7 +49,7 @@
 <div class="fetchStatus"><span id="jraFetchBadge" class="badge empty">JRA: 待機</span><span id="narFetchBadge" class="badge empty">NAR: 待機</span></div>
 <div id="currentPhase" class="currentPhase">待機中 — STARTを押すと、開催取得 → レース処理 → 次区分の順に進みます。</div><div id="progressText" class="muted" style="margin-top:7px">未実行</div></div></div>
 <div class="card" style="margin-top:12px" id="jraBridgeDiagCard"><h3>🌉 公式データ経路診断 <span id="jraBridgeVersionBadge" class="badge empty">Bridge: 未確認</span></h3><div class="body">
-<div class="notice strict">Bridge v1.7.10+ / GM XHRで公式データ経路を確認します。JRA開催日程・JRADB確定オッズ・JRADB結果を最優先で確認し、JRA公式がHTTP 403等で取得不能な場合だけnetkeiba fallbackを診断します。403は「開催なし」と扱いません。診断用race_idは本体シミュレーションとは完全分離しています。Cloudflare Workerも使用しません。</div>
+<div class="notice strict">Bridge v1.7.12+ / GM XHRで公式データ経路を確認します。JRA開催日程・JRADB確定オッズ・JRADB結果を最優先で確認し、JRA公式がHTTP 403等で取得不能な場合だけnetkeiba fallbackを診断します。403は「開催なし」と扱いません。診断用race_idは本体シミュレーションとは完全分離しています。Cloudflare Workerも使用しません。</div>
 <div class="controls" style="margin-top:10px"><button id="jraBridgeDiagBtn" class="primary">🔎 JRA公式 3系統診断</button><button id="jraBridgeDiagCopy">診断コピー</button><span id="jraBridgeDiagSummary" class="muted">未実行</span></div>
 <div class="diagGrid" style="margin-top:10px">
 <div id="jraDiagBridge" class="diagBox"><b>① Bridge接続</b><div class="v">未実行</div></div>
@@ -140,7 +140,7 @@ class DataAdapter{
    - No Cloudflare Worker in simulation core
    - STRICT mode: timestamped local/embedded snapshots only; no final-odds fallback
    ============================================================ */
-const BRIDGE_MIN_VERSION='1.7.10';
+const BRIDGE_MIN_VERSION='1.7.12';
 const JRA_CODE_NAME={"01":"札幌","02":"函館","03":"福島","04":"新潟","05":"東京","06":"中山","07":"中京","08":"京都","09":"阪神","10":"小倉"};
 const NAR_CODE_NAME={"30":"門別","35":"盛岡","36":"水沢","42":"浦和","43":"船橋","44":"大井","45":"川崎","46":"金沢","47":"笠松","48":"名古屋","50":"園田","51":"姫路","54":"高知","55":"佐賀","65":"帯広"};
 const ODDS_PAGE_CODE={win:'b1',place:'b1',frame:'b3',quinella:'b4',wide:'b5',exacta:'b6',trio:'b7',trifecta:'b8'};
@@ -153,7 +153,7 @@ function bridgeNum(s){const m=bridgeHalf(bridgeClean(s)).match(/-?\d+(?:\.\d+)?/
 function bridgeVersionOk(){const v=String(window.__narBridgeVersion||'0');const a=v.split('.').map(Number),b=BRIDGE_MIN_VERSION.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false}return true}
 function bridgeReadyCore(){return typeof window.__narBridgeFetch==='function' && window.__bridgeAbsent!==true}
 async function bridgeGetCore(targetUrl,timeout=9000){
- if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.10+ が必要です');
+ if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.12+ が必要です');
  const fn=window.__narBridgeFetch, started=performance.now(),raceSignal=activeRaceAbortSignal; let timer,abortHandler;
  try{
   const p=Promise.resolve(fn(targetUrl,{timeout}));
@@ -229,7 +229,7 @@ function parseMarketHtml(html,type){const doc=new DOMParser().parseFromString(St
    Use the same JSON endpoint used by the page itself. */
 const JRA_API_MARKET_CODE={win:'1',place:'2',frame:'3',quinella:'4',wide:'5',exacta:'6',trio:'7',trifecta:'8'};
 // request type は単勝/複勝が共通 type=1。data.odds 内では 1=単勝, 2=複勝。
-const JRA_API_REQUEST_CODE={win:'1',place:'2',frame:'3',quinella:'4',wide:'5',exacta:'6',trio:'7',trifecta:'8'}; // V17.3: 複勝はtype=2も明示取得
+const JRA_API_REQUEST_CODE={win:'1',place:'1',frame:'3',quinella:'4',wide:'5',exacta:'6',trio:'7',trifecta:'8'}; // V17.4: 単勝/複勝はtype=1を共用し、data.odds[1]/[2]を解析
 function jraOddsApiUrl(rid,type='all'){
  const q=new URLSearchParams({pid:'api_get_jra_odds',race_id:String(rid),type:String(type),action:'init',sort:'odds',compress:'0',output:'json'});
  return 'https://race.netkeiba.com/api/api_get_jra_odds.html?'+q.toString();
@@ -319,7 +319,7 @@ function mergeMarketMaps(dst,src){for(const t of ODDS_TYPES){dst[t]=dst[t]||{};f
 
 function parseHorseMetaBridge(html){const doc=new DOMParser().parseFromString(String(html||''),'text/html'),out=new Map();for(const tr of doc.querySelectorAll('tr')){const link=tr.querySelector('a[href*="/horse/"],a[href*="horse_id="],a[href*="db.netkeiba.com/horse"]');if(!link)continue;let no=bridgeNum(tr.querySelector('.Umaban,.Horse_Num,td.Umaban,[class*="Umaban"],[class*="HorseNum"]')?.textContent||'');if(!(no>=1&&no<=18)){for(const c of [...tr.querySelectorAll('td,th')].slice(0,4)){const t=bridgeHalf(bridgeClean(c.textContent));if(/^([1-9]|1[0-8])$/.test(t)){no=Number(t);break}}}if(!(no>=1&&no<=18))continue;let frame=bridgeNum(tr.querySelector('.Waku,.Waku1,.Waku2,.Waku3,.Waku4,.Waku5,.Waku6,.Waku7,.Waku8,[class*="Waku"],[class*="waku"],[class*="Frame"]')?.textContent||'');if(!(frame>=1&&frame<=8))frame=null;out.set(no,{no,frame,name:bridgeClean(link.textContent)||`#${no}`})}return out}
 
-// V17.3: SP/mobile結果ページは<tr>でない場合があるため、馬リンクから最小結果ブロックを逆引きする。
+// V17.4: SP/mobile結果ページは<tr>でない場合があるため、馬リンクから最小結果ブロックを逆引きする。
 function bridgeSmallestResultBlock(anchor){
  let p=anchor,fallback=null;
  for(let i=0;i<10&&p;i++,p=p.parentElement){
@@ -399,7 +399,7 @@ const V14_NAR_BABA={"30":"36","35":"10","36":"11","42":"18","43":"19","44":"20",
 const V14_JRA_NAME_CODE=Object.fromEntries(Object.entries(JRA_CODE_NAME).map(([k,v])=>[v,k]));
 
 async function officialBridgeRequest(targetUrl, options={}, timeout=9000){
- if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.10+ が必要です');
+ if(!bridgeReadyCore())throw Error('Bridge未接続: Userscript Bridge v1.7.12+ が必要です');
  const fn=window.__narBridgeFetch, started=performance.now(),raceSignal=activeRaceAbortSignal;
  let timer,abortHandler;
  const opts={...options,timeout};
@@ -523,18 +523,35 @@ function jraFindCname(html,patterns){
  }
  return '';
 }
+function jraAllResultCnames(html){
+ const raw=String(html||'').replace(/&amp;/g,'&'),out=[];let m;
+ const re=/\b(pw01s(?:rl|de)[0-9A-Za-z]+\/[0-9A-F]{2})\b/gi;
+ while((m=re.exec(raw)))if(!out.includes(m[1]))out.push(m[1]);
+ return out;
+}
+function jraFindResultCnameByParts(html,kind,needle){
+ const prefix=kind==='meeting'?'pw01srl':'pw01sde',n=String(needle||'').toLowerCase();
+ return jraAllResultCnames(html).find(c=>c.toLowerCase().startsWith(prefix)&&c.toLowerCase().includes(n))||'';
+}
 async function jraOfficialDbPage(race,type){
  const x=jraMetaV14(race),isResult=type==='result';
  const endpoint=isResult?'https://www.jra.go.jp/JRADB/accessS.html':'https://www.jra.go.jp/JRADB/accessD.html';
  const root=isResult?'pw01sli00/AF':'pw01dli00/F3';
  const p1=await officialPost(endpoint,root,6500);
  const meetingPrefix=isResult?`pw01srl10${x.venue}${x.year}${x.kai}${x.day}${x.date}`:`pw01drl00${x.venue}${x.year}${x.kai}${x.day}${x.date}`;
- const meeting=jraFindCname(p1.text,[meetingPrefix]); if(!meeting)throw Error(`JRA公式${type}: 開催CNAMEなし ${meetingPrefix}`);
+ let meeting=jraFindCname(p1.text,[meetingPrefix]);
+ if(!meeting&&isResult)meeting=jraFindResultCnameByParts(p1.text,'meeting',`${x.venue}${x.year}${x.kai}${x.day}${x.date}`);
+ if(!meeting)throw Error(`JRA公式${type}: 開催CNAMEなし ${meetingPrefix}`);
  const p2=await officialPost(endpoint,meeting,6500);
  const racePatterns=isResult
-   ? [new RegExp(`pw01sde10${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i')]
+   ? [
+      new RegExp(`pw01sde01${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i'),
+      new RegExp(`pw01sde10${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i')
+     ]
    : [new RegExp(`pw01dde(?:01|10)${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i')];
- const raceC=jraFindCname(p2.text,racePatterns); if(!raceC)throw Error(`JRA公式${type}: レースCNAMEなし race_id=${x.rid}`);
+ let raceC=jraFindCname(p2.text,racePatterns);
+ if(!raceC&&isResult)raceC=jraFindResultCnameByParts(p2.text,'race',`${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}`);
+ if(!raceC)throw Error(`JRA公式${type}: レースCNAMEなし race_id=${x.rid}`);
  const final=await officialGet(endpoint+'?CNAME='+encodeURIComponent(raceC),7000);
  return {html:final.text,cname:raceC,url:final.finalUrl||endpoint};
 }
@@ -1512,7 +1529,7 @@ async function runV14OfficialDiagnostic(){
   const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');
   if(!bi.hasFetch||!bridgeVersionOk())throw Error('Userscript Bridge v1.7.10+ が検出できません');
   setJraDiagBox('jraDiagBridge','pass',`<b class="goodText">✅ Bridge検出</b><div>version ${jraDiagEsc(bi.version)}</div><div>公式GET/POST対応</div><div>ready=${bi.ready?'YES':'NO'}</div>`);
-  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + 403 GUARD + ODDS/RESULT FIX`,'ok');
+  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + JRA ANONYMOUS + CNAME FIX`,'ok');
 
   const fallbackAdapter=new BridgeDataAdapter(settings);
   const to=$('toDate').value||shiftDate(today(),-1),from=$('fromDate').value||shiftDate(to,-6);
@@ -1606,7 +1623,7 @@ async function runV14OfficialDiagnostic(){
   if(isOfficialBlockedError(e))setJraDiagBox('jraDiagList','fail',`<b class="badText">❌ JRA公式 HTTP 403</b><div>開催なしではなく取得不能です</div><div>${jraDiagEsc(e?.message||e)}</div>`);
  }finally{JRA_BRIDGE_DIAG.running=false;$('jraBridgeDiagBtn').disabled=false}
 }
-async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.3-JSON-TABLE-FIX`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
+async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.4-JSON-TABLE-FIX`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sAutoMaxEv:'autoMaxEv',sAutoMinProb:'autoMinProb',sAutoMaxOdds:'autoMaxOdds',sAutoMaxEdge:'autoMaxEdge',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('sStyleMode').value=settings.styleMode?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',styleMode:$('sStyleMode').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),autoMaxEv:Number($('sAutoMaxEv').value),autoMinProb:Number($('sAutoMinProb').value),autoMaxOdds:Number($('sAutoMaxOdds').value),autoMaxEdge:Number($('sAutoMaxEdge').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value)};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
@@ -1616,7 +1633,7 @@ function exportJson(){if(!lastResult)return alert('先に実行してくださ�
 function exportCsv(){if(!lastResult)return alert('先に実行してください');const cols=['date','track','raceNo','character','ticket','selection','decisionTime','oddsAt','oddsMode','odds','probability','marketProbability','fairOdds','ev','kelly','stake','payoutMultiplier','refund','profit','source','model','modelT','modelBlend','structuralProbability','structuralMarketProbability','marketComplete','marketObserved','marketExpected','marketCountCoverage','marketMassCoverage','guardReason','autoScore','marketDivergence'];const lines=[cols.join(',')].concat(lastResult.bets.map(r=>cols.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(',')));download('keiba_strict_bets.csv',lines.join('\n'),'text/csv;charset=utf-8')}
 function exportXlsx(){if(!lastResult)return alert('先に実行してください');if(typeof XLSX==='undefined')return alert('SheetJS未読込');const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.bets),'Bets');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.audit),'Audit');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.characters.map(c=>({name:c.name,bankroll:c.bankroll,profit:c.bankroll-c.initial,roi:c.invested?c.returned/c.invested:null,bets:c.bets,wins:c.wins,maxDD:c.maxDD}))),'Ranking');XLSX.writeFile(wb,'keiba_strict_research.xlsx')}
 async function shareResult(){if(!lastResult)return alert('先に実行してください');const file=new File([JSON.stringify(lastResult,null,2)],'keiba_strict_result.json',{type:'application/json'});if(navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:'KEIBA STRICT result'})}else exportJson()}
-function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + 403 GUARD + ODDS/RESULT FIXで実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
+function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + JRA ANONYMOUS + CNAME FIXで実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 </script>
 </body>
