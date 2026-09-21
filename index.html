@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.4-JRA-ANON-CNAME-FIX</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.5-EXACT-DATE-RACEID-LOCK</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>V17 STRICT OOS研究モード:</b> TRAIN→VALIDATION→TESTを時系列60/20/20で分離し、TESTは一次モデル調整に使用しません。decisionTimeより後の情報は予測・EV・Kellyへ入力せず、締切前snapshotが無いレースはSKIPします。全購入で設定EV下限を強制し、AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を必須にします。FINAL ODDSはREFERENCE専用でOOS成績には使用できません。</div>
 <div class="kpis">
@@ -186,11 +186,58 @@ function bridgeBodyMatchesRace(html,rid){
 function bridgeLockedRace(race){const id=bridgeLockedRaceId(race);return {...race,id,raceId:id,race_id:id}}
 function parseBridgeRaceIds(html,date,org){
  const doc=new DOMParser().parseFromString(String(html||''),'text/html'),map=new Map(),ymd=String(date).replaceAll('-','');
- const add=(id,node)=>{id=String(id||'');if(!/^20\d{10}$/.test(id))return;const code=id.slice(4,6),no=Number(id.slice(-2));if(!(no>=1&&no<=12))return;if(org==='JRA'&&!JRA_CODE_NAME[code])return;if(org==='NAR'&&!NAR_CODE_NAME[code])return;if(org==='NAR'&&id.slice(6,10)!==ymd.slice(4))return;
-  const track=(org==='JRA'?JRA_CODE_NAME:NAR_CODE_NAME)[code]||org;const box=node?.closest?.('li,tr,dd,dl,.RaceList_DataItem,.RaceList_Item,.RaceList_Box,.RaceList_Table,.RaceList_Data')||node?.parentElement||node;const txt=bridgeHalf(bridgeClean(box?.textContent||''));const tm=txt.match(/(?:^|\s)([0-2]?\d)[:：](\d{2})(?:\s|発走|$)/);const startTime=tm?`${date}T${String(Number(tm[1])).padStart(2,'0')}:${tm[2]}:00+09:00`:null;let title=txt.replace(/^.*?\b\d{1,2}R\s*/,'').replace(/\d{1,2}:\d{2}発走.*$/,'').slice(0,80).trim();if(!title)title=`${track}${no}R`;const old=map.get(id);if(!old||(!old.startTime&&startTime))map.set(id,{id,date,org,track,no,title,startTime,closeBeforeMin:org==='JRA'?1:2,source:`Bridge ${window.__narBridgeVersion||''} race-list`});
+ const codeMap=org==='JRA'?JRA_CODE_NAME:NAR_CODE_NAME;
+ const add=(id,node,sectionMeta={})=>{
+  id=String(id||'');if(!/^20\d{10}$/.test(id))return;
+  const code=id.slice(4,6),no=Number(id.slice(-2));if(!(no>=1&&no<=12))return;
+  if(!codeMap[code])return;
+  if(sectionMeta.kaisaiDate&&sectionMeta.kaisaiDate!==ymd)return;
+  // JRA race_id = YYYY + 場2 + 回2 + 日2 + R2。開催セクションのkaisai_id(先頭10桁)と必ず一致させる。
+  if(org==='JRA'&&sectionMeta.kaisaiId&&/^20\d{8}$/.test(sectionMeta.kaisaiId)&&id.slice(0,10)!==sectionMeta.kaisaiId)return;
+  // NARは旧仕様通りrace_id内部の日付部分も照合。
+  if(org==='NAR'&&id.slice(6,10)!==ymd.slice(4))return;
+  const track=codeMap[code]||org;
+  const box=node?.closest?.('li,tr,dd,dl,.RaceList_DataItem,.RaceList_Item,.RaceList_Box,.RaceList_Table,.RaceList_Data')||node?.parentElement||node;
+  const txt=bridgeHalf(bridgeClean(box?.textContent||''));
+  const tm=txt.match(/(?:^|\s)([0-2]?\d)[:：](\d{2})(?:\s|発走|$)/);
+  const startTime=tm?`${date}T${String(Number(tm[1])).padStart(2,'0')}:${tm[2]}:00+09:00`:null;
+  let title=txt.replace(/^.*?\b\d{1,2}R\s*/,'').replace(/\d{1,2}:\d{2}発走.*$/,'').slice(0,80).trim();if(!title)title=`${track}${no}R`;
+  const old=map.get(id);if(!old||(!old.startTime&&startTime))map.set(id,{id,date,org,track,no,title,startTime,closeBeforeMin:org==='JRA'?1:2,source:`Bridge ${window.__narBridgeVersion||''} race-list`,_kaisaiId:sectionMeta.kaisaiId||'',_kaisaiDate:sectionMeta.kaisaiDate||''});
  };
- for(const a of doc.querySelectorAll('a[href*="race_id="]')){const m=String(a.getAttribute('href')||a.href||'').match(/race_id=(20\d{10})/);if(m)add(m[1],a)}
- if(!map.size){for(const re of [/race_id[=:%\\u003d\\u003D&;quot'"\s]+(20\d{10})/ig,/data-race-id=["']?(20\d{10})/ig,/race_id%3D(20\d{10})/ig,/\/race\/(20\d{10})(?:\/|\?|["'])/ig]){let m;while((m=re.exec(String(html||''))))add(m[1],null)}}
+ const metaForSection=(sec)=>{
+  let kaisaiDate='',kaisaiId='';
+  for(const a of sec.querySelectorAll('a[href*="kaisai_date"],a[href*="kaisai_id"]')){
+   const href=String(a.getAttribute('href')||a.href||'').replace(/&amp;/g,'&');
+   try{const u=new URL(href,'https://race.netkeiba.com/');kaisaiDate=kaisaiDate||u.searchParams.get('kaisai_date')||'';kaisaiId=kaisaiId||u.searchParams.get('kaisai_id')||''}catch(_){ }
+  }
+  // LinkHaraimodoshiichiranが無いDOMでも「4回 中山 6日目」から開催IDを再構成。
+  if(org==='JRA'&&!kaisaiId){
+   const title=bridgeHalf(bridgeClean(sec.querySelector('.RaceList_DataTitle,dt,.RaceList_DataHeader')?.textContent||''));
+   const km=title.match(/(\d+)回\s*(札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉)\s*(\d+)日/);
+   if(km){const code=Object.keys(JRA_CODE_NAME).find(k=>JRA_CODE_NAME[k]===km[2]);if(code)kaisaiId=`${ymd.slice(0,4)}${code}${String(Number(km[1])).padStart(2,'0')}${String(Number(km[3])).padStart(2,'0')}`}
+  }
+  return {kaisaiDate,kaisaiId};
+ };
+ // まず開催セクション内のRaceList_DataItemだけを採用。ページ内ナビや隠しJSONにある別日race_idを拾わない。
+ const sections=[...doc.querySelectorAll('dl.RaceList_DataList,.RaceList_DataList')];
+ for(const sec of sections){
+  const meta=metaForSection(sec);if(meta.kaisaiDate&&meta.kaisaiDate!==ymd)continue;
+  for(const item of sec.querySelectorAll('.RaceList_DataItem,li.RaceList_DataItem')){
+   const a=item.querySelector('a[href*="race_id="]');if(!a)continue;
+   const m=String(a.getAttribute('href')||a.href||'').match(/race_id=(20\d{10})/);if(m)add(m[1],item,meta);
+  }
+ }
+ // section構造が無いレスポンスではRaceList_DataItemだけを限定採用し、周辺hrefのkaisai_date/kaisai_idで照合。
+ if(!map.size){
+  for(const item of doc.querySelectorAll('.RaceList_DataItem,li.RaceList_DataItem')){
+   const a=item.querySelector('a[href*="race_id="]');if(!a)continue;const m=String(a.getAttribute('href')||a.href||'').match(/race_id=(20\d{10})/);if(!m)continue;
+   const sec=item.closest('dl.RaceList_DataList,.RaceList_DataList')||item.parentElement||doc;add(m[1],item,metaForSection(sec));
+  }
+ }
+ // 最終保険: JRAは裸の全HTML正規表現を禁止。NARのみ旧互換を残す。
+ if(!map.size&&org==='NAR'){
+  for(const re of [/race_id[=:%\\u003d\\u003D&;quot'"\s]+(20\d{10})/ig,/data-race-id=["']?(20\d{10})/ig,/race_id%3D(20\d{10})/ig,/\/race\/(20\d{10})(?:\/|\?|["'])/ig]){let m;while((m=re.exec(String(html||''))))add(m[1],null,{kaisaiDate:ymd})}
+ }
  return [...map.values()].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')||a.track.localeCompare(b.track)||a.no-b.no)
 }
 function bridgeListUrls(date,org){const ymd=String(date).replaceAll('-','');if(org==='JRA')return [`https://race.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`,`https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=${ymd}`,`https://race.netkeiba.com/top/race_list.html?kaisai_date=${ymd}`];return [`https://nar.sp.netkeiba.com/?kaisai_date=${ymd}&pid=race_list`,`https://nar.netkeiba.com/top/race_list.html?kaisai_date=${ymd}&rf=race_list`]}
@@ -1529,7 +1576,7 @@ async function runV14OfficialDiagnostic(){
   const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');
   if(!bi.hasFetch||!bridgeVersionOk())throw Error('Userscript Bridge v1.7.10+ が検出できません');
   setJraDiagBox('jraDiagBridge','pass',`<b class="goodText">✅ Bridge検出</b><div>version ${jraDiagEsc(bi.version)}</div><div>公式GET/POST対応</div><div>ready=${bi.ready?'YES':'NO'}</div>`);
-  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + JRA ANONYMOUS + CNAME FIX`,'ok');
+  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + EXACT-DATE RACE-ID LOCK`,'ok');
 
   const fallbackAdapter=new BridgeDataAdapter(settings);
   const to=$('toDate').value||shiftDate(today(),-1),from=$('fromDate').value||shiftDate(to,-6);
@@ -1572,7 +1619,7 @@ async function runV14OfficialDiagnostic(){
    setJraDiagBox('jraDiagList','pass',`<b class="goodText">✅ JRA公式開催日程</b><div>${jraDiagEsc(chosen.date)} / ${races.length}レース</div><div>採用 ${jraDiagEsc(chosen.track)} ${chosen.no}R</div><div>race_id=${jraDiagEsc(chosen.id)}</div>`);
    jraDiagLog(`JRA公式 ${chosen.date}: ${races.length}R / 診断race_id=${chosen.id}`,'ok');
   }else{
-   setJraDiagBox('jraDiagList','run',`<b class="warn">⚠ JRA公式取得不能 / FALLBACK成功</b><div>${sawOfficial403?'公式HTTP 403 — 開催なしではありません':'公式取得失敗'}</div><div>${jraDiagEsc(chosen.date)} / fallback ${races.length}レース</div><div>採用 ${jraDiagEsc(chosen.track)} ${chosen.no}R / race_id=${jraDiagEsc(chosen.id)}</div>`);
+   setJraDiagBox('jraDiagList','run',`<b class="warn">⚠ JRA公式取得不能 / FALLBACK成功</b><div>${sawOfficial403?'公式HTTP 403 — 開催なしではありません':'公式取得失敗'}</div><div>${jraDiagEsc(chosen.date)} / fallback ${races.length}レース</div><div>採用 ${jraDiagEsc(chosen.track)} ${chosen.no}R / race_id=${jraDiagEsc(chosen.id)}</div><div>${chosen._kaisaiId?'kaisai_id='+jraDiagEsc(chosen._kaisaiId)+' / ':''}${chosen._kaisaiDate?'kaisai_date='+jraDiagEsc(chosen._kaisaiDate):''}</div>`);
    jraDiagLog(`JRA公式${sawOfficial403?'403':''} → fallback ${chosen.date}: ${races.length}R / race_id=${chosen.id}`,'ok');
   }
 
@@ -1633,7 +1680,7 @@ function exportJson(){if(!lastResult)return alert('先に実行してくださ�
 function exportCsv(){if(!lastResult)return alert('先に実行してください');const cols=['date','track','raceNo','character','ticket','selection','decisionTime','oddsAt','oddsMode','odds','probability','marketProbability','fairOdds','ev','kelly','stake','payoutMultiplier','refund','profit','source','model','modelT','modelBlend','structuralProbability','structuralMarketProbability','marketComplete','marketObserved','marketExpected','marketCountCoverage','marketMassCoverage','guardReason','autoScore','marketDivergence'];const lines=[cols.join(',')].concat(lastResult.bets.map(r=>cols.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(',')));download('keiba_strict_bets.csv',lines.join('\n'),'text/csv;charset=utf-8')}
 function exportXlsx(){if(!lastResult)return alert('先に実行してください');if(typeof XLSX==='undefined')return alert('SheetJS未読込');const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.bets),'Bets');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.audit),'Audit');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.characters.map(c=>({name:c.name,bankroll:c.bankroll,profit:c.bankroll-c.initial,roi:c.invested?c.returned/c.invested:null,bets:c.bets,wins:c.wins,maxDD:c.maxDD}))),'Ranking');XLSX.writeFile(wb,'keiba_strict_research.xlsx')}
 async function shareResult(){if(!lastResult)return alert('先に実行してください');const file=new File([JSON.stringify(lastResult,null,2)],'keiba_strict_result.json',{type:'application/json'});if(navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:'KEIBA STRICT result'})}else exportJson()}
-function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + JRA ANONYMOUS + CNAME FIXで実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
+function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + EXACT-DATE RACE-ID LOCKで実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 </script>
 </body>
