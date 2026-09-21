@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.9.1-PHASEPLAN-HOTFIX</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>V17 STRICT OOS研究モード:</b> TRAIN→VALIDATION→TESTを時系列60/20/20で分離し、TESTは一次モデル調整に使用しません。decisionTimeより後の情報は予測・EV・Kellyへ入力せず、締切前snapshotが無いレースはSKIPします。全購入で設定EV下限を強制し、AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を必須にします。FINAL ODDSはREFERENCE専用でOOS成績には使用できません。</div>
 <div class="kpis">
@@ -1525,10 +1525,13 @@ function stakeFor(c,cand,date,raceUsed,modelOk){
 }
 function buildPhasePlan(dates){
  const ds=[...dates];const n=ds.length;
- if(!n)return {train:[],validation:[],test:[],phaseFor:()=> 'NONE',hasTest:false};
- if(n<3)return {train:ds,validation:[],test:[],phaseFor:()=> 'TRAIN',hasTest:false};
+ // V17.9.1: range() は全期間長で必ず提供する。1日/2日テストでも
+ // renderResearchProtocol / buildResearchResult が phasePlan.range(...) を安全に呼べるようにする。
+ const range=a=>Array.isArray(a)&&a.length?`${a[0]} → ${a[a.length-1]}`:'なし';
+ if(!n)return {train:[],validation:[],test:[],phaseFor:()=> 'NONE',hasTest:false,range};
+ if(n<3)return {train:ds,validation:[],test:[],phaseFor:()=> 'TRAIN',hasTest:false,range};
  let nt=Math.max(1,Math.floor(n*.60)),nv=Math.max(1,Math.floor(n*.20));if(nt+nv>=n)nv=Math.max(1,n-nt-1);const train=ds.slice(0,nt),validation=ds.slice(nt,nt+nv),test=ds.slice(nt+nv);
- const setT=new Set(train),setV=new Set(validation),setS=new Set(test);return {train,validation,test,hasTest:test.length>0,phaseFor:d=>setT.has(d)?'TRAIN':setV.has(d)?'VALIDATION':setS.has(d)?'TEST':'NONE',range:a=>a.length?`${a[0]} → ${a[a.length-1]}`:'なし'};
+ const setT=new Set(train),setV=new Set(validation),setS=new Set(test);return {train,validation,test,hasTest:test.length>0,phaseFor:d=>setT.has(d)?'TRAIN':setV.has(d)?'VALIDATION':setS.has(d)?'TEST':'NONE',range};
 }
 function sampleFromRace(settledAt,horses,result){
  const t=Number(settledAt),winner=Number(result?.winner??result?.top3?.[0]??0);if(!Number.isFinite(t)||!(winner>0)||!Array.isArray(horses)||horses.length<2)return null;
@@ -1783,7 +1786,7 @@ async function runV14OfficialDiagnostic(){
   if(isOfficialBlockedError(e))setJraDiagBox('jraDiagList','fail',`<b class="badText">❌ JRA公式 HTTP 403</b><div>開催なしではなく取得不能です</div><div>${jraDiagEsc(e?.message||e)}</div>`);
  }finally{JRA_BRIDGE_DIAG.running=false;$('jraBridgeDiagBtn').disabled=false}
 }
-async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
+async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.9.1-PHASEPLAN-HOTFIX`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sAutoMaxEv:'autoMaxEv',sAutoMinProb:'autoMinProb',sAutoMaxOdds:'autoMaxOdds',sAutoMaxEdge:'autoMaxEdge',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('sStyleMode').value=settings.styleMode?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',styleMode:$('sStyleMode').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),autoMaxEv:Number($('sAutoMaxEv').value),autoMinProb:Number($('sAutoMinProb').value),autoMaxOdds:Number($('sAutoMaxOdds').value),autoMaxEdge:Number($('sAutoMaxEdge').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value)};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
@@ -1917,8 +1920,9 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  // 画面上でも「欠損=負けではない」を明示する。
  const n=document.querySelector('#strictNotice');
  if(n&&!n.dataset.v179){n.dataset.v179='1';n.innerHTML += '<br><b>V17.9精算保護:</b> 払戻データが欠損した的中買い目はハズレ扱いせず、財務・ROI集計から除外して整合性違反として残します。JRA公式払戻が部分取得の場合もnetkeibaで不足分を補完します。'}
- const brand=document.querySelector('.brand .badge');if(brand)brand.textContent='BUILD 20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY';
+ const brand=document.querySelector('.brand .badge');if(brand)brand.textContent='BUILD 20260921-OOS-AUDIT-V17.9.1-PHASEPLAN-HOTFIX';
  log('V17.9 SETTLEMENT INTEGRITY patch active — partial payout merge / missing payout excluded from ROI','good');
+ log('V17.9.1 PHASEPLAN hotfix active — 1日/2日期間でも phasePlan.range を常時提供','good');
 })();
 
 </script>
