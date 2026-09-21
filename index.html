@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.8-JRA-PAYOUT-FALLBACK</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>V17 STRICT OOS研究モード:</b> TRAIN→VALIDATION→TESTを時系列60/20/20で分離し、TESTは一次モデル調整に使用しません。decisionTimeより後の情報は予測・EV・Kellyへ入力せず、締切前snapshotが無いレースはSKIPします。全購入で設定EV下限を強制し、AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を必須にします。FINAL ODDSはREFERENCE専用でOOS成績には使用できません。</div>
 <div class="kpis">
@@ -562,18 +562,8 @@ function jraMetaV14(race){
  const rid=bridgeLockedRaceId(race),date=v14Ymd(race.date),year=rid.slice(0,4),venue=rid.slice(4,6),kai=rid.slice(6,8),day=rid.slice(8,10),raceNo=rid.slice(10,12);
  return {rid,date,year,venue,kai,day,raceNo};
 }
-function jraNormalizeCnameSourceV177(html){
- return String(html||'')
-  .replace(/&amp;/gi,'&')
-  .replace(/%252f/gi,'/')
-  .replace(/%2f/gi,'/')
-  .replace(/\\u002f/gi,'/')
-  .replace(/\\x2f/gi,'/')
-  .replace(/\\\//g,'/')
-  .replace(/&#x2f;|&#47;|&sol;/gi,'/');
-}
 function jraFindCname(html,patterns){
- const raw=jraNormalizeCnameSourceV177(html);
+ const raw=String(html||'');
  for(const p of patterns){
   const re=p instanceof RegExp?p:new RegExp(String(p).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\/[0-9A-F]{2}','i');
   const m=raw.match(re); if(m)return m[0];
@@ -581,7 +571,7 @@ function jraFindCname(html,patterns){
  return '';
 }
 function jraAllResultCnames(html){
- const raw=jraNormalizeCnameSourceV177(html),out=[];let m;
+ const raw=String(html||'').replace(/&amp;/g,'&'),out=[];let m;
  const re=/\b(pw01s(?:rl|de)[0-9A-Za-z]+\/[0-9A-F]{2})\b/gi;
  while((m=re.exec(raw)))if(!out.includes(m[1]))out.push(m[1]);
  return out;
@@ -606,43 +596,11 @@ async function jraOfficialDbPage(race,type){
       new RegExp(`pw01sde10${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i')
      ]
    : [new RegExp(`pw01dde(?:01|10)${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}/[0-9A-F]{2}`,'i')];
- if(!isResult){
-  const raceC=jraFindCname(p2.text,racePatterns);
-  if(!raceC)throw Error(`JRA公式${type}: レースCNAMEなし race_id=${x.rid}`);
-  const final=await officialGet(endpoint+'?CNAME='+encodeURIComponent(raceC),7000);
-  return {html:final.text,cname:raceC,url:final.finalUrl||endpoint};
- }
-
- // V17.7: CNAMEが %2F / %252F / \\u002F で埋め込まれたケースを展開し、
- // 同一race_idの sde01（払戻を含む現行ページ）を sde10 より優先する。
- const needle=`${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}`.toLowerCase();
- const queue=[];
- const add=c=>{c=String(c||'');if(c&&c.toLowerCase().startsWith('pw01sde')&&c.toLowerCase().includes(needle)&&!queue.includes(c))queue.push(c)};
- for(const p of racePatterns)add(jraFindCname(p2.text,[p]));
- for(const c of jraAllResultCnames(p2.text))add(c);
- queue.sort((a,b)=>{const aa=/^pw01sde01/i.test(a)?0:/^pw01sde10/i.test(a)?1:2,bb=/^pw01sde01/i.test(b)?0:/^pw01sde10/i.test(b)?1:2;return aa-bb});
- if(!queue.length){const c=jraFindResultCnameByParts(p2.text,'race',needle);add(c)}
- if(!queue.length)throw Error(`JRA公式${type}: レースCNAMEなし race_id=${x.rid}`);
-
- let best=null,errors=[];
- for(let i=0;i<queue.length&&i<8;i++){
-  const raceC=queue[i];
-  try{
-   const final=await officialGet(endpoint+'?CNAME='+encodeURIComponent(raceC),7000);
-   const doc=v14Doc(final.text),sem=jraSemanticDocTextV176(doc);
-   const resultOk=/着順|レース結果/.test(sem);
-   const labelCount=['単勝','複勝','枠連','馬連','ワイド','馬単','3連複','三連複','3連単','三連単'].filter(z=>sem.includes(z)).length;
-   const hasPayout=/払戻金|払い戻し|払戻/.test(sem)&&labelCount>=5;
-   const score=(resultOk?100:0)+(hasPayout?100:0)+labelCount*5+(/^pw01sde01/i.test(raceC)?3:0);
-   const cand={html:final.text,cname:raceC,url:final.finalUrl||endpoint,score,hasPayout,labelCount};
-   if(!best||cand.score>best.score)best=cand;
-   // 取得したページ内に別CNAMEがあれば追加。URLエンコードされたCNAMEもV17.7で拾う。
-   for(const c of jraAllResultCnames(final.text))add(c);
-   if(resultOk&&hasPayout)break;
-  }catch(e){errors.push(`${raceC}: ${e?.message||e}`)}
- }
- if(!best)throw Error(`JRA公式result取得失敗: ${errors.slice(0,3).join(' / ')}`);
- return best;
+ let raceC=jraFindCname(p2.text,racePatterns);
+ if(!raceC&&isResult)raceC=jraFindResultCnameByParts(p2.text,'race',`${x.venue}${x.year}${x.kai}${x.day}${x.raceNo}${x.date}`);
+ if(!raceC)throw Error(`JRA公式${type}: レースCNAMEなし race_id=${x.rid}`);
+ const final=await officialGet(endpoint+'?CNAME='+encodeURIComponent(raceC),7000);
+ return {html:final.text,cname:raceC,url:final.finalUrl||endpoint};
 }
 
 function jraParseShutubaV14(html,race){
@@ -927,42 +885,6 @@ function jraAddPayoutRowV176(payouts,info,cells,finish,starterCount,source,allow
  let n=0;for(let i=0;i<Math.min(keys.length,amounts.length);i++)if(jraPutPayoutV176(payouts,info,keys[i],amounts[i],source))n++;
  return n;
 }
-function jraPayoutSectionFallbackV177(body,payouts,finish,starterCount,source,allowInfer=true){
- const defs=[
-  ['win','単勝',['複勝','枠連','ワイド','馬連','馬単','3連複','三連複','3連単','三連単']],
-  ['place','複勝',['枠連','ワイド','馬連','馬単','3連複','三連複','3連単','三連単']],
-  ['frame','枠連',['ワイド','馬連','馬単','3連複','三連複','3連単','三連単']],
-  ['wide','ワイド',['馬連','馬単','3連複','三連複','3連単','三連単']],
-  ['quinella','馬連',['馬単','3連複','三連複','3連単','三連単']],
-  ['exacta','馬単',['3連複','三連複','3連単','三連単']],
-  ['trio','3連複',['3連単','三連単']],
-  ['trifecta','3連単',[]]
- ];
- const text=bridgeHalf(String(body||'')).replace(/三連複/g,'3連複').replace(/三連単/g,'3連単');
- let added=0;
- for(const [bucket,label,nexts] of defs){
-  const info=resultLabelInfo(label);if(!info)continue;
-  const st=text.indexOf(label);if(st<0)continue;
-  let en=text.length;for(const n0 of nexts){const n=n0.replace('三連複','3連複').replace('三連単','3連単'),j=text.indexOf(n,st+label.length);if(j>=0&&j<en)en=j}
-  const block=text.slice(st,en);
-  const am=[...block.matchAll(/([0-9][0-9,]*)\s*円/g)].map(m=>({amount:Number(m[1].replace(/,/g,'')),index:m.index||0,end:(m.index||0)+m[0].length})).filter(x=>x.amount>=100);
-  if(!am.length)continue;
-  const keys=[];let cursor=label.length;
-  for(const rec of am){
-   let seg=block.slice(cursor,rec.index).replace(/\d+\s*番?人気/g,' ').replace(/\d+\s*票/g,' ').replace(/[→>]/g,'-');cursor=rec.end;
-   if(info.arity===1){const ns=resultSingleNums(seg,info.bucket==='frame'?8:18);if(ns.length)keys.push(String(ns[ns.length-1]));}
-   else if(info.arity===2){const ps=resultPairList(seg,info.bucket==='frame'?8:18);if(ps.length){const a=ps[ps.length-1];keys.push(info.ordered?a.join('-'):a.slice().sort((x,y)=>x-y).join('-'));}}
-   else{const ts=resultTripleList(seg);if(ts.length){const a=ts[ts.length-1];keys.push(info.ordered?a.join('-'):a.slice().sort((x,y)=>x-y).join('-'));}}
-  }
-  let finalKeys=keys;
-  if((finalKeys.length!==am.length||finalKeys.some((x,i)=>!x||finalKeys.indexOf(x)!==i))&&allowInfer){
-   const exp=jraExpectedKeysV176(info,finish,starterCount);if(exp.length===am.length)finalKeys=exp;
-  }
-  for(let i=0;i<Math.min(finalKeys.length,am.length);i++)if(jraPutPayoutV176(payouts,info,finalKeys[i],am[i].amount,source+' / section-v17.7'))added++;
- }
- return added;
-}
-
 function parseJraOfficialPayoutsV176(doc,finish,source){
  const payouts={win:{},place:{},frame:{},quinella:{},wide:{},exacta:{},trio:{},trifecta:{}},body=jraSemanticDocTextV176(doc),deadHeat=/同着/.test(body),starterCount=(finish||[]).length;
  const tables=[...doc.querySelectorAll('table')];
@@ -984,8 +906,6 @@ function parseJraOfficialPayoutsV176(doc,finish,source){
   nodes.sort((a,b)=>jraSemanticTextV176(a).length-jraSemanticTextV176(b).length);
   const info=resultLabelInfo(label);for(const el of nodes.slice(0,12)){const cells=el.matches('tr')?[...el.querySelectorAll(':scope > th,:scope > td')]:[...el.querySelectorAll('th,td,dt,dd,li,span')].filter(x=>x.children.length<8);if(cells.length&&jraAddPayoutRowV176(payouts,info,cells,finish,starterCount,source,!deadHeat)>0)break}
  }
- // V17.7: JRA本文を券種ごとに区切り「組番→金額」を直接復元。DOM構造に依存しない。
- try{jraPayoutSectionFallbackV177(body,payouts,finish,starterCount,source,!deadHeat)}catch(_){ }
  // 最後の保険: 公式本文に「円」が残る場合は既存の堅いテキストパーサも併用。
  try{
   const pseudo={body:{innerText:body,textContent:body}};bridgePayoutTextFallback(pseudo,payouts);
@@ -1002,7 +922,6 @@ function parseOfficialResultV14(html,url){
   // JRA公式結果表の標準列は 着順 | 枠 | 馬番 | 馬名 ...。同じ数字が並んでも位置で判定する。
   if(/^\d{1,2}$/.test(texts[0]||'')){const n=Number(texts[0]);if(n>=1&&n<=50)rank=n}
   if(/^[1-8]$/.test(texts[1]||''))frame=Number(texts[1]);
-  if(!frame){const fs=jraSemanticTextV176(cells[1]||tr),fm=fs.match(/枠\s*([1-8])/);if(fm)frame=Number(fm[1]);}
   if(/^(?:[1-9]|1[0-8])$/.test(texts[2]||''))no=Number(texts[2]);
   if(!rank){for(let i=0;i<Math.min(3,texts.length);i++){if(/^\d{1,2}$/.test(texts[i])){const n=Number(texts[i]);if(n>=1&&n<=50){rank=n;break}}}}
   if(!no){const ns=[];for(let i=1;i<Math.min(5,texts.length);i++){if(/^(?:[1-9]|1[0-8])$/.test(texts[i]))ns.push(Number(texts[i]))}if(ns.length)no=ns.length>=2?ns[1]:ns[0]}
@@ -1206,16 +1125,6 @@ class OfficialFirstDataAdapter extends BridgeDataAdapter{
    let out;
    if(locked.org==='JRA'){const p=await jraOfficialDbPage(locked,'result');out=parseOfficialResultV14(p.html,'JRA公式 JRADB result')}
    else out=await narOfficialResultV14(locked);
-   // V17.8: 公式結果ページが着順のみで払戻テーブルを欠く版だった場合、netkeiba払戻で補完する。
-   // 着順が取れているのに払戻0件は「取得漏れ」であって「払戻なし」ではない（完走レースは必ず単複払戻がある）。
-   // これを補完しないと的中買い目が払戻0で精算され、ROI・的中率が過小評価される。
-   if(jraPayoutCountV176(out.payouts)===0){
-    log(`race_id=${rid} 公式結果に払戻テーブルなし（着順のみ）→ netkeiba払戻を補完`,'bad');
-    try{const fb=await super.result(locked);
-     if(jraPayoutCountV176(fb.payouts)>0)out={...out,payouts:fb.payouts,payoutUnit:fb.payoutUnit||out.payoutUnit,source:(out.source||'公式')+' + netkeiba払戻'};
-     else if(!(Array.isArray(out.top3)&&out.top3.length>=3))out=fb;
-    }catch(fe){log(`race_id=${rid} 払戻補完失敗: ${fe?.message||fe}`,'bad')}
-   }
    this.officialResultCache.set(rid,out);return out
   }catch(e){
    log(`race_id=${rid} 公式結果失敗 → netkeiba fallback: ${e?.message||e}`,'bad');
@@ -1758,7 +1667,7 @@ async function runV14OfficialDiagnostic(){
   const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');
   if(!bi.hasFetch||!bridgeVersionOk())throw Error('Userscript Bridge v1.7.10+ が検出できません');
   setJraDiagBox('jraDiagBridge','pass',`<b class="goodText">✅ Bridge検出</b><div>version ${jraDiagEsc(bi.version)}</div><div>公式GET/POST対応</div><div>ready=${bi.ready?'YES':'NO'}</div>`);
-  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + EXACT-DATE RACE-ID LOCK + PAYOUT FALLBACK V17.8`,'ok');
+  jraDiagLog(`Bridge ${bi.version} / OFFICIAL FIRST + EXACT-DATE RACE-ID LOCK + JRA PAYOUT PARSER + JRA PAYOUT PARSER`,'ok');
 
   const fallbackAdapter=new BridgeDataAdapter(settings);
   const to=$('toDate').value||shiftDate(today(),-1),from=$('fromDate').value||shiftDate(to,-6);
@@ -1825,19 +1734,30 @@ async function runV14OfficialDiagnostic(){
 
   try{
    const rp=await jraOfficialDbPage(chosen,'result'),res=parseOfficialResultV14(rp.html,'JRA公式 JRADB result');
-   let pc=jraPayoutCountV176(res.payouts);const top3Ok=Array.isArray(res.top3)&&res.top3.length>=3;
+   const payoutKeys=['win','place','frame','quinella','wide','exacta','trio','trifecta'];
+   const countEntries=p=>payoutKeys.reduce((n,k)=>n+Object.keys(p?.[k]||{}).length,0);
+   const emptyBuckets=p=>payoutKeys.filter(k=>Object.keys(p?.[k]||{}).length===0);
+   const mergePayouts=(primary,fallback)=>{const out={};for(const k of payoutKeys)out[k]={...(fallback?.[k]||{}),...(primary?.[k]||{})};return out};
+   let pc=countEntries(res.payouts),empty=emptyBuckets(res.payouts);
+   const top3Ok=Array.isArray(res.top3)&&res.top3.length>=3;
    JRA_BRIDGE_DIAG.lastUrl=rp.url||'https://www.jra.go.jp/JRADB/accessS.html';setJraDiagMeta();
-   // V17.8: 公式ページが着順のみ（払戻テーブルを含まない版）だった場合、netkeiba払戻で補完。
-   // 着順は公式を正、払戻だけfallbackから借りる。両方0のときだけ本当の取得失敗とみなす。
-   if(top3Ok&&pc===0){
-    jraDiagLog('JRA公式結果に払戻テーブルなし（着順のみ）→ netkeiba払戻を補完','bad');
-    try{const fb=await fallbackAdapter.result(chosen),fpc=jraPayoutCountV176(fb.payouts);
-     if(fpc>0){res.payouts=fb.payouts;res.payoutUnit=fb.payoutUnit||res.payoutUnit;pc=fpc;resultRoute='OFFICIAL+FALLBACK'}
+   // V17.9: 0件だけでなく一部券種の払戻欠損も補完。公式着順を正とし、払戻だけfallbackで埋める。
+   if(top3Ok&&(pc===0||empty.length)){
+    const before=pc;
+    jraDiagLog(`JRA公式払戻が不完全 ${before}件 / 空=${empty.join(',')||'-'} → netkeiba払戻を補完`,'bad');
+    try{
+     const fb=await fallbackAdapter.result(chosen),fpc=countEntries(fb.payouts);
+     if(fpc>0){
+      res.payouts=mergePayouts(res.payouts,fb.payouts);
+      res.payoutUnit=fb.payoutUnit||res.payoutUnit;
+      pc=countEntries(res.payouts);empty=emptyBuckets(res.payouts);
+      resultRoute='OFFICIAL+FALLBACK';
+     }
     }catch(fe){jraDiagLog(`払戻補完失敗: ${fe?.message||fe}`,'bad')}
    }
-   resultOk=top3Ok&&pc>0;const merged=resultRoute==='OFFICIAL+FALLBACK';
-   setJraDiagBox('jraDiagResult',resultOk?(merged?'run':'pass'):'fail',`<b class="${resultOk?(merged?'warn':'goodText'):'badText'}">${resultOk?(merged?'⚠ JRA公式着順 + netkeiba払戻':'✅ JRA公式結果+払戻'):'❌ JRA公式結果（払戻未取得）'}</b><div>Top3 ${jraDiagEsc((res.top3||[]).join('-'))}</div><div>払戻 ${pc}件</div><div>${jraDiagEsc(jraPayoutBreakdownV176(res.payouts))}</div><div>CNAME=${jraDiagEsc(rp.cname||'-')} / payoutLabels=${jraDiagEsc(rp.labelCount??'-')}${merged?' / 払戻=netkeiba補完':''}</div>`);
-   jraDiagLog(`JRA${merged?'公式着順+netkeiba払戻':'公式結果'} Top3=${(res.top3||[]).join('-')} / 払戻=${pc} / CNAME=${rp.cname||'-'}`,resultOk?'ok':'bad');
+   resultOk=top3Ok&&pc>0&&empty.length===0;const merged=resultRoute==='OFFICIAL+FALLBACK';
+   setJraDiagBox('jraDiagResult',resultOk?(merged?'run':'pass'):'fail',`<b class="${resultOk?(merged?'warn':'goodText'):'badText'}">${resultOk?(merged?'⚠ JRA公式着順 + netkeiba払戻補完':'✅ JRA公式結果+払戻'):'❌ JRA結果/払戻が不完全'}</b><div>Top3 ${jraDiagEsc((res.top3||[]).join('-'))}</div><div>払戻 ${pc}件</div><div>${jraDiagEsc(jraPayoutBreakdownV176(res.payouts))}</div><div>空券種=${jraDiagEsc(empty.join(',')||'なし')} / CNAME=${jraDiagEsc(rp.cname||'-')}${merged?' / 払戻=netkeiba補完':''}</div>`);
+   jraDiagLog(`JRA${merged?'公式着順+netkeiba払戻補完':'公式結果'} Top3=${(res.top3||[]).join('-')} / 払戻=${pc} / 空券種=${empty.join(',')||'なし'}`,resultOk?'ok':'bad');
   }catch(e){
    jraDiagLog(`JRA公式結果失敗: ${e?.message||e} → fallback確認`,'bad');
    try{
@@ -1863,7 +1783,7 @@ async function runV14OfficialDiagnostic(){
   if(isOfficialBlockedError(e))setJraDiagBox('jraDiagList','fail',`<b class="badText">❌ JRA公式 HTTP 403</b><div>開催なしではなく取得不能です</div><div>${jraDiagEsc(e?.message||e)}</div>`);
  }finally{JRA_BRIDGE_DIAG.running=false;$('jraBridgeDiagBtn').disabled=false}
 }
-async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.8-JRA-PAYOUT-FALLBACK`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
+async function copyJraBridgeDiagnostic(){const bi=bridgeInfo();const text=[`JRA公式データ経路診断`,`build=20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY`,`bridgeVersion=${bi.version}`,`bridgeReady=${bi.ready}`,`bridgeFetch=${bi.hasFetch}`,`date=${JRA_BRIDGE_DIAG.date||''}`,`race_id=${JRA_BRIDGE_DIAG.raceId||''}`,`lastUrl=${JRA_BRIDGE_DIAG.lastUrl||''}`,'',...JRA_BRIDGE_DIAG.rows].join('\n');try{await navigator.clipboard.writeText(text);$('jraBridgeDiagSummary').textContent='診断をコピーしました'}catch(e){download('jra_bridge_diagnostic.txt',text,'text/plain;charset=utf-8')}}
 
 function openSettings(){const m={sMode:'mode',sDecision:'decisionMinutes',sEv:'evMin',sStrong:'strongEv',sAutoMaxEv:'autoMaxEv',sAutoMinProb:'autoMinProb',sAutoMaxOdds:'autoMaxOdds',sAutoMaxEdge:'autoMaxEdge',sKelly:'kellyFraction',sBank:'initialBankroll',sMaxRace:'maxRace',sMaxDay:'maxDay',sMaxTicketPct:'maxTicketPct',sMaxDD:'maxDD',sMinSamples:'minSamples',sRefresh:'refreshSec'};for(const[id,k]of Object.entries(m))$(id).value=settings[k];$('sSim').value=settings.simulation?'1':'0';$('sCross').value=settings.periodCross?'1':'0';$('sFinalOdds').value=settings.allowFinalOdds?'1':'0';$('sStyleMode').value=settings.styleMode?'1':'0';$('settingsDlg').showModal()}
 function saveSettings(){settings={...settings,mode:$('sMode').value,simulation:$('sSim').value==='1',periodCross:$('sCross').value==='1',allowFinalOdds:$('sFinalOdds').value==='1',styleMode:$('sStyleMode').value==='1',decisionMinutes:Number($('sDecision').value),evMin:Number($('sEv').value),strongEv:Number($('sStrong').value),autoMaxEv:Number($('sAutoMaxEv').value),autoMinProb:Number($('sAutoMinProb').value),autoMaxOdds:Number($('sAutoMaxOdds').value),autoMaxEdge:Number($('sAutoMaxEdge').value),kellyFraction:Number($('sKelly').value),initialBankroll:Number($('sBank').value),maxRace:Number($('sMaxRace').value),maxDay:Number($('sMaxDay').value),maxTicketPct:Number($('sMaxTicketPct').value),maxDD:Number($('sMaxDD').value),minSamples:Number($('sMinSamples').value),refreshSec:Number($('sRefresh').value)};saveJSON(SETTINGS_KEY,settings);applySettingsUI();log('設定を保存しました')}
@@ -1873,8 +1793,134 @@ function exportJson(){if(!lastResult)return alert('先に実行してくださ�
 function exportCsv(){if(!lastResult)return alert('先に実行してください');const cols=['date','track','raceNo','character','ticket','selection','decisionTime','oddsAt','oddsMode','odds','probability','marketProbability','fairOdds','ev','kelly','stake','payoutMultiplier','refund','profit','source','model','modelT','modelBlend','structuralProbability','structuralMarketProbability','marketComplete','marketObserved','marketExpected','marketCountCoverage','marketMassCoverage','guardReason','autoScore','marketDivergence'];const lines=[cols.join(',')].concat(lastResult.bets.map(r=>cols.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(',')));download('keiba_strict_bets.csv',lines.join('\n'),'text/csv;charset=utf-8')}
 function exportXlsx(){if(!lastResult)return alert('先に実行してください');if(typeof XLSX==='undefined')return alert('SheetJS未読込');const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.bets),'Bets');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.audit),'Audit');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.characters.map(c=>({name:c.name,bankroll:c.bankroll,profit:c.bankroll-c.initial,roi:c.invested?c.returned/c.invested:null,bets:c.bets,wins:c.wins,maxDD:c.maxDD}))),'Ranking');XLSX.writeFile(wb,'keiba_strict_research.xlsx')}
 async function shareResult(){if(!lastResult)return alert('先に実行してください');const file=new File([JSON.stringify(lastResult,null,2)],'keiba_strict_result.json',{type:'application/json'});if(navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:'KEIBA STRICT result'})}else exportJson()}
-function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + EXACT-DATE RACE-ID LOCK + PAYOUT FALLBACK V17.8で実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
+function boot(){renderStrategies();renderCodeAudit();resetFetchStatus();setTimeout(()=>{const bi=bridgeInfo();$('jraBridgeVersionBadge').textContent='Bridge: '+bi.version;$('jraBridgeVersionBadge').className='badge '+(bi.hasFetch&&bridgeVersionOk()?'success':'failed');if(!bi.hasFetch)log('Bridge未検出 — 本体はSTARTできません','bad');else log('Bridge '+bi.version+' 検出 — OFFICIAL FIRST + EXACT-DATE RACE-ID LOCK + JRA PAYOUT PARSERで実行します','good')},500);const end=shiftDate(today(),-1);$('toDate').value=end;$('fromDate').value=shiftDate(end,-6);$('btnSettings').onclick=openSettings;$('saveSettings').onclick=saveSettings;$('jraBridgeDiagBtn').onclick=runV14OfficialDiagnostic;$('jraBridgeDiagCopy').onclick=copyJraBridgeDiagnostic;$('runBtn').onclick=()=>{runSimulation().catch(e=>{const msg=String(e?.stack||e?.message||e||'RUN_ERROR');console.error(e);try{log('RUN FATAL: '+msg,'bad');setCurrentPhase('異常終了 — '+String(e?.message||e));}catch(_){}$('runBtn').disabled=false;$('stopBtn').disabled=true;activeRaceAbortSignal=null;})};$('stopBtn').onclick=()=>{stopRequested=true;$('stopBtn').disabled=true;log('停止要求を受け付けました','bad')};$('btnSave').onclick=exportJson;$('csvBtn').onclick=exportCsv;$('xlsxBtn').onclick=exportXlsx;$('shareBtn').onclick=shareResult;document.querySelectorAll('.preset').forEach(b=>b.onclick=()=>{const end=$('toDate').value||shiftDate(today(),-1),days=Number(b.dataset.days);$('fromDate').value=shiftDate(end,-days+1)});setInterval(()=>$('clock').textContent=new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}),1000);applySettingsUI();const old=loadJSON(RESULT_KEY,null);if(old){lastResult=old;try{renderAll(old)}catch(e){console.warn(e)}}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+
+
+/* ============================================================
+   V17.9 SETTLEMENT INTEGRITY PATCH
+   1) JRA公式払戻が0件だけでなく「部分取得」でもnetkeiba結果を補完してマージ
+   2) 的中なのに払戻が欠損した買い目は「負け」としてROIへ計上しない
+   3) 研究用閾値集計もPAYOUT_MISSINGを除外
+   4) FINAL ODDSは従来どおりREFERENCE専用。STRICT OOSの購入判断へ流入させない
+   ============================================================ */
+(function(){
+ const V179_BUCKETS=['win','place','frame','quinella','wide','exacta','trio','trifecta'];
+ function payoutEntryCountV179(p){return V179_BUCKETS.reduce((n,k)=>n+Object.keys(p?.[k]||{}).length,0)}
+ function payoutEmptyBucketsV179(p){return V179_BUCKETS.filter(k=>Object.keys(p?.[k]||{}).length===0)}
+ function mergePayoutsV179(primary,fallback){
+  const out={};
+  for(const k of V179_BUCKETS){
+   out[k]={...(primary?.[k]||{})};
+   const ticket=ticketKeys[k];
+   for(const [sel,v] of Object.entries(fallback?.[k]||{})){
+    const c=canon(ticket,sel);
+    const exists=Object.keys(out[k]).some(x=>canon(ticket,x)===c);
+    if(!exists)out[k][sel]=v;
+   }
+  }
+  return out;
+ }
+ function payoutNeedsSupplementV179(result){
+  const p=result?.payouts||{},count=payoutEntryCountV179(p),empty=payoutEmptyBucketsV179(p);
+  // JRA通常レースは8券種すべてに払戻情報が存在する。0件だけでなく部分取得も補完対象にする。
+  return count===0||empty.length>0;
+ }
+ async function bridgeFallbackResultV179(ctx,locked){
+  return await BridgeDataAdapter.prototype.result.call(ctx,locked);
+ }
+ OfficialFirstDataAdapter.prototype.result=async function(race){
+  const locked=bridgeLockedRace(race),rid=locked.id;
+  if(this.officialResultCache.has(rid))return this.officialResultCache.get(rid);
+  try{
+   let out;
+   if(locked.org==='JRA'){
+    const p=await jraOfficialDbPage(locked,'result');
+    out=parseOfficialResultV14(p.html,'JRA公式 JRADB result');
+    if(payoutNeedsSupplementV179(out)){
+     const before=payoutEntryCountV179(out.payouts),empty=payoutEmptyBucketsV179(out.payouts);
+     log(`race_id=${rid} JRA公式払戻が部分取得 (${before}件 / 空=${empty.join(',')||'-'}) → netkeiba払戻を補完`,'bad');
+     try{
+      const fb=await bridgeFallbackResultV179(this,locked),fbc=payoutEntryCountV179(fb?.payouts);
+      if(fbc>0){
+       out={...out,payouts:mergePayoutsV179(out.payouts,fb.payouts),payoutUnit:fb.payoutUnit||out.payoutUnit,source:(out.source||'JRA公式')+' + netkeiba払戻補完'};
+       log(`race_id=${rid} 払戻マージ完了 ${before}→${payoutEntryCountV179(out.payouts)}件`,'good');
+      }
+     }catch(fe){log(`race_id=${rid} 払戻補完失敗: ${fe?.message||fe}`,'bad')}
+    }
+   }else{
+    out=await narOfficialResultV14(locked);
+   }
+   this.officialResultCache.set(rid,out);return out;
+  }catch(e){
+   log(`race_id=${rid} 公式結果失敗 → netkeiba fallback: ${e?.message||e}`,'bad');
+   const out=await bridgeFallbackResultV179(this,locked);
+   this.officialResultCache.set(rid,out);return out;
+  }
+ };
+
+ function rollbackMissingPayoutV179(c,b,stake){
+  // データ欠損を「ハズレ」と誤計上しないため、この買い目の財務影響だけ取り消す。
+  c.bankroll+=stake;
+  c.invested=Math.max(0,Number(c.invested||0)-stake);
+  if(c.byOrg?.[b.org])c.byOrg[b.org].inv=Math.max(0,Number(c.byOrg[b.org].inv||0)-stake);
+  if(c.byTicket?.[b.ticket])c.byTicket[b.ticket].inv=Math.max(0,Number(c.byTicket[b.ticket].inv||0)-stake);
+  if(c.dayInvested)c.dayInvested[b.date]=Math.max(0,Number(c.dayInvested[b.date]||0)-stake);
+  c.bets=Math.max(0,Number(c.bets||0)-1);
+  c.evSum=Math.max(0,Number(c.evSum||0)-Number(b.ev||0));
+  c.kellySum=Math.max(0,Number(c.kellySum||0)-Number(b.kelly||0));
+  b.financialExcluded=true;
+ }
+ settleLocked=function(locked,result,players,horseMap){
+  const pmap=new Map((players||[]).map(p=>[p.name,p]));
+  for(const b of locked||[]){
+   const c=pmap.get(b.character);if(!c)continue;
+   const stake=Number(b.stake)||0;let refund=0,mult=null,status='MISS';
+   b.resultSource=result?.source||'';
+   if(result?.cancelled){refund=stake;mult=1;status='VOID'}
+   else{
+    const hit=isHit(result,b.ticket,b.selection,horseMap||new Map()),pay=lookupPayout(result,b.ticket,b.selection);
+    if(pay>0){mult=pay;refund=Math.round(stake*pay);status='HIT'}
+    else if(hit){
+     status='PAYOUT_MISSING';refund=null;
+     rollbackMissingPayoutV179(c,b,stake);
+     log(`race_id=${b.raceId||'-'} ${b.ticket} ${b.selection} 的中判定だが払戻欠損 → ROI計算から除外`,'bad');
+    }
+   }
+   b.payoutMultiplier=mult;b.refund=refund;b.profit=refund==null?null:refund-stake;b.status=status;
+   if(refund!=null){
+    c.bankroll+=refund;c.returned+=refund;
+    if(c.byOrg?.[b.org])c.byOrg[b.org].ret+=refund;
+    if(c.byTicket?.[b.ticket])c.byTicket[b.ticket].ret+=refund;
+    if(status==='HIT')c.wins++;
+   }
+  }
+ };
+
+ settleResearchOpportunities=function(rows,result,horseMap){
+  for(const b of rows||[]){
+   if(result?.cancelled){b.refund=100;b.profit=0;b.status='VOID';continue}
+   const hit=isHit(result,b.ticket,b.selection,horseMap),pay=lookupPayout(result,b.ticket,b.selection);
+   if(pay>0){b.refund=Math.round(100*pay);b.profit=b.refund-100;b.status='HIT'}
+   else if(hit){b.refund=null;b.profit=null;b.status='PAYOUT_MISSING';b.financialExcluded=true}
+   else{b.refund=0;b.profit=-100;b.status='MISS'}
+  }
+ };
+
+ metricsFromRows=function(rows,stakeField='stake'){
+  const excluded=new Set(['PAYOUT_MISSING','RESULT_ERROR','LOCKED','PENDING']);
+  const a=(rows||[]).filter(x=>Number(x[stakeField]??100)>0&&x.refund!=null&&!x.financialExcluded&&!excluded.has(String(x.status||'')));
+  const inv=a.reduce((s,x)=>s+Number(x[stakeField]??100),0),ret=a.reduce((s,x)=>s+Number(x.refund||0),0),wins=a.filter(x=>x.status==='HIT').length,avgEv=a.length?a.reduce((s,x)=>s+Number(x.ev||0),0)/a.length:null,eq=equityStats(a);
+  return {bets:a.length,invested:inv,returned:ret,roi:inv?ret/inv:null,hitRate:a.length?wins/a.length:null,avgEv,maxDD:eq.maxDD,maxLose:eq.maxLose,ev100:a.length?a.filter(x=>Number(x.ev)>=1).length/a.length:null,ev120:a.length?a.filter(x=>Number(x.ev)>=1.2).length/a.length:null};
+ };
+
+ // 画面上でも「欠損=負けではない」を明示する。
+ const n=document.querySelector('#strictNotice');
+ if(n&&!n.dataset.v179){n.dataset.v179='1';n.innerHTML += '<br><b>V17.9精算保護:</b> 払戻データが欠損した的中買い目はハズレ扱いせず、財務・ROI集計から除外して整合性違反として残します。JRA公式払戻が部分取得の場合もnetkeibaで不足分を補完します。'}
+ const brand=document.querySelector('.brand .badge');if(brand)brand.textContent='BUILD 20260921-OOS-AUDIT-V17.9-SETTLEMENT-INTEGRITY';
+ log('V17.9 SETTLEMENT INTEGRITY patch active — partial payout merge / missing payout excluded from ROI','good');
+})();
+
 </script>
 </body>
 </html>
