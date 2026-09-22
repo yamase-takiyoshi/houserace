@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260922-V18.3-SAMPLE-PHASE</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260922-V18.4-SHADOW-GUARD-FUNNEL</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
 <div id="strictNotice" class="notice strict"><b>V18.1 二系統研究モード:</b> STRICT OOSは締切前snapshotだけで正式TEST ROIを計算します。FINAL ODDS ONはREFERENCE専用ですが、レース結果確定後にのみ学習サンプルへ追加し、TRAIN→VALIDATION→TESTを時系列で分離します。同一レースの結果をそのレースの予測へ逆流させません。REFERENCE ROIとSTRICT OOS ROIは別枠で保存・表示します。AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を維持します。<br><b>V18.1:</b> VALIDATIONの採否理由をLogLoss/Brierで可視化し、VALIDATION_REJECT時はTRAINで固定した却下モデルをTESTで「REJECTED SHADOW」として購入せず追跡します。SHADOW結果は同一RUNの採用判定へ逆流させません。<br><b>V18.2:</b> 期間分割の丸めを修正。9日間を5/1/3ではなく5/2/2にし、VALIDATIONが1日だけになる偏りを防ぎます。</div>
 <div class="kpis">
@@ -2166,6 +2166,181 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  const n=document.querySelector('#strictNotice');if(n&&!n.dataset.v183){n.dataset.v183='1';n.innerHTML += '<br><b>V18.3 SAMPLE PHASE:</b> 日数比率ではなく、有効サンプルを時刻順に TRAIN 200件→VALIDATION 40件→残りTESTへ自動配分します。境界日はレース単位で分割され、同一レースの結果は次レース以降にだけ反映します。';}
  if(typeof log==='function')log('V18.3 SAMPLE PHASE active — sequential TRAIN target -> VALIDATION target -> remaining TEST','good');
 })();
+</script>
+<script>
+/* ============================================================
+   V18.4 SHADOW GUARD FUNNEL + EV THRESHOLD SWEEP
+   - diagnostic only: never changes actual AUTO, bankroll, ranking or model selection
+   - keeps all AUTO guards fixed except EV floor in threshold sweep
+   - records first-fail funnel counts for rejected TRAIN-fixed model on TEST
+   ============================================================ */
+(()=>{
+ const V184_BUILD='BUILD 20260922-V18.4-SHADOW-GUARD-FUNNEL';
+ const V184_THRESHOLDS=[1.05,1.10,1.15,1.20,1.25,1.30];
+ const V184_STAGE_DEFS=[
+  ['total','総候補'],
+  ['market','完全市場'],
+  ['model','補正モデル'],
+  ['prob','確率有効'],
+  ['odds','オッズ有効'],
+  ['evMin','EV下限'],
+  ['conservative','保守EV≥1.00'],
+  ['evMax','EV上限'],
+  ['minProb','確率≥下限'],
+  ['maxOdds','オッズ≤上限'],
+  ['divergence','市場乖離≤上限'],
+  ['kelly','Kelly>0'],
+  ['approved','最終通過']
+ ];
+ const V184_REASON_LABEL={
+  INCOMPLETE_MARKET_POOL:'不完全市場',MARKET_ONLY_NO_EDGE:'MARKETのみ',INVALID_TICKET_PROB:'確率不正',INVALID_ODDS:'オッズ不正',EV_TOO_LOW:'EV不足',CONSERVATIVE_EV_LT_1:'保守EV不足',EV_SUSPICIOUSLY_HIGH:'EV上限超過',TICKET_PROB_TOO_LOW:'確率下限未満',ODDS_TOO_HIGH:'オッズ上限超過',MODEL_MARKET_DIVERGENCE_TOO_HIGH:'市場乖離超過',KELLY_NONPOSITIVE:'Kelly≤0',APPROVED:'通過'
+ };
+ let V184_STATE=null;
+ function freshV184State(){return {active:false,total:0,stagePass:Object.fromEntries(V184_STAGE_DEFS.map(([k])=>[k,0])),reasons:{},byTicket:{}};}
+ V184_STATE=freshV184State();
+ function v184TicketState(ticket){return V184_STATE.byTicket[ticket]||(V184_STATE.byTicket[ticket]={ticket,total:0,approved:0,reasons:{}});}
+ function v184Prep(x,modelN){
+  x.modelN=Number(modelN||x.modelN||settings.minSamples);
+  x.uncertaintyPenalty=uncertaintyPenaltyFor(x);
+  x.conservativeEV=Number(x.ev)-Number(x.uncertaintyPenalty);
+  return x;
+ }
+ function v184GuardAtThreshold(x,minEv){
+  const ev=Number(x?.ev),p=Number(x?.prob),odds=Number(x?.odds),ratio=autoMarketRatio(x),penalty=Number.isFinite(Number(x?.uncertaintyPenalty))?Number(x.uncertaintyPenalty):uncertaintyPenaltyFor(x),conservativeEV=ev-penalty;
+  const base={ratio,score:autoCandidateScore(x),uncertaintyPenalty:penalty,conservativeEV};
+  if(x?.marketComplete===false)return {ok:false,reason:'INCOMPLETE_MARKET_POOL',...base};
+  if(String(x?.modelMode||'MARKET')==='MARKET')return {ok:false,reason:'MARKET_ONLY_NO_EDGE',...base};
+  if(!(p>0&&p<=1))return {ok:false,reason:'INVALID_TICKET_PROB',...base,score:-Infinity};
+  if(!(odds>1))return {ok:false,reason:'INVALID_ODDS',...base,score:-Infinity};
+  if(!(ev+EV_AUDIT_EPS>=Number(minEv)))return {ok:false,reason:'EV_TOO_LOW',...base};
+  if(!(conservativeEV+EV_AUDIT_EPS>=1.00))return {ok:false,reason:'CONSERVATIVE_EV_LT_1',...base};
+  if(ev>Number(settings.autoMaxEv||2))return {ok:false,reason:'EV_SUSPICIOUSLY_HIGH',...base};
+  if(p<Number(settings.autoMinProb||.03))return {ok:false,reason:'TICKET_PROB_TOO_LOW',...base};
+  if(odds>Number(settings.autoMaxOdds||30))return {ok:false,reason:'ODDS_TOO_HIGH',...base};
+  if(ratio>Number(settings.autoMaxEdge||3))return {ok:false,reason:'MODEL_MARKET_DIVERGENCE_TOO_HIGH',...base};
+  if(fullKelly(p,odds)<=0)return {ok:false,reason:'KELLY_NONPOSITIVE',...base};
+  return {ok:true,reason:'APPROVED',...base};
+ }
+ function v184AccumulateCandidate(x){
+  const s=V184_STATE.stagePass,t=v184TicketState(x.ticket);V184_STATE.total++;s.total++;t.total++;
+  const fail=reason=>{V184_STATE.reasons[reason]=(V184_STATE.reasons[reason]||0)+1;t.reasons[reason]=(t.reasons[reason]||0)+1;};
+  if(x?.marketComplete===false){fail('INCOMPLETE_MARKET_POOL');return}s.market++;
+  if(String(x?.modelMode||'MARKET')==='MARKET'){fail('MARKET_ONLY_NO_EDGE');return}s.model++;
+  const p=Number(x?.prob),odds=Number(x?.odds),ev=Number(x?.ev),ratio=autoMarketRatio(x),cev=Number(x?.conservativeEV);
+  if(!(p>0&&p<=1)){fail('INVALID_TICKET_PROB');return}s.prob++;
+  if(!(odds>1)){fail('INVALID_ODDS');return}s.odds++;
+  if(!(ev+EV_AUDIT_EPS>=AUTO_MIN_EV)){fail('EV_TOO_LOW');return}s.evMin++;
+  if(!(cev+EV_AUDIT_EPS>=1.00)){fail('CONSERVATIVE_EV_LT_1');return}s.conservative++;
+  if(ev>Number(settings.autoMaxEv||2)){fail('EV_SUSPICIOUSLY_HIGH');return}s.evMax++;
+  if(p<Number(settings.autoMinProb||.03)){fail('TICKET_PROB_TOO_LOW');return}s.minProb++;
+  if(odds>Number(settings.autoMaxOdds||30)){fail('ODDS_TOO_HIGH');return}s.maxOdds++;
+  if(ratio>Number(settings.autoMaxEdge||3)){fail('MODEL_MARKET_DIVERGENCE_TOO_HIGH');return}s.divergence++;
+  if(fullKelly(p,odds)<=0){fail('KELLY_NONPOSITIVE');return}s.kelly++;
+  s.approved++;t.approved++;
+ }
+ function v184ThresholdRows(race,generated,phase,dtime,snap,usedFinalOdds){
+  if(phase!=='TEST'||!generated?.__v181RejectedShadow)return [];
+  V184_STATE.active=true;
+  const sg=generated.__v181RejectedShadow,sm=generated.__v181RejectedShadowModel||{},all=sg.candidates||[];
+  for(const x of all){v184Prep(x,sm.n);v184AccumulateCandidate(x);}
+  const out=[];
+  for(const threshold of V184_THRESHOLDS){
+   for(const ticket of Object.values(Ticket)){
+    const rows=all.filter(x=>x.ticket===ticket&&v184GuardAtThreshold(x,threshold).ok).sort((a,b)=>b.ev-a.ev||b.prob-a.prob);
+    const x=rows[0];if(!x)continue;const ag=v184GuardAtThreshold(x,threshold);
+    out.push({
+     id:uid(),shadowType:'V184_THRESHOLD',threshold,character:`SHADOW_EV_${threshold.toFixed(2)}`,date:race.date,track:race.track,raceNo:race.no,raceId:race.id,org:race.org,phase:'TEST',ticket,selection:x.selection,
+     decisionTime:new Date(dtime).toISOString(),oddsAt:usedFinalOdds?(Number.isFinite(snap.at)?new Date(snap.at).toISOString():'FINAL_ODDS'):new Date(snap.at).toISOString(),
+     oddsMode:usedFinalOdds?'FINAL_ODDS':'PRE_DECISION',evaluationClass:usedFinalOdds?'REFERENCE_SHADOW_THRESHOLD':'STRICT_OOS_SHADOW_THRESHOLD',odds:x.odds,probability:x.prob,marketProbability:x.marketProb,
+     requiredProbability:1/x.odds,fairOdds:x.fairOdds,ev:x.ev,requiredEV:threshold,uncertaintyPenalty:x.uncertaintyPenalty,conservativeEV:x.conservativeEV,marketDivergence:ag.ratio,
+     autoScore:ag.score,guardReason:'APPROVED_AT_THRESHOLD',stake:100,__fixed100:100,source:'V18.4 SHADOW EV THRESHOLD — diagnostic only',model:'TEMP_CALIBRATED_REJECTED_SHADOW',modelT:Number(sm.T||1),
+     modelBlend:Number(x.modelBlend||0),marketComplete:x.marketComplete,marketObserved:x.marketObserved,marketExpected:x.marketExpected,marketCountCoverage:x.marketCountCoverage,marketMassCoverage:x.marketMassCoverage,
+     payoutMultiplier:null,refund:null,profit:null,status:'PENDING',financialExcluded:false
+    });
+   }
+  }
+  return out;
+ }
+ const _v184ResearchOpportunityRows=researchOpportunityRows;
+ researchOpportunityRows=function(race,generated,currentModel,phase,dtime,snap,usedFinalOdds){
+  const base=_v184ResearchOpportunityRows(race,generated,currentModel,phase,dtime,snap,usedFinalOdds);
+  return base.concat(v184ThresholdRows(race,generated,phase,dtime,snap,usedFinalOdds));
+ };
+ function v184FunnelReport(){
+  const stages=[];let prev=null;
+  for(const [key,label] of V184_STAGE_DEFS){const pass=Number(V184_STATE.stagePass[key]||0),drop=prev==null?0:Math.max(0,prev-pass);stages.push({key,label,pass,drop,passRate:V184_STATE.total?pass/V184_STATE.total:null});prev=pass;}
+  const reasons=Object.entries(V184_STATE.reasons).map(([reason,count])=>({reason,label:V184_REASON_LABEL[reason]||reason,count,share:V184_STATE.total?count/V184_STATE.total:null})).sort((a,b)=>b.count-a.count);
+  const byTicket=Object.values(V184_STATE.byTicket).map(t=>{const top=Object.entries(t.reasons).sort((a,b)=>b[1]-a[1])[0];return {ticket:t.ticket,total:t.total,approved:t.approved,approvedRate:t.total?t.approved/t.total:null,topReject:top?(V184_REASON_LABEL[top[0]]||top[0]):'--',topRejectCount:top?.[1]||0};}).sort((a,b)=>b.total-a.total);
+  return {active:V184_STATE.active,total:V184_STATE.total,stages,reasons,byTicket,baselineEV:AUTO_MIN_EV};
+ }
+ function v184SweepReport(rows){
+  const overall=V184_THRESHOLDS.map(th=>{const rr=(rows||[]).filter(x=>Number(x.threshold)===th),m=metricsFromRows(rr,'stake');return {threshold:th,...m};});
+  const byTicket=[];
+  for(const th of V184_THRESHOLDS)for(const ticket of Object.values(Ticket)){const rr=(rows||[]).filter(x=>Number(x.threshold)===th&&x.ticket===ticket),m=metricsFromRows(rr,'stake');if(m.bets)byTicket.push({threshold:th,ticket,...m});}
+  return {rule:'Only EV floor varies; conservativeEV>=1, maxEV, minProb, maxOdds, divergence and Kelly guards unchanged',overall,byTicket,rows:rows||[]};
+ }
+ const _v184BuildResearchResult=buildResearchResult;
+ buildResearchResult=function(state,model,phasePlan,sourceAudit){
+  const r=_v184BuildResearchResult(state,model,phasePlan,sourceAudit),rows=(state.opportunities||[]).filter(x=>x.shadowType==='V184_THRESHOLD'&&x.phase==='TEST');
+  r.shadowGuardFunnel=v184FunnelReport();
+  r.shadowEvSweep=v184SweepReport(rows);
+  return r;
+ };
+ function v184Pct(v,d=1){return Number.isFinite(Number(v))?(Number(v)*100).toFixed(d)+'%':'--';}
+ function v184Render(result){
+  const f=result?.research?.shadowGuardFunnel||{},sw=result?.research?.shadowEvSweep||{};
+  if($('v184FunnelSummary'))$('v184FunnelSummary').innerHTML=f.active?`基準EV <b>${Number(f.baselineEV||AUTO_MIN_EV).toFixed(2)}</b>。総候補 <b>${Number(f.total||0).toLocaleString()}</b> 件を、AUTOと同じ順序のガードで診断しました。実購入には反映しません。`:'VALIDATION_REJECTのTEST区間で有効になります。';
+  if($('v184FunnelBody'))$('v184FunnelBody').innerHTML=(f.stages||[]).map(x=>`<tr><td>${esc(x.label)}</td><td>${Number(x.pass||0).toLocaleString()}</td><td>${Number(x.drop||0).toLocaleString()}</td><td>${x.passRate==null?'-':v184Pct(x.passRate,2)}</td></tr>`).join('');
+  if($('v184ReasonBody'))$('v184ReasonBody').innerHTML=(f.reasons||[]).map(x=>`<tr><td>${esc(x.label)}</td><td>${Number(x.count||0).toLocaleString()}</td><td>${x.share==null?'-':v184Pct(x.share,2)}</td></tr>`).join('');
+  if($('v184TicketBody'))$('v184TicketBody').innerHTML=(f.byTicket||[]).map(x=>`<tr><td>${esc(x.ticket)}</td><td>${x.total.toLocaleString()}</td><td>${x.approved.toLocaleString()}</td><td>${x.approvedRate==null?'-':v184Pct(x.approvedRate,2)}</td><td>${esc(x.topReject)}</td><td>${x.topRejectCount.toLocaleString()}</td></tr>`).join('');
+  if($('v184SweepBody'))$('v184SweepBody').innerHTML=(sw.overall||[]).map(x=>`<tr><td>${Number(x.threshold).toFixed(2)}</td><td>${Number(x.bets||0).toLocaleString()}</td><td>${x.hitRate==null?'-':v184Pct(x.hitRate,1)}</td><td>${Number(x.invested||0).toLocaleString()}円</td><td>${Number(x.returned||0).toLocaleString()}円</td><td>${x.roi==null?'-':v184Pct(x.roi,1)}</td><td>${x.avgEv==null?'-':Number(x.avgEv).toFixed(3)}</td><td>${x.maxDD==null?'-':v184Pct(x.maxDD,1)}</td></tr>`).join('');
+  if($('v184SweepTicketBody'))$('v184SweepTicketBody').innerHTML=(sw.byTicket||[]).map(x=>`<tr><td>${Number(x.threshold).toFixed(2)}</td><td>${esc(x.ticket)}</td><td>${x.bets}</td><td>${x.hitRate==null?'-':v184Pct(x.hitRate,1)}</td><td>${x.roi==null?'-':v184Pct(x.roi,1)}</td><td>${x.avgEv==null?'-':Number(x.avgEv).toFixed(3)}</td></tr>`).join('');
+ }
+ const _v184RenderResearch=renderResearch;
+ renderResearch=function(result){_v184RenderResearch(result);v184Render(result);};
+ const _v184Reset=resetRunStateUI;
+ resetRunStateUI=function(from,to,org){_v184Reset(from,to,org);V184_STATE=freshV184State();for(const id of ['v184FunnelBody','v184ReasonBody','v184TicketBody','v184SweepBody','v184SweepTicketBody'])if($(id))$(id).innerHTML='';if($('v184FunnelSummary'))$('v184FunnelSummary').textContent='VALIDATION判定待ち…';};
+ function installV184Panel(){
+  if($('v184Panel'))return;
+  const anchor=$('v181ShadowExplain')?.closest('.grid');if(!anchor)return;
+  anchor.insertAdjacentHTML('afterend',`<div class="grid" id="v184Panel" style="margin-top:12px">
+   <section class="card"><h3>🚦 SHADOW Guard Funnel <span class="badge warn">診断専用</span></h3><div class="body">
+    <div id="v184FunnelSummary" class="notice">未実行</div>
+    <div class="scroll" style="max-height:250px;margin-top:8px"><table class="miniTable"><thead><tr><th>段階</th><th>通過</th><th>この段階で脱落</th><th>総候補比</th></tr></thead><tbody id="v184FunnelBody"></tbody></table></div>
+    <h4 style="margin:12px 0 4px">最初に落ちた理由</h4><div class="scroll" style="max-height:210px"><table class="miniTable"><thead><tr><th>理由</th><th>件数</th><th>比率</th></tr></thead><tbody id="v184ReasonBody"></tbody></table></div>
+    <h4 style="margin:12px 0 4px">券種別</h4><div class="scroll" style="max-height:250px"><table class="miniTable"><thead><tr><th>券種</th><th>総候補</th><th>通過</th><th>通過率</th><th>最多脱落理由</th><th>件数</th></tr></thead><tbody id="v184TicketBody"></tbody></table></div>
+   </div></section>
+   <section class="card"><h3>🧪 SHADOW EV閾値スイープ <span class="badge warn">購入しない</span></h3><div class="body">
+    <div class="notice strict">EV下限だけを 1.05〜1.30 に変えます。<b>conservativeEV≥1.00、EV上限、最低確率、最大オッズ、市場乖離、Kelly>0 は固定</b>です。各レース各券種1点×100円の仮想診断で、実資金・ランキングには反映しません。</div>
+    <div class="scroll" style="max-height:280px;margin-top:8px"><table class="miniTable"><thead><tr><th>EV下限</th><th>仮想購入</th><th>的中率</th><th>投資</th><th>払戻</th><th>ROI</th><th>平均EV</th><th>最大DD</th></tr></thead><tbody id="v184SweepBody"></tbody></table></div>
+    <h4 style="margin:12px 0 4px">EV下限 × 券種</h4><div class="scroll" style="max-height:300px"><table class="miniTable"><thead><tr><th>EV</th><th>券種</th><th>件数</th><th>的中率</th><th>ROI</th><th>平均EV</th></tr></thead><tbody id="v184SweepTicketBody"></tbody></table></div>
+   </div></section>
+  </div>`);
+ }
+ installV184Panel();
+ exportXlsx=function(){
+  if(!lastResult)return alert('先に実行してください');if(typeof XLSX==='undefined')return alert('SheetJS未読込');
+  const wb=XLSX.utils.book_new(),r=lastResult.research||{};
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.bets||[]),'Bets ACTUAL');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.audit||[]),'Audit');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.thresholds||[]),'EV Thresholds TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.calibration?.bins||[]),'Calibration TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([r.validationDetail||{}]),'Validation Detail');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.rejectedShadow?.rows||[]),'Rejected Shadow TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.rejectedShadow?.byTicket||[]),'Shadow by Ticket');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.shadowGuardFunnel?.stages||[]),'Shadow Guard Stages');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.shadowGuardFunnel?.reasons||[]),'Shadow Guard Reasons');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.shadowGuardFunnel?.byTicket||[]),'Shadow Guard Ticket');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.shadowEvSweep?.overall||[]),'Shadow EV Sweep');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r.shadowEvSweep?.byTicket||[]),'Shadow EV by Ticket');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ORIGINAL_CODE_FINDINGS),'Code Audit');
+  XLSX.writeFile(wb,'keiba_strict_v18_4_shadow_guard_funnel.xlsx');
+ };
+ const brand=document.querySelector('.brand .badge');if(brand)brand.textContent=V184_BUILD;
+ const n=$('strictNotice');if(n&&!n.dataset.v184){n.dataset.v184='1';n.innerHTML+='<br><b>V18.4:</b> VALIDATION_REJECT時のTESTで、却下モデルの全候補をAUTO Guard Funnelで段階別集計し、EV下限1.05〜1.30だけを変えたSHADOW閾値比較を追加。診断結果は実購入・資金・ランキング・同一RUNの採否に一切使いません。';}
+ if(typeof log==='function')log('V18.4 SHADOW GUARD FUNNEL + EV threshold sweep active','good');
+})();
+
 </script>
 </body>
 </html>
