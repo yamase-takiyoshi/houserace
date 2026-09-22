@@ -15,9 +15,9 @@
 </style>
 </head>
 <body>
-<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260921-V18-REFERENCE-STRICT-DUAL</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
+<header><div class="head"><div class="brand">🏇 KEIBA STRICT RESEARCH ARENA <span class="badge ok" style="margin-left:8px">BUILD 20260922-V18.1-VALIDATION-SHADOW</span></div><span id="modeBadge" class="badge blue">SIMULATION</span><span id="styleBadge" class="badge ok">STRICT OOS</span><span id="strictBadge" class="badge ok">NO FUTURE DATA</span><span class="badge ok">NO WORKER</span><span id="modelBadge" class="badge warn">MARKET FALLBACK</span><div class="spacer"></div><span id="clock" class="muted"></span><button id="btnSettings">設定</button><button id="btnSave">JSON保存</button></div></header>
 <main>
-<div id="strictNotice" class="notice strict"><b>V18 二系統研究モード:</b> STRICT OOSは締切前snapshotだけで正式TEST ROIを計算します。FINAL ODDS ONはREFERENCE専用ですが、レース結果確定後にのみ学習サンプルへ追加し、TRAIN→VALIDATION→TESTを時系列で分離します。同一レースの結果をそのレースの予測へ逆流させません。REFERENCE ROIとSTRICT OOS ROIは別枠で保存・表示します。AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を維持します。</div>
+<div id="strictNotice" class="notice strict"><b>V18.1 二系統研究モード:</b> STRICT OOSは締切前snapshotだけで正式TEST ROIを計算します。FINAL ODDS ONはREFERENCE専用ですが、レース結果確定後にのみ学習サンプルへ追加し、TRAIN→VALIDATION→TESTを時系列で分離します。同一レースの結果をそのレースの予測へ逆流させません。REFERENCE ROIとSTRICT OOS ROIは別枠で保存・表示します。AUTOはEV≥1.20、各券種EV最大1点×100円、conservativeEV≥1.00を維持します。<br><b>V18.1:</b> VALIDATIONの採否理由をLogLoss/Brierで可視化し、VALIDATION_REJECT時はTRAINで固定した却下モデルをTESTで「REJECTED SHADOW」として購入せず追跡します。SHADOW結果は同一RUNの採用判定へ逆流させません。</div>
 <div class="kpis">
 <div class="kpi"><small>期間</small><b id="kPeriod">--</b></div><div class="kpi"><small>処理レース</small><b id="kRaces">0</b></div><div class="kpi"><small>採用レース</small><b id="kAccepted">0</b></div><div class="kpi"><small>未来情報拒否</small><b id="kLeak">0</b></div><div class="kpi"><small>スナップショット無し</small><b id="kNoSnap">0</b></div><div class="kpi"><small>モデル</small><b id="kModel">市場</b></div><div class="kpi"><small>学習サンプル</small><b id="kSamples">0</b></div><div class="kpi"><small>AUTO ROI（現モード）</small><b id="kTop">--</b></div>
 </div>
@@ -43,6 +43,35 @@
 <div class="researchCell"><small>購入数</small><b id="aBets">0</b></div><div class="researchCell"><small>平均購入EV</small><b id="aAvgEv">--</b></div><div class="researchCell"><small>ROI</small><b id="aRoi">--</b></div><div class="researchCell"><small>的中率</small><b id="aHit">--</b></div><div class="researchCell"><small>最大DD</small><b id="aDd">--</b></div><div class="researchCell"><small>最大連敗</small><b id="aLoseStreak">--</b></div><div class="researchCell"><small>EV≥1.00比率</small><b id="aEv100">--</b></div><div class="researchCell"><small>EV≥1.20比率</small><b id="aEv120">--</b></div>
 </div></div></section>
 <section class="card"><h3>📐 Calibration / Brier（TEST・単勝確率）</h3><div class="body"><div id="brierSummary" class="notice strict">未実行</div><div class="scroll" style="max-height:260px;margin-top:8px"><table class="miniTable"><thead><tr><th>予測帯</th><th>件数</th><th>平均予測</th><th>実績</th><th>差</th></tr></thead><tbody id="calibrationBody"></tbody></table></div></div></section>
+</div>
+<div class="grid" style="margin-top:12px" id="v181ValidationShadowGrid">
+<section class="card"><h3>🧪 VALIDATION 判定詳細</h3><div class="body">
+<div class="researchGrid">
+<div class="researchCell"><small>判定</small><b id="v181ValSelection">--</b></div>
+<div class="researchCell"><small>TRAIN T</small><b id="v181TrainT">--</b></div>
+<div class="researchCell"><small>VALIDATION件数</small><b id="v181ValN">--</b></div>
+<div class="researchCell"><small>必要件数</small><b id="v181ValRequired">--</b></div>
+<div class="researchCell"><small>LogLoss market</small><b id="v181ValMarketLL">--</b></div>
+<div class="researchCell"><small>LogLoss model</small><b id="v181ValModelLL">--</b></div>
+<div class="researchCell"><small>LogLoss 改善</small><b id="v181ValLLImprove">--</b></div>
+<div class="researchCell"><small>Brier 改善</small><b id="v181ValBrierImprove">--</b></div>
+</div>
+<div id="v181ValExplain" class="notice strict" style="margin-top:10px">未実行</div>
+</div></section>
+<section class="card"><h3>👻 REJECTED SHADOW TEST <span class="badge warn">購入しない</span></h3><div class="body">
+<div class="researchGrid">
+<div class="researchCell"><small>SHADOW購入数</small><b id="v181ShadowBets">0</b></div>
+<div class="researchCell"><small>SHADOW ROI</small><b id="v181ShadowRoi">--</b></div>
+<div class="researchCell"><small>的中率</small><b id="v181ShadowHit">--</b></div>
+<div class="researchCell"><small>平均EV</small><b id="v181ShadowAvgEv">--</b></div>
+<div class="researchCell"><small>最大DD</small><b id="v181ShadowDD">--</b></div>
+<div class="researchCell"><small>TEST Brier model</small><b id="v181ShadowBrierModel">--</b></div>
+<div class="researchCell"><small>TEST Brier market</small><b id="v181ShadowBrierMarket">--</b></div>
+<div class="researchCell"><small>評価区分</small><b id="v181ShadowClass">--</b></div>
+</div>
+<div id="v181ShadowExplain" class="notice" style="margin-top:10px">未実行</div>
+<div class="scroll" style="max-height:260px;margin-top:8px"><table class="miniTable"><thead><tr><th>券種</th><th>件数</th><th>的中率</th><th>ROI</th><th>平均EV</th><th>最大DD</th></tr></thead><tbody id="v181ShadowTicketBody"></tbody></table></div>
+</div></section>
 </div>
 <div class="card" style="margin-top:12px"><h3>🧮 EV閾値比較（TESTのみ・各レース各券種EV最大1点・固定100円）</h3><div class="body scroll"><table class="miniTable"><thead><tr><th>EV閾値</th><th>購入数</th><th>的中率</th><th>投資額</th><th>払戻額</th><th>ROI</th><th>平均EV</th><th>最大DD</th><th>最大連敗</th><th>判定</th></tr></thead><tbody id="thresholdBody"></tbody></table></div></div>
 <div class="card" style="margin-top:12px"><h3>🔬 元コード監査 A〜E</h3><div class="body scroll"><table class="miniTable"><thead><tr><th>分類</th><th>診断</th><th>V17対応</th></tr></thead><tbody id="codeAuditBody"></tbody></table></div></div>
@@ -1624,7 +1653,7 @@ async function runSimulation(){
  const from=$('fromDate').value,to=settings.periodCross?$('toDate').value:$('fromDate').value,org=$('orgSelect').value;if(!from||!to)return alert('開始日・終了日を指定してください');if(from>to)return alert('開始日は終了日以前にしてください');const dates=datesBetween(from,to),phasePlan=buildPhasePlan(dates);stopRequested=false;resetRunStateUI(from,to,org);renderResearchProtocol({phasePlan:{train:phasePlan.range(phasePlan.train),validation:phasePlan.range(phasePlan.validation),test:phasePlan.range(phasePlan.test)},status:settings.allowFinalOdds?'REFERENCE TRAINING — FINAL ODDS / NOT OOS':'RUNNING OOS',leakageText:settings.allowFinalOdds?'REFERENCE FINAL ODDS — OOS集計から分離':'0 detected'});renderCodeAudit();$('runBtn').disabled=true;$('stopBtn').disabled=false;
  const orgs=org==='BOTH'?['JRA','NAR']:[org],adapter=new OfficialFirstDataAdapter(settings),players=freshPlayers(),model=new ResearchHoldoutModel(settings.minSamples),state={bets:[],audit:[],futureRejected:0,noSnapshot:0,finalOddsUsed:0,autoGuardRejected:0,filterViolations:0,processed:0,accepted:0,raceTimeouts:0,calendar:{},fetchErrors:[],fetchStatus:[],phasePlan,opportunities:[],calibrationSamples:[],walkForwardModel:new WalkForwardModel(settings.minSamples),walkForwardScores:[],holdoutScores:[]};$('kPeriod').textContent=`${from}→${to}`;log(`${settings.allowFinalOdds?'REFERENCE':'STRICT OOS'}研究START ${from}→${to} / ${org} / TRAIN-VALIDATION-TEST`,'good');const total=dates.length*orgs.length;let step=0;
  for(const date of dates){if(stopRequested)break;let dayProfitBefore=players.reduce((sum,c)=>sum+c.bankroll,0),had=false;for(const o of orgs){if(stopRequested)break;step++;setFetchProgress(step,total,`${date} ${o} 取得中`,false);setRaceProgress(0,0,'開催データ取得待ち');setCurrentPhase(`${date} ${o}: 開催データを取得しています…`);setFetchStatus(o,'fetching','取得中…');let races=[];try{races=await adapter.races(date,o);if(races.length){completeFetchProgress(step,total,`${date} ${o} 取得完了 ${races.length}R`);setFetchStatus(o,'success',`成功 ${races.length}R`);state.fetchStatus.push({date,org:o,status:'SUCCESS',races:races.length})}else{completeFetchProgress(step,total,`${date} ${o} 0R`);setFetchStatus(o,'empty','開催/データ 0件');state.fetchStatus.push({date,org:o,status:'EMPTY',races:0});continue}}catch(e){completeFetchProgress(step,total,`${date} ${o} 取得失敗`);setFetchStatus(o,'failed','失敗');state.fetchErrors.push({date,org:o,error:e.message});state.fetchStatus.push({date,org:o,status:'FAILED',error:e.message});continue}races.sort((a,b)=>(ts(a.startTime)||0)-(ts(b.startTime)||0)||a.no-b.no);setRaceProgress(0,races.length,`${date} ${o} ${races.length}R取得済 — 処理開始`);for(let ri=0;ri<races.length;ri++){if(stopRequested)break;const race=bridgeLockedRace(races[ri]);races[ri]=race;const lockedRaceId=race.id,raceLabel=`${race.track||o} ${race.no||ri+1}R`,phase=phasePlan.phaseFor(date);state.processed++;setKpis(state,model,players);let currentStage='初期化';const stageTrace=[];state.onStage=(stage)=>{currentStage=String(stage||'不明');stageTrace.push({at:new Date().toISOString(),stage:currentStage});if(stageTrace.length>20)stageTrace.shift();setCurrentPhase(`${date} ${o}: ${raceLabel} [${phase}] — ${currentStage}`)};const raceStarted=performance.now(),raceAbort=new AbortController();activeRaceAbortSignal=raceAbort.signal;state.abortRace=()=>{try{raceAbort.abort()}catch(_){}};const heartbeat=setInterval(()=>setRaceProgress(ri+1,races.length,`${date} ${o} ${raceLabel} [${phase}] / ${currentStage}`),1000),raceDeadline=hardTimeoutPromise(RACE_HARD_TIMEOUT_MS,'RACE_HARD',()=>state.abortRace?.());let ok=false;try{ok=await Promise.race([simulateRace(race,players,model,adapter,state),raceDeadline.promise])}catch(e){const msg=String(e?.message||e||'RACE_PROCESS_ERROR');if(/TIMEOUT|WATCHDOG/i.test(msg))state.raceTimeouts++;state.audit.push(auditRow(race,'SKIP',`${msg} / stage=${currentStage}`));state.fetchErrors.push({date,org:o,raceId:lockedRaceId,raceNo:race.no,stage:currentStage,error:msg,stageTrace:[...stageTrace]})}finally{raceDeadline.cancel();clearInterval(heartbeat);activeRaceAbortSignal=null;state.onStage=null;state.abortRace=null}if(ok){state.accepted++;had=true}renderPartial(state,players,model);await new Promise(r=>setTimeout(r,0))}}const after=players.reduce((sum,c)=>sum+c.bankroll,0);state.calendar[date]={profit:after-dayProfitBefore,done:true,had};renderCalendar(state.calendar)}
- const research=buildResearchResult(state,model,phasePlan,sourceAudit),result={schema:'KEIBA_STRICT_RESEARCH_V18_DUAL_MODE',generatedAt:new Date().toISOString(),settings:{...settings},period:{from,to,org},transport:{mode:'OFFICIAL_FIRST_BRIDGE_GM_XHR',bridgeVersion:String(window.__narBridgeVersion||''),workerUsed:false,primary:['jra.go.jp','keiba.go.jp'],fallback:'netkeiba'},strictRules:{trainValidationTest:'60/20/20 calendar-order',testNeverTunesPrimaryModel:true,walkForwardShadowOnly:true,predictionUsesOnlyTimestampLEDecisionTime:!settings.allowFinalOdds,oddsAcquisitionMode:settings.allowFinalOdds?'FINAL_ODDS_REFERENCE_MODE':'PRE_DECISION_SNAPSHOT_ONLY',evaluationClass:settings.allowFinalOdds?'REFERENCE':'STRICT_OOS',referenceFinalOddsNeverCountedAsStrictOOS:true,payoutSettlementOnly:true,noSyntheticProbabilityNoise:true,evDefinition:'probability * odds',auto:{minEV:AUTO_MIN_EV,conservativeEVMin:1.00,stake:100,onePerTicket:true}},characters:players,bets:state.bets,audit:state.audit,stats:{processed:state.processed,accepted:state.accepted,futureRejected:state.futureRejected,noSnapshot:state.noSnapshot,finalOddsUsed:state.finalOddsUsed,autoGuardRejected:state.autoGuardRejected,filterViolations:state.filterViolations,raceTimeouts:state.raceTimeouts,fetchErrors:state.fetchErrors,fetchStatus:state.fetchStatus},model:model.last,calendar:state.calendar,research};research.diagnosis=diagnoseResearch(result);if(!settings.allowFinalOdds&&(research.diagnosis.filterViolations||research.diagnosis.leaks||research.diagnosis.payoutMissing))research.status='INVALID BACKTEST — INTEGRITY FAILURE';lastResult=result;saveJSON(RESULT_KEY,result);renderAll(result);$('runBtn').disabled=false;$('stopBtn').disabled=true;if(!stopRequested){$('fetchBar').style.width='100%';$('raceBar').style.width='100%';const m=settings.allowFinalOdds?(research.referenceAll||research.autoTest):research.autoTest;setCurrentPhase(`完了 — ${research.status} / ${settings.allowFinalOdds?'REFERENCE':'TEST'} AUTO ${m?.bets||0} bets / ROI ${m?.roi==null?'--':(m.roi*100).toFixed(1)+'%'}`)}log(`完了 ${research.status} / filter violations=${research.diagnosis.filterViolations} / leakage=${research.diagnosis.leaks} / payout missing=${research.diagnosis.payoutMissing}`,(research.status==='VALID OOS'||/^REFERENCE/.test(research.status))?'good':'bad')
+ const research=buildResearchResult(state,model,phasePlan,sourceAudit),result={schema:'KEIBA_STRICT_RESEARCH_V18_1_VALIDATION_SHADOW',generatedAt:new Date().toISOString(),settings:{...settings},period:{from,to,org},transport:{mode:'OFFICIAL_FIRST_BRIDGE_GM_XHR',bridgeVersion:String(window.__narBridgeVersion||''),workerUsed:false,primary:['jra.go.jp','keiba.go.jp'],fallback:'netkeiba'},strictRules:{trainValidationTest:'60/20/20 calendar-order',testNeverTunesPrimaryModel:true,walkForwardShadowOnly:true,predictionUsesOnlyTimestampLEDecisionTime:!settings.allowFinalOdds,oddsAcquisitionMode:settings.allowFinalOdds?'FINAL_ODDS_REFERENCE_MODE':'PRE_DECISION_SNAPSHOT_ONLY',evaluationClass:settings.allowFinalOdds?'REFERENCE':'STRICT_OOS',referenceFinalOddsNeverCountedAsStrictOOS:true,payoutSettlementOnly:true,noSyntheticProbabilityNoise:true,evDefinition:'probability * odds',auto:{minEV:AUTO_MIN_EV,conservativeEVMin:1.00,stake:100,onePerTicket:true}},characters:players,bets:state.bets,audit:state.audit,stats:{processed:state.processed,accepted:state.accepted,futureRejected:state.futureRejected,noSnapshot:state.noSnapshot,finalOddsUsed:state.finalOddsUsed,autoGuardRejected:state.autoGuardRejected,filterViolations:state.filterViolations,raceTimeouts:state.raceTimeouts,fetchErrors:state.fetchErrors,fetchStatus:state.fetchStatus},model:model.last,calendar:state.calendar,research};research.diagnosis=diagnoseResearch(result);if(!settings.allowFinalOdds&&(research.diagnosis.filterViolations||research.diagnosis.leaks||research.diagnosis.payoutMissing))research.status='INVALID BACKTEST — INTEGRITY FAILURE';lastResult=result;saveJSON(RESULT_KEY,result);renderAll(result);$('runBtn').disabled=false;$('stopBtn').disabled=true;if(!stopRequested){$('fetchBar').style.width='100%';$('raceBar').style.width='100%';const m=settings.allowFinalOdds?(research.referenceAll||research.autoTest):research.autoTest;setCurrentPhase(`完了 — ${research.status} / ${settings.allowFinalOdds?'REFERENCE':'TEST'} AUTO ${m?.bets||0} bets / ROI ${m?.roi==null?'--':(m.roi*100).toFixed(1)+'%'}`)}log(`完了 ${research.status} / filter violations=${research.diagnosis.filterViolations} / leakage=${research.diagnosis.leaks} / payout missing=${research.diagnosis.payoutMissing}`,(research.status==='VALID OOS'||/^REFERENCE/.test(research.status))?'good':'bad')
 }
 
 
@@ -1927,9 +1956,197 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  // 画面上でも「欠損=負けではない」を明示する。
  const n=document.querySelector('#strictNotice');
  if(n&&!n.dataset.v179){n.dataset.v179='1';n.innerHTML += '<br><b>V17.9精算保護:</b> 払戻データが欠損した的中買い目はハズレ扱いせず、財務・ROI集計から除外して整合性違反として残します。JRA公式払戻が部分取得の場合もnetkeibaで不足分を補完します。'}
- const brand=document.querySelector('.brand .badge');if(brand)brand.textContent='BUILD 20260921-V18-REFERENCE-STRICT-DUAL';
+ const brand=document.querySelector('.brand .badge');if(brand)brand.textContent='BUILD 20260922-V18.1-VALIDATION-SHADOW';
  log('V17.9 SETTLEMENT INTEGRITY patch active — partial payout merge / missing payout excluded from ROI','good');
  log('V18.0 PHASEPLAN hotfix active — 1日/2日期間でも phasePlan.range を常時提供','good');
+})();
+
+
+/* ============================================================
+   V18.1 VALIDATION DETAIL + REJECTED SHADOW TEST
+   - actual AUTO remains blocked when VALIDATION_REJECT
+   - rejected TRAIN-frozen model is evaluated on TEST as shadow only
+   - shadow rows never touch bankroll / ranking / actual bet CSV
+   - TEST shadow result never changes the model decision in the same run
+   ============================================================ */
+(function(){
+ const V181_BUILD='BUILD 20260922-V18.1-VALIDATION-SHADOW';
+ const v181Num=(v,d=5)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'--';
+ const v181Pct=(v,d=2)=>Number.isFinite(Number(v))?(Number(v)*100).toFixed(d)+'%':'--';
+ const v181Improve=(market,model)=>Number.isFinite(Number(market))&&Number.isFinite(Number(model))&&Number(market)!==0?(Number(market)-Number(model))/Math.abs(Number(market)):null;
+
+ // Preserve rejected calibration parameters while keeping the live/actual TEST model in MARKET mode.
+ const _v181FitBefore=ResearchHoldoutModel.prototype.fitBefore;
+ ResearchHoldoutModel.prototype.fitBefore=function(time,phase){
+  let out=_v181FitBefore.call(this,time,phase);
+  const minVal=Math.max(20,Math.floor(this.minSamples*.20));
+  if(phase==='TEST'&&this.testFrozen){
+   this.testFrozen.validationRequired=minVal;
+   this.testFrozen.validationActual=this.validation.length;
+   if(this.trainFrozen?.mode==='TEMP_CALIBRATED'){
+    this.testFrozen.trainT=Number(this.trainFrozen.T||1);
+    this.testFrozen.trainN=this.train.length;
+    if(this.testFrozen.selection==='VALIDATION_REJECT'){
+     this.testFrozen.rejectedT=Number(this.trainFrozen.T||1);
+     this.testFrozen.rejectedN=this.train.length;
+    }
+   }
+   this.last={...this.testFrozen,phase};
+   out=this.last;
+  }
+  return out;
+ };
+
+ const _v181Report=ResearchHoldoutModel.prototype.report;
+ ResearchHoldoutModel.prototype.report=function(){
+  const base=_v181Report.call(this),tf=this.testFrozen||null,tr=this.trainFrozen||null,minVal=Math.max(20,Math.floor(this.minSamples*.20));
+  const validationDetail={
+   selection:tf?.selection||(!tr?'NOT_FROZEN':'PENDING'),
+   required:minVal,
+   actual:this.validation.length,
+   trainN:this.train.length,
+   trainT:tr?.mode==='TEMP_CALIBRATED'?Number(tr.T):null,
+   trainMode:tr?.mode||'MARKET',
+   marketLogLoss:Number.isFinite(Number(tf?.marketLogLoss))?Number(tf.marketLogLoss):null,
+   modelLogLoss:Number.isFinite(Number(tf?.modelLogLoss))?Number(tf.modelLogLoss):null,
+   marketBrier:Number.isFinite(Number(tf?.marketBrier))?Number(tf.marketBrier):null,
+   modelBrier:Number.isFinite(Number(tf?.modelBrier))?Number(tf.modelBrier):null
+  };
+  validationDetail.logLossImprovement=v181Improve(validationDetail.marketLogLoss,validationDetail.modelLogLoss);
+  validationDetail.brierImprovement=v181Improve(validationDetail.marketBrier,validationDetail.modelBrier);
+  let rejectedShadowProbabilityTest=null;
+  if(tf?.selection==='VALIDATION_REJECT'&&tr?.mode==='TEMP_CALIBRATED'&&this.test.length){
+   rejectedShadowProbabilityTest={...evaluateTemperature(this.test,Number(tr.T||1)),T:Number(tr.T||1)};
+  }
+  return {...base,validationDetail,rejectedShadowProbabilityTest};
+ };
+
+ // When the primary TEST model is rejected, generate a second candidate set with the frozen TRAIN T.
+ // This object is diagnostic only and is not used by candidateFilter/stakeFor for actual players.
+ const _v181GenerateCandidates=generateCandidates;
+ generateCandidates=function(snapshot,modelMeta){
+  const primary=_v181GenerateCandidates(snapshot,modelMeta);
+  if(modelMeta?.selection==='VALIDATION_REJECT'&&Number.isFinite(Number(modelMeta?.rejectedT))){
+   const shadowModel={mode:'TEMP_CALIBRATED',T:Number(modelMeta.rejectedT),n:Number(modelMeta.rejectedN||modelMeta.trainN||settings.minSamples),selection:'REJECTED_SHADOW_FIXED'};
+   primary.__v181RejectedShadow=_v181GenerateCandidates(snapshot,shadowModel);
+   primary.__v181RejectedShadowModel=shadowModel;
+  }
+  return primary;
+ };
+
+ function v181ShadowRows(race,generated,phase,dtime,snap,usedFinalOdds){
+  if(phase!=='TEST'||!generated?.__v181RejectedShadow)return [];
+  const sg=generated.__v181RejectedShadow,sm=generated.__v181RejectedShadowModel||{};
+  for(const x of sg.candidates||[]){x.modelN=Number(sm.n||settings.minSamples);x.uncertaintyPenalty=uncertaintyPenaltyFor(x);x.conservativeEV=x.ev-x.uncertaintyPenalty;}
+  const out=[];
+  for(const ticket of Object.values(Ticket)){
+   const rows=(sg.candidates||[]).filter(x=>x.ticket===ticket&&x.marketComplete!==false&&autoGuard(x).ok).sort((a,b)=>b.ev-a.ev||b.prob-a.prob);
+   const x=rows[0];if(!x)continue;const ag=autoGuard(x);
+   out.push({
+    id:uid(),shadowType:'REJECTED_MODEL',character:'REJECTED_SHADOW_AUTO',date:race.date,track:race.track,raceNo:race.no,raceId:race.id,org:race.org,phase:'TEST',ticket,selection:x.selection,
+    decisionTime:new Date(dtime).toISOString(),oddsAt:usedFinalOdds?(Number.isFinite(snap.at)?new Date(snap.at).toISOString():'FINAL_ODDS'):new Date(snap.at).toISOString(),
+    oddsMode:usedFinalOdds?'FINAL_ODDS':'PRE_DECISION',evaluationClass:usedFinalOdds?'REFERENCE_SHADOW':'STRICT_OOS_SHADOW',odds:x.odds,probability:x.prob,marketProbability:x.marketProb,
+    requiredProbability:1/x.odds,fairOdds:x.fairOdds,ev:x.ev,requiredEV:AUTO_MIN_EV,uncertaintyPenalty:x.uncertaintyPenalty,conservativeEV:x.conservativeEV,marketDivergence:ag.ratio,
+    autoScore:ag.score,guardReason:ag.reason,stake:100,__fixed100:100,source:'REJECTED SHADOW — diagnostic only',model:'TEMP_CALIBRATED_REJECTED_SHADOW',modelT:Number(sm.T||1),
+    modelBlend:Number(x.modelBlend||0),marketComplete:x.marketComplete,marketObserved:x.marketObserved,marketExpected:x.marketExpected,marketCountCoverage:x.marketCountCoverage,marketMassCoverage:x.marketMassCoverage,
+    payoutMultiplier:null,refund:null,profit:null,status:'PENDING',financialExcluded:false
+   });
+  }
+  return out;
+ }
+
+ const _v181ResearchOpportunityRows=researchOpportunityRows;
+ researchOpportunityRows=function(race,generated,currentModel,phase,dtime,snap,usedFinalOdds){
+  const base=_v181ResearchOpportunityRows(race,generated,currentModel,phase,dtime,snap,usedFinalOdds);
+  return base.concat(v181ShadowRows(race,generated,phase,dtime,snap,usedFinalOdds));
+ };
+
+ // Keep the original EV-threshold study clean: shadow rows are reported in their own panel only.
+ const _v181ThresholdStudy=thresholdStudy;
+ thresholdStudy=function(opportunities){return _v181ThresholdStudy((opportunities||[]).filter(x=>!x.shadowType));};
+
+ function v181MetricsByTicket(rows){
+  return Object.values(Ticket).map(ticket=>{const m=metricsFromRows((rows||[]).filter(x=>x.ticket===ticket),'stake');return {ticket,...m};}).filter(x=>x.bets>0);
+ }
+
+ const _v181BuildResearchResult=buildResearchResult;
+ buildResearchResult=function(state,model,phasePlan,sourceAudit){
+  const r=_v181BuildResearchResult(state,model,phasePlan,sourceAudit),mr=model.report(),rows=(state.opportunities||[]).filter(x=>x.shadowType==='REJECTED_MODEL'&&x.phase==='TEST');
+  const metrics=metricsFromRows(rows,'stake');
+  r.modelReport=mr;
+  r.validationDetail=mr.validationDetail||null;
+  r.rejectedShadow={
+   active:mr.validationDetail?.selection==='VALIDATION_REJECT',
+   rule:'TRAIN-frozen rejected model; TEST shadow only; no bankroll; no same-run tuning',
+   evaluationClass:settings.allowFinalOdds?'REFERENCE_SHADOW_FINAL_ODDS_NOT_OOS':'STRICT_OOS_SHADOW_DIAGNOSTIC',
+   metrics,probability:mr.rejectedShadowProbabilityTest||null,byTicket:v181MetricsByTicket(rows),rows
+  };
+  return r;
+ };
+
+ function renderV181(result){
+  const r=result?.research||{},v=r.validationDetail||r.modelReport?.validationDetail||{},s=r.rejectedShadow||{},m=s.metrics||{},p=s.probability||{};
+  const sel=String(v.selection||'--');
+  const selEl=$('v181ValSelection');if(selEl){selEl.textContent=sel;selEl.className=sel==='VALIDATION_PASS'?'goodText':sel==='VALIDATION_REJECT'?'badText':'warn';}
+  if($('v181TrainT'))$('v181TrainT').textContent=v.trainT==null?'--':Number(v.trainT).toFixed(3);
+  if($('v181ValN'))$('v181ValN').textContent=Number(v.actual||0).toLocaleString();
+  if($('v181ValRequired'))$('v181ValRequired').textContent=Number(v.required||0).toLocaleString();
+  if($('v181ValMarketLL'))$('v181ValMarketLL').textContent=v181Num(v.marketLogLoss);
+  if($('v181ValModelLL'))$('v181ValModelLL').textContent=v181Num(v.modelLogLoss);
+  const lli=v.logLossImprovement,bi=v.brierImprovement;
+  if($('v181ValLLImprove')){$('v181ValLLImprove').textContent=lli==null?'--':v181Pct(lli);$('v181ValLLImprove').className=lli>0?'goodText':lli<0?'badText':'';}
+  if($('v181ValBrierImprove')){$('v181ValBrierImprove').textContent=bi==null?'--':v181Pct(bi);$('v181ValBrierImprove').className=bi>0?'goodText':bi<0?'badText':'';}
+  if($('v181ValExplain')){
+   const enough=Number(v.actual||0)>=Number(v.required||0),both=(lli>0&&bi>0);
+   $('v181ValExplain').className='notice '+(sel==='VALIDATION_PASS'?'strict':sel==='VALIDATION_REJECT'?'error':'');
+   $('v181ValExplain').innerHTML=`<b>${esc(sel)}</b> — VALIDATION ${Number(v.actual||0)}/${Number(v.required||0)}件。現在の採用条件は <b>LogLoss と Brier の両方が市場より改善</b>。${!enough?'件数不足です。':both?'両指標が改善したため採用条件を満たしました。':'少なくとも一方が改善しなかったため、実購入モデルはMARKETへ戻しています。'}`;
+  }
+  if($('v181ShadowBets'))$('v181ShadowBets').textContent=m.bets||0;
+  if($('v181ShadowRoi'))$('v181ShadowRoi').textContent=m.roi==null?'--':v181Pct(m.roi,1);
+  if($('v181ShadowHit'))$('v181ShadowHit').textContent=m.hitRate==null?'--':v181Pct(m.hitRate,1);
+  if($('v181ShadowAvgEv'))$('v181ShadowAvgEv').textContent=m.avgEv==null?'--':Number(m.avgEv).toFixed(3);
+  if($('v181ShadowDD'))$('v181ShadowDD').textContent=m.maxDD==null?'--':v181Pct(m.maxDD,1);
+  if($('v181ShadowBrierModel'))$('v181ShadowBrierModel').textContent=v181Num(p.modelBrier);
+  if($('v181ShadowBrierMarket'))$('v181ShadowBrierMarket').textContent=v181Num(p.marketBrier);
+  if($('v181ShadowClass'))$('v181ShadowClass').textContent=s.evaluationClass||'--';
+  if($('v181ShadowExplain')){
+   const ref=!!result?.settings?.allowFinalOdds;
+   $('v181ShadowExplain').className='notice '+(s.active?'':'strict');
+   $('v181ShadowExplain').innerHTML=s.active
+    ?`<b>REJECTED SHADOW:</b> VALIDATIONで却下したTRAIN固定モデル（T=${v.trainT==null?'--':Number(v.trainT).toFixed(3)}）をTESTで追跡しました。実際のAUTO購入・資金・ランキングには一切反映しません。${ref?'<b>このRUNは確定オッズREFERENCEなのでSHADOW ROIもNOT OOSです。</b>':'TEST結果を同一RUNのモデル採用へ逆流させません。'}`
+    :'VALIDATION_REJECT時だけ有効になります。';
+  }
+  if($('v181ShadowTicketBody'))$('v181ShadowTicketBody').innerHTML=(s.byTicket||[]).map(x=>`<tr><td>${esc(x.ticket)}</td><td>${x.bets}</td><td>${x.hitRate==null?'-':v181Pct(x.hitRate,1)}</td><td>${x.roi==null?'-':v181Pct(x.roi,1)}</td><td>${x.avgEv==null?'-':Number(x.avgEv).toFixed(3)}</td><td>${v181Pct(x.maxDD||0,1)}</td></tr>`).join('');
+ }
+
+ const _v181RenderResearch=renderResearch;
+ renderResearch=function(result){_v181RenderResearch(result);renderV181(result);};
+
+ const _v181ResetRunStateUI=resetRunStateUI;
+ resetRunStateUI=function(from,to,org){
+  _v181ResetRunStateUI(from,to,org);
+  for(const id of ['v181ValSelection','v181TrainT','v181ValN','v181ValRequired','v181ValMarketLL','v181ValModelLL','v181ValLLImprove','v181ValBrierImprove','v181ShadowRoi','v181ShadowHit','v181ShadowAvgEv','v181ShadowDD','v181ShadowBrierModel','v181ShadowBrierMarket','v181ShadowClass'])if($(id))$(id).textContent='--';
+  if($('v181ShadowBets'))$('v181ShadowBets').textContent='0';if($('v181ShadowTicketBody'))$('v181ShadowTicketBody').innerHTML='';if($('v181ValExplain'))$('v181ValExplain').textContent='実行中…';if($('v181ShadowExplain'))$('v181ShadowExplain').textContent='VALIDATION判定待ち…';
+ };
+
+ // Add shadow diagnostics to XLSX, while CSV remains actual bets only by design.
+ exportXlsx=function(){
+  if(!lastResult)return alert('先に実行してください');if(typeof XLSX==='undefined')return alert('SheetJS未読込');
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.bets||[]),'Bets ACTUAL');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.audit||[]),'Audit');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.research?.thresholds||[]),'EV Thresholds TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.research?.calibration?.bins||[]),'Calibration TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([lastResult.research?.validationDetail||{}]),'Validation Detail');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.research?.rejectedShadow?.rows||[]),'Rejected Shadow TEST');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lastResult.research?.rejectedShadow?.byTicket||[]),'Shadow by Ticket');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ORIGINAL_CODE_FINDINGS),'Code Audit');
+  XLSX.writeFile(wb,'keiba_strict_v18_1_validation_shadow.xlsx');
+ };
+
+ const brand=document.querySelector('.brand .badge');if(brand)brand.textContent=V181_BUILD;
+ const n=document.querySelector('#strictNotice');if(n&&!n.dataset.v181){n.dataset.v181='1';n.innerHTML += '<br><b>V18.1 SHADOW保護:</b> VALIDATION_REJECTモデルはTESTで診断用にのみ追跡し、実購入・資金・ランキング・同一RUNの採否には使用しません。';}
+ log('V18.1 VALIDATION DETAIL + REJECTED SHADOW TEST active','good');
 })();
 
 </script>
