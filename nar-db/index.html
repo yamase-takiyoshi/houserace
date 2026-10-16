@@ -286,7 +286,7 @@ const currentMode=githubHost?'github':onX96?'x96':'standalone';
 const currentGithub=githubHost?location.origin+location.pathname:'';
 const currentX96=onX96&&location.hostname!=='127.0.0.1'&&location.hostname!=='localhost'?location.origin+'/':'';
 let prefs={github:'https://yamase-takiyoshi.github.io/houserace/nar-db/',x96:'http://192.168.223.193:8765/'};
-try{const p=JSON.parse(localStorage.getItem(KEY)||'{}');if(typeof p.github==='string')prefs.github=p.github;if(typeof p.x96==='string')prefs.x96=p.x96}catch(e){}
+try{const p=JSON.parse(localStorage.getItem(KEY)||'{}');if(typeof p.github==='string'&&p.github.trim())prefs.github=p.github;if(typeof p.x96==='string')prefs.x96=p.x96}catch(e){}
 if(currentGithub)prefs.github=currentGithub;
 if(currentX96)prefs.x96=currentX96;
 const status=$('dualHint'),msg=$('dualFeedback');
