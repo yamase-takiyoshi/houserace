@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>X96 映像翻訳ポータル</title>
+<meta name="theme-color" content="#101827">
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;color:#f3f8ff;background:#101827}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top right,#1d426b,transparent 46%),#101827}
+main{max-width:1050px;margin:auto;padding:26px 16px 65px}h1{font-size:clamp(26px,4vw,40px);margin:10px 0}
+p{color:#c8d8ec;line-height:1.7}.eyebrow{font-size:12px;letter-spacing:.17em;color:#91d9ff;font-weight:800}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:17px;margin-top:26px}
+section{border:1px solid #435978;border-radius:17px;background:#1c2b44;padding:22px;min-width:0}
+.wide{grid-column:1/-1}h2{font-size:20px;margin:0 0 10px}label{display:block;font-weight:700;font-size:14px;margin:15px 0 7px}
+input[type=url]{font:inherit;width:100%;padding:13px;border-radius:10px;background:#0f1c30;border:1px solid #6986ac;color:#fff}
+input[type=file]{max-width:100%;padding:8px 0}
+.buttons{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0}button,a.button{display:inline-block;text-align:center;font-size:15px;font-weight:700;border:0;border-radius:10px;background:#79bfff;color:#09192d;text-decoration:none;cursor:pointer;padding:12px 16px}
+button.secondary,a.secondary{background:#375171;color:#fff;border:1px solid #647e9b}
+video{display:none;width:100%;max-height:420px;background:#02050a;border-radius:10px;margin-top:14px}
+.note{font-size:13px;color:#b6c9de}.alert{padding:14px;background:#122841;border-left:3px solid #85c7ff;border-radius:8px}
+#status{min-height:26px;color:#96ecc8;padding:12px 0}ol{padding-left:24px;color:#d9e7f7;line-height:2}
+@media(max-width:730px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}section{padding:18px}}
+</style></head>
+<body><main>
+<header><div class="eyebrow">X96 X6 • ANDROID 11 • GITHUB PAGES</div>
+<h1>📺 X96 映像・音声翻訳</h1>
+<p>自宅でも外出先でも同じ画面を開ける操作ポータル。X96の翻訳サーバーと、YouTube・DRMなし動画への入口です。</p></header>
+<div class="grid">
+<section><h2>🏠 自宅のX96</h2><p>iPadとX96が同じLANにある場合。</p>
+<label for="local">X96のローカルアドレス</label>
+<input id="local" type="url" value="http://192.168.123.143/" autocomplete="off">
+<div class="buttons"><button id="localOpen">iPadからX96を開く ↗</button>
+<a class="button secondary" target="_blank" rel="noopener" href="http://127.0.0.1:8766/">X96本体の8766番 ↗</a></div>
+<p class="note">写真でアクセスできた192.168.123.143を初期値にしています。IPが変わった場合は修正してください。</p></section>
+<section><h2>🌏 外出先のiPad</h2><p>自宅X96とiPadにTailscaleを導入してVPN接続するときの入口です。</p>
+<label for="remote">X96のTailscale接続先</label>
+<input id="remote" type="url" placeholder="例: http://100.x.y.z:8766/">
+<div class="buttons"><button id="remoteOpen">外出先からX96を開く ↗</button>
+<a class="button secondary" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">端末IPを調べる ↗</a></div>
+<p class="note">IPVanishだけではX96のLANに接続できません。Tailscaleなどの遠隔接続用VPNが必要です。X96側のサーバーはVPNインターフェースから届くように構成してください。</p></section>
+<section><h2>▶ ChromeのYouTube・DRMなし動画</h2><p>動画のURLを貼り付けて、Chromeなどで開きます。</p>
+<label for="videoUrl">動画URL</label><input id="videoUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
+<div class="buttons"><button id="videoOpen">動画を開く ↗</button><button class="secondary" id="copy">URLをコピー</button></div>
+<p class="note">現段階では動画を開く機能のみ。YouTubeの音声をChromeから直接取得して翻訳する機能は、X96側に別途実装が必要です。</p></section>
+<section><h2>🔊 日本語の音声テスト</h2><p>この端末の日本語読み上げを確認します。</p>
+<div class="buttons"><button id="speak">日本語を読み上げる</button><button id="stop" class="secondary">停止</button></div>
+<p class="note">読み上げのテストです。英語音声の認識・翻訳ではありません。</p></section>
+<section class="wide"><h2>🎞 DRMなし動画ファイルの再生</h2><p>手元のMP4・WebMなどを選択して、このブラウザで再生できます。ファイルはGitHubにアップロードしません。</p>
+<input id="file" type="file" accept="video/*"><video id="preview" controls playsinline preload="metadata"></video>
+<p id="fileInfo" class="note">動画未選択</p></section>
+<section class="wide"><h2>使い方と対応状況</h2>
+<ol><li>自宅X96で既存の翻訳サーバー v0.2 を起動します。</li><li>自宅では「自宅のX96」を押します。</li><li>外出先では両端末にTailscaleを設定し、VPN内のアドレスからX96を開きます。</li><li>ChromeのYouTubeまたはDRMなし動画は「動画URL」欄で開きます。</li></ol>
+<p class="alert"><b>現在使える機能：</b>動画ページ起動、ローカルファイル再生、サーバーへのリンク、日本語読み上げテスト。<br>
+<b>未実装：</b>Chrome再生音声の自動取得・認識・日本語翻訳・同期再生。GitHub PagesのHTML単体では実現できず、X96側の処理機能が必要です。</p>
+<p class="note">GitHub PagesはHTTPSのため家庭内HTTPへのAPI通信はブラウザの制限を受けます。この画面では新しいタブで開く方式を採用しています。LANサーバーをインターネットへ直接公開したり、GitHub上に接続トークンを保存したりしないでください。</p>
+</section></div>
+<div id="status" aria-live="polite" role="status"></div>
+<footer><p class="note">GitHub上にはHTML画面だけが置かれます。音声データ・動画・翻訳モデルはX96で処理する構成です。</p></footer>
+</main>
+<script>
+(()=>{'use strict';const $=id=>document.getElementById(id),status=t=>$('status').textContent=t;
+function url(v){try{let u=new URL(v.trim());return ['http:','https:'].includes(u.protocol)?u.href:null}catch(e){return null}}
+for(const id of ['local','remote']){try{$(id).value=localStorage.getItem('x96-'+id)||$(id).value}catch(e){}}
+function go(id){let u=url($(id).value);if(!u){status('http:// または https:// で始まるURLを入力してください。');return}try{localStorage.setItem('x96-'+id,u)}catch(e){}window.open(u,'_blank','noopener,noreferrer')}
+$('localOpen').onclick=()=>go('local');$('remoteOpen').onclick=()=>go('remote');
+$('videoOpen').onclick=()=>{let u=url($('videoUrl').value);if(!u){status('動画URLを入力してください。');return}window.open(u,'_blank','noopener,noreferrer');status('動画ページを開きました。動画音声の翻訳はまだ実装されていません。')};
+$('copy').onclick=async()=>{let u=url($('videoUrl').value);if(!u){status('有効なURLを入力してください。');return}try{await navigator.clipboard.writeText(u);status('コピーしました。')}catch(e){status('URL欄を選択して手動コピーしてください。')}};
+let objectUrl=null;$('file').onchange=()=>{const f=$('file').files[0];if(objectUrl)URL.revokeObjectURL(objectUrl);if(!f)return;objectUrl=URL.createObjectURL(f);$('preview').src=objectUrl;$('preview').style.display='block';$('fileInfo').textContent='選択: '+f.name+'（ローカル再生のみ）'};
+$('speak').onclick=()=>{if(!('speechSynthesis' in window)){status('ブラウザが音声合成に対応していません。');return}speechSynthesis.cancel();const u=new SpeechSynthesisUtterance('X96日本語音声翻訳のテストです。');u.lang='ja-JP';speechSynthesis.speak(u)};
+$('stop').onclick=()=>{'speechSynthesis' in window&&speechSynthesis.cancel()};
+})();
+</script></body></html>
