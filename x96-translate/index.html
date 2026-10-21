@@ -30,12 +30,12 @@ video{display:none;width:100%;max-height:420px;background:#02050a;border-radius:
 <input id="local" type="url" value="http://192.168.123.143/" autocomplete="off">
 <div class="buttons"><button id="localOpen">iPadからX96を開く ↗</button>
 <a class="button secondary" target="_blank" rel="noopener" href="http://127.0.0.1:8766/">X96本体の8766番 ↗</a></div>
-<p class="note">写真でアクセスできた192.168.123.143を初期値にしています。IPが変わった場合は修正してください。</p></section>
+<p class="note">写真でアクセスできた192.168.123.143を初期値にしています。IPが変わった場合は修正してください。8766番に直接アクセスする場合は http://192.168.123.143:8766/ に変更してください。</p></section>
 <section><h2>🌏 外出先のiPad</h2><p>自宅X96とiPadをZeroTier One（またはTailscale）で同じ仮想LANにつないで使用します。</p>
 <label for="remote">X96のZeroTier接続先（またはTailscale）</label>
 <input id="remote" type="url" placeholder="例: http://10.147.17.101:8766/ （実際のManaged IPを入力）">
 <div class="buttons"><button id="remoteOpen">外出先からX96を開く ↗</button>
-<a class="button secondary" href="https://central.zerotier.com/" target="_blank" rel="noopener noreferrer">ZeroTier Central ↗</a></div>
+<a class="button secondary" href="./zerotier.html">ZeroTierの接続設定ガイド ↗</a><a class="button secondary" href="https://central.zerotier.com/" target="_blank" rel="noopener noreferrer">ZeroTier Central ↗</a></div>
 <p class="note">IPVanish単独では自宅X96のLANには入れません。ZeroTier Oneで同じプライベートネットワークに参加し、Centralで両端末をAuthorizeしてください。X96のManaged IPを入力します。iPadではIPVanishとの同時利用は難しいため、必要に応じてVPNを切り替えてください。X96側サーバーはVPNからの接続を許可してください。</p></section>
 <section><h2>▶ ChromeのYouTube・DRMなし動画</h2><p>動画のURLを貼り付けて、Chromeなどで開きます。</p>
 <label for="videoUrl">動画URL</label><input id="videoUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
