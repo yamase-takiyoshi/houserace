@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZeroTier One | X96 遠隔アクセス設定</title>
+<meta name="theme-color" content="#101826">
+<style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#f5faff;background:#111827;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top right,#203f65,transparent 47%),#101726}
+main{max-width:840px;margin:0 auto;padding:24px 16px 60px}a{color:#92d1ff}h1{font-size:clamp(27px,5vw,38px);line-height:1.25;margin:8px 0 8px}h2{font-size:19px;margin:0 0 12px}p,li{color:#d2def0;line-height:1.65}
+.kicker{letter-spacing:.13em;font-size:11px;color:#80daed;font-weight:800}.sub{margin-bottom:25px}
+.card{background:#1c2b43;border:1px solid #506685;padding:21px;border-radius:16px;margin-bottom:16px}
+.step{display:flex;align-items:center;gap:10px}
+.step b{display:grid;place-items:center;border-radius:50%;width:30px;height:30px;background:#77c7f7;color:#081d2c}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:13px}
+button,.button{display:inline-block;background:#8bcaff;color:#091d2f!important;border:0;border-radius:10px;padding:11px 15px;text-decoration:none;font-size:15px;font-weight:800;cursor:pointer}
+button.secondary,.button.secondary{background:#355273;color:#fff!important;border:1px solid #5f7f9c}
+label{display:block;margin:12px 0 7px;font-size:14px;font-weight:750}
+input[type=text],input[type=url]{width:100%;background:#0b192d;color:#fff;border:1px solid #6988ad;border-radius:10px;padding:13px;font:inherit}
+.small{color:#b2c7dc;font-size:13px}.warn{border-left:3px solid #7fd6ff;background:#112640;border-radius:7px;padding:14px;font-size:14px}
+.code{white-space:pre-wrap;overflow-wrap:anywhere;font-family:monospace;color:#b7fbd7;background:#0a1b26;padding:12px;border-radius:8px}
+.item{display:flex;align-items:flex-start;gap:9px;margin:12px 0}.item input{margin-top:6px;accent-color:#77caf5}
+#result{min-height:25px;color:#9df0d1}
+.back{font-size:14px;text-decoration:none}
+footer{font-size:13px;color:#99abc2;margin-top:24px}
+</style></head><body><main>
+<a class="back" href="./">← X96翻訳ポータルに戻る</a>
+<p class="kicker">X96 X6 / ANDROID 11 / IPAD</p><h1>🌏 ZeroTier One 遠隔アクセス設定</h1>
+<p class="sub">自宅のX96翻訳サーバー（8766番）を、外出先のiPadから安全な仮想LAN経由で開くための手順です。ルーターのポート開放は不要です。</p>
+<div class="card"><h2>目標の接続経路</h2>
+<p>自宅 X96（ZeroTier One）　⇄　ZeroTierの暗号化仮想LAN　⇄　外出先 iPad（ZeroTier One）</p>
+<p class="warn">GitHub Pagesには操作用HTMLのみを配置。翻訳処理と接続トークンはX96側に残します。接続トークンをGitHubや一般公開ページに記載しないでください。</p></div>
+<section class="card"><div class="step"><b>1</b><h2>ZeroTierネットワークを作成</h2></div>
+<p><a href="https://central.zerotier.com/" target="_blank" rel="noopener noreferrer">ZeroTier Central</a>でプライベートネットワークを作成し、表示された <strong>Network ID（16桁）</strong>を控えます。Network IDをこのページへ入力する必要はありません。</p>
+<div class="actions"><a class="button" href="https://central.zerotier.com/" target="_blank" rel="noopener noreferrer">ZeroTier Centralを開く ↗</a></div>
+<label class="item"><input type="checkbox" data-step="1">Network IDを控えた</label></section>
+<section class="card"><div class="step"><b>2</b><h2>X96へZeroTier Oneを導入</h2></div>
+<p>X96（Android 11）のGoogle Playで「ZeroTier One」をインストールします。Android TVのPlayストアで表示されない場合は、公式配布元を確認してください。アプリでNetwork IDを入力して参加します。VPN許可画面が出たら許可してください。</p>
+<div class="actions"><a class="button secondary" href="https://www.zerotier.com/download/" target="_blank" rel="noopener noreferrer">公式ダウンロード ↗</a></div>
+<label class="item"><input type="checkbox" data-step="2">X96がネットワークに参加した</label></section>
+<section class="card"><div class="step"><b>3</b><h2>iPadにもZeroTier Oneを導入</h2></div>
+<p>App StoreでZeroTier Oneを入れ、同じNetwork IDへ参加します。VPN構成の追加を許可します。IPVanishが有効なら、まず一時停止してZeroTier側を接続してください。</p>
+<div class="actions"><a class="button secondary" href="https://apps.apple.com/jp/app/zerotier-one/id1084101492" target="_blank" rel="noopener noreferrer">iPad版を入手 ↗</a></div>
+<label class="item"><input type="checkbox" data-step="3">iPadがネットワークに参加した</label></section>
+<section class="card"><div class="step"><b>4</b><h2>Centralで両端末を承認</h2></div>
+<p>ZeroTier Central → ネットワーク → <b>Member Devices</b> → X96とiPadをそれぞれ <b>Authorize</b>。X96側に割り当てられた <b>Managed IP</b> を確認します（10.x.x.x や192.168.x.xなど）。</p>
+<p class="small">ここで必要なのはiPadのIPではなく、X96のZeroTier側のIPです。例示IPは使わないでください。</p>
+<label class="item"><input type="checkbox" data-step="4">2台ともAuthorize済みで、X96のManaged IPを控えた</label></section>
+<section class="card"><div class="step"><b>5</b><h2>外出先からX96を開く</h2></div>
+<label for="ip">X96のZeroTier Managed IP</label>
+<input id="ip" type="text" placeholder="例: 10.147.17.101（実際のX96のIPを入力）" inputmode="decimal" autocomplete="off">
+<label for="port">X96の翻訳サーバーのポート</label>
+<input id="port" type="text" value="8766" inputmode="numeric">
+<p class="small">IPとポートはこのブラウザ内のみに保存します。GitHubへ送信しません。</p>
+<div class="actions"><button id="open">X96翻訳サーバーを開く ↗</button><button id="copy" class="secondary">接続URLをコピー</button></div>
+<p id="result" role="status" aria-live="polite"></p>
+<p class="warn">このページはHTTPS、X96はHTTPなので、ページ内で自動接続テストはできません。「開く」でSafariの新しいタブへ移動して動作確認してください。外出先でのテストは自宅Wi-Fiを使わず行ってください。</p></section>
+<section class="card"><h2>🛠 つながらない場合</h2>
+<ol>
+<li>X96でZeroTierがオンラインになっているか確認する。</li>
+<li>Centralで両端末ともAuthorizeされ、X96にManaged IPがあるか確認する。</li>
+<li>iPadでIPVanishを一時停止し、ZeroTier VPNを有効にする。</li>
+<li>X96のChromeで <code>http://127.0.0.1:8766/</code> が開くか確認する。</li>
+<li>X96のTermuxで次のコマンドを実行して、サーバーがどのアドレスで待ち受けているか調べる。</li>
+</ol><div class="code">ss -ltn | grep 8766</div><p class="small">「127.0.0.1:8766」のみなら外部端末から直接到達できません。サーバーをZeroTierから届くインターフェースでも受け付ける設定にする必要があります。ただし既存の設定は変更せず、結果を確認してから調整してください。</p>
+<p>8766番が正常でも翻訳が止まる場合は、VPNではなくWhisperなどの処理側を別途確認します。</p></section>
+<footer>既存の8766翻訳サーバー／8765競馬サーバーには、このHTMLから設定変更を加えません。外部への直接ポート公開は避けてください。</footer>
+</main><script>
+(()=>{'use strict';
+const ip=document.getElementById('ip'),port=document.getElementById('port'),msg=document.getElementById('result');
+try{ip.value=localStorage.getItem('x96-zt-ip')||'';port.value=localStorage.getItem('x96-zt-port')||'8766'}catch(e){}
+for(const box of document.querySelectorAll('[data-step]')){const key='x96-zt-step-'+box.dataset.step;try{box.checked=localStorage.getItem(key)==='1'}catch(e){}box.onchange=()=>{try{localStorage.setItem(key,box.checked?'1':'0')}catch(e){}}}
+function address(){const a=ip.value.trim(),p=port.value.trim();if(!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(a)||a.split('.').some(x=>Number(x)>255)){msg.textContent='X96のManaged IP（IPv4）を正しく入力してください。';return null}if(!/^\d{1,5}$/.test(p)||Number(p)<1||Number(p)>65535){msg.textContent='ポート番号を確認してください。';return null}try{localStorage.setItem('x96-zt-ip',a);localStorage.setItem('x96-zt-port',p)}catch(e){}return 'http://'+a+':'+p+'/'}
+document.getElementById('open').onclick=()=>{const u=address();if(u){window.open(u,'_blank','noopener,noreferrer');msg.textContent='新しいタブで開きました。つながらなければVPNや待受け設定を確認してください。'}};
+document.getElementById('copy').onclick=async()=>{const u=address();if(u){try{await navigator.clipboard.writeText(u);msg.textContent='接続URLをコピーしました。'}catch(e){msg.textContent='コピーできません。表示URL: '+u}}};
+})();
+</script></body></html>
