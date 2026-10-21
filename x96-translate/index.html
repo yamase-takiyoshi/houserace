@@ -31,12 +31,12 @@ video{display:none;width:100%;max-height:420px;background:#02050a;border-radius:
 <div class="buttons"><button id="localOpen">iPadからX96を開く ↗</button>
 <a class="button secondary" target="_blank" rel="noopener" href="http://127.0.0.1:8766/">X96本体の8766番 ↗</a></div>
 <p class="note">写真でアクセスできた192.168.123.143を初期値にしています。IPが変わった場合は修正してください。</p></section>
-<section><h2>🌏 外出先のiPad</h2><p>自宅X96とiPadにTailscaleを導入してVPN接続するときの入口です。</p>
-<label for="remote">X96のTailscale接続先</label>
-<input id="remote" type="url" placeholder="例: http://100.x.y.z:8766/">
+<section><h2>🌏 外出先のiPad</h2><p>自宅X96とiPadをZeroTier One（またはTailscale）で同じ仮想LANにつないで使用します。</p>
+<label for="remote">X96のZeroTier接続先（またはTailscale）</label>
+<input id="remote" type="url" placeholder="例: http://10.147.17.101:8766/ （実際のManaged IPを入力）">
 <div class="buttons"><button id="remoteOpen">外出先からX96を開く ↗</button>
-<a class="button secondary" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">端末IPを調べる ↗</a></div>
-<p class="note">IPVanishだけではX96のLANに接続できません。Tailscaleなどの遠隔接続用VPNが必要です。X96側のサーバーはVPNインターフェースから届くように構成してください。</p></section>
+<a class="button secondary" href="https://central.zerotier.com/" target="_blank" rel="noopener noreferrer">ZeroTier Central ↗</a></div>
+<p class="note">IPVanish単独では自宅X96のLANには入れません。ZeroTier Oneで同じプライベートネットワークに参加し、Centralで両端末をAuthorizeしてください。X96のManaged IPを入力します。iPadではIPVanishとの同時利用は難しいため、必要に応じてVPNを切り替えてください。X96側サーバーはVPNからの接続を許可してください。</p></section>
 <section><h2>▶ ChromeのYouTube・DRMなし動画</h2><p>動画のURLを貼り付けて、Chromeなどで開きます。</p>
 <label for="videoUrl">動画URL</label><input id="videoUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
 <div class="buttons"><button id="videoOpen">動画を開く ↗</button><button class="secondary" id="copy">URLをコピー</button></div>
@@ -48,7 +48,7 @@ video{display:none;width:100%;max-height:420px;background:#02050a;border-radius:
 <input id="file" type="file" accept="video/*"><video id="preview" controls playsinline preload="metadata"></video>
 <p id="fileInfo" class="note">動画未選択</p></section>
 <section class="wide"><h2>使い方と対応状況</h2>
-<ol><li>自宅X96で既存の翻訳サーバー v0.2 を起動します。</li><li>自宅では「自宅のX96」を押します。</li><li>外出先では両端末にTailscaleを設定し、VPN内のアドレスからX96を開きます。</li><li>ChromeのYouTubeまたはDRMなし動画は「動画URL」欄で開きます。</li></ol>
+<ol><li>自宅X96で既存の翻訳サーバー v0.2 を起動します。</li><li>自宅では「自宅のX96」を押します。</li><li>外出先では両端末にZeroTier Oneを入れ、同じネットワークに参加してCentralで承認し、X96のManaged IPで開きます。</li><li>ChromeのYouTubeまたはDRMなし動画は「動画URL」欄で開きます。</li></ol>
 <p class="alert"><b>現在使える機能：</b>動画ページ起動、ローカルファイル再生、サーバーへのリンク、日本語読み上げテスト。<br>
 <b>未実装：</b>Chrome再生音声の自動取得・認識・日本語翻訳・同期再生。GitHub PagesのHTML単体では実現できず、X96側の処理機能が必要です。</p>
 <p class="note">GitHub PagesはHTTPSのため家庭内HTTPへのAPI通信はブラウザの制限を受けます。この画面では新しいタブで開く方式を採用しています。LANサーバーをインターネットへ直接公開したり、GitHub上に接続トークンを保存したりしないでください。</p>
