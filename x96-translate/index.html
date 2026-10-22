@@ -47,6 +47,14 @@ video{display:none;width:100%;max-height:420px;background:#02050a;border-radius:
 <section class="wide"><h2>🎞 DRMなし動画ファイルの再生</h2><p>手元のMP4・WebMなどを選択して、このブラウザで再生できます。ファイルはGitHubにアップロードしません。</p>
 <input id="file" type="file" accept="video/*"><video id="preview" controls playsinline preload="metadata"></video>
 <p id="fileInfo" class="note">動画未選択</p></section>
+<section class="wide"><h2>📦 v0.4 Androidアプリ・APKビルド</h2>
+<p>Android 11 の録音許可で、取得が許可された動画アプリの内部音声をX96へ送信する補助アプリです。現在GitHubにソースとビルド設定を配置しています。APKのビルド成功・X96実機での動作はまだ確認されていません。</p>
+<div class="buttons">
+<a class="button secondary" target="_blank" rel="noopener noreferrer" href="https://github.com/yamase-takiyoshi/houserace/actions/workflows/x96-capture-apk.yml">GitHub ActionsでAPKを確認 ↗</a>
+<a class="button secondary" target="_blank" rel="noopener noreferrer" href="https://github.com/yamase-takiyoshi/houserace/tree/main/x96-translate/android-capture">Androidアプリのソース ↗</a>
+</div>
+<p class="note">GitHub Actionsの実行が成功した場合、該当RunのArtifactsに「X96-App-Audio-Capture-APK」が表示されます。未表示・失敗時はインストール用APKは完成していません。</p>
+</section>
 <section class="wide"><h2>使い方と対応状況</h2>
 <ol><li>自宅X96で既存の翻訳サーバー v0.2 を起動します。</li><li>自宅では「自宅のX96」を押します。</li><li>外出先では両端末にZeroTier Oneを入れ、同じネットワークに参加してCentralで承認し、X96のManaged IPで開きます。</li><li>ChromeのYouTubeまたはDRMなし動画は「動画URL」欄で開きます。</li></ol>
 <p class="alert"><b>現在使える機能：</b>動画ページ起動、ローカルファイル再生、サーバーへのリンク、日本語読み上げテスト。<br>
