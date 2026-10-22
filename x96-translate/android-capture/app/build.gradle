@@ -1,0 +1,16 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'jp.x96.capture'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'jp.x96.capture'
+        minSdk 29
+        targetSdk 30
+        versionCode 1
+        versionName '0.4'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
